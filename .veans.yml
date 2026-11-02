@@ -1,0 +1,14 @@
+server: https://vikunja.nikola.wtf
+project_id: 2
+project_identifier: THURM
+view_id: 8
+buckets:
+    todo: 4
+    in_progress: 5
+    in_review: 7
+    done: 6
+    scrapped: 8
+bot:
+    username: bot-thurm
+    user_id: 2
+frontend_url: https://vikunja.nikola.wtf/
