@@ -376,6 +376,187 @@ impl Model {
         out.sort_by_key(|(g, _, z, c)| (*z, *c, *g));
         out.into_iter().map(|(g, p, _, _)| (g, p)).collect()
     }
+
+    /// The editor float that float `grid` hangs from (itself when on the editor directly):
+    /// floats sharing one, like a picker's input, list and preview, belong together.
+    fn editor_top(&self, grid: u64) -> Option<u64> {
+        let mut g = grid;
+        for _ in 0..8 {
+            let Some(Win {
+                kind: WinKind::Float(pos),
+                ..
+            }) = self.wins.get(&g)
+            else {
+                return None;
+            };
+            if pos.anchor_grid == EDITOR || Some(pos.anchor_grid) == self.msg_grid {
+                return Some(g);
+            }
+            g = pos.anchor_grid;
+        }
+        None
+    }
+
+    /// The floats over the editor in groups: by the editor float each hangs from, and groups
+    /// that overlap or touch merged (a picker made of separate editor floats is one). Only
+    /// real windows: Neovim's own popup menu (no window) stays out.
+    pub fn float_groups(&self) -> Vec<FloatGroup> {
+        let mut groups: Vec<FloatGroup> = Vec::new();
+        let mut floats: Vec<(&u64, &Win)> = self.wins.iter().collect();
+        floats.sort_by_key(|(g, _)| **g);
+        for (&g, w) in floats {
+            let WinKind::Float(pos) = &w.kind else {
+                continue;
+            };
+            if w.win <= 0 {
+                continue;
+            }
+            let (Some(top), Some(at), Some(grid)) =
+                (self.editor_top(g), self.place(g), self.grids.get(&g))
+            else {
+                continue;
+            };
+            let rect = Rect {
+                row: at.row,
+                col: at.col,
+                rows: grid.rows as i32,
+                cols: grid.cols as i32,
+            };
+            // A backdrop (an unfocusable float over the whole editor, dimming it) belongs to
+            // no group: it would join everything, and stays where it is.
+            if !pos.focusable
+                && let Some(editor) = self.grids.get(&EDITOR)
+                && rect.rows >= editor.rows as i32
+                && rect.cols >= editor.cols as i32
+            {
+                continue;
+            }
+            let member = Member {
+                grid: g,
+                win: w.win,
+                rect,
+                focusable: pos.focusable,
+                zindex: pos.zindex,
+            };
+            match groups.iter_mut().find(|x| x.tops.contains(&top)) {
+                Some(x) => x.add(member),
+                None => groups.push(
+                    FloatGroup {
+                        tops: vec![top],
+                        members: vec![],
+                        rect,
+                    }
+                    .with(member),
+                ),
+            }
+        }
+        // Merge groups whose rectangles overlap or touch, until none do.
+        let mut merged = true;
+        while merged {
+            merged = false;
+            'outer: for i in 0..groups.len() {
+                for j in i + 1..groups.len() {
+                    if groups[i].rect.touches(&groups[j].rect) {
+                        let other = groups.remove(j);
+                        groups[i].tops.extend(other.tops);
+                        for m in other.members {
+                            groups[i].add(m);
+                        }
+                        merged = true;
+                        break 'outer;
+                    }
+                }
+            }
+        }
+        groups
+    }
+}
+
+/// A rectangle of cells: (`row`, `col`) and its size.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Rect {
+    pub row: i32,
+    pub col: i32,
+    pub rows: i32,
+    pub cols: i32,
+}
+
+impl Rect {
+    pub fn union(&self, o: &Rect) -> Rect {
+        let (r0, c0) = (self.row.min(o.row), self.col.min(o.col));
+        let (r1, c1) = (
+            (self.row + self.rows).max(o.row + o.rows),
+            (self.col + self.cols).max(o.col + o.cols),
+        );
+        Rect {
+            row: r0,
+            col: c0,
+            rows: r1 - r0,
+            cols: c1 - c0,
+        }
+    }
+
+    /// Overlapping, or within a cell of each other.
+    pub fn touches(&self, o: &Rect) -> bool {
+        self.row <= o.row + o.rows
+            && o.row <= self.row + self.rows
+            && self.col <= o.col + o.cols
+            && o.col <= self.col + self.cols
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Member {
+    pub grid: u64,
+    pub win: i64,
+    /// On the editor.
+    pub rect: Rect,
+    pub focusable: bool,
+    pub zindex: i64,
+}
+
+/// Floats over the editor that belong together (see [`Model::float_groups`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FloatGroup {
+    /// The editor floats the members hang from.
+    pub tops: Vec<u64>,
+    pub members: Vec<Member>,
+    /// All of them, on the editor.
+    pub rect: Rect,
+}
+
+impl FloatGroup {
+    fn with(mut self, m: Member) -> Self {
+        self.add(m);
+        self
+    }
+
+    fn add(&mut self, m: Member) {
+        self.rect = if self.members.is_empty() {
+            m.rect
+        } else {
+            self.rect.union(&m.rect)
+        };
+        self.members.push(m);
+    }
+
+    pub fn has_win(&self, win: i64) -> bool {
+        self.members.iter().any(|m| m.win == win)
+    }
+
+    pub fn grids(&self) -> impl Iterator<Item = u64> + '_ {
+        self.members.iter().map(|m| m.grid)
+    }
+
+    /// The window to make current when its card takes the focus: the focusable member on top
+    /// (a picker's input).
+    pub fn focus_target(&self) -> Option<i64> {
+        self.members
+            .iter()
+            .filter(|m| m.focusable)
+            .max_by_key(|m| m.zindex)
+            .map(|m| m.win)
+    }
 }
 
 fn style(attrs: &[(Value, Value)]) -> Style {
@@ -660,6 +841,65 @@ mod tests {
                 col: 2
             })
         );
+    }
+
+    #[test]
+    fn floats_over_the_editor_group_by_their_top() {
+        let mut m = Model::default();
+        let float =
+            |grid: u64, win: i64, anchor_grid: u64, row: f64, col: f64, focusable: bool, z: i64| {
+                ev(
+                    "win_float_pos",
+                    vec![
+                        grid.into(),
+                        win.into(),
+                        "NW".into(),
+                        anchor_grid.into(),
+                        row.into(),
+                        col.into(),
+                        focusable.into(),
+                        z.into(),
+                    ],
+                )
+            };
+        m.apply_redraw(&[
+            ev("grid_resize", vec![2.into(), 80.into(), 24.into()]),
+            ev("win_external_pos", vec![2.into(), 1000.into()]),
+            // A picker: a root box on the editor, input and list hanging from it.
+            ev("grid_resize", vec![10.into(), 40.into(), 12.into()]),
+            ev("grid_resize", vec![11.into(), 38.into(), 1.into()]),
+            ev("grid_resize", vec![12.into(), 38.into(), 9.into()]),
+            float(10, 2001, 1, 4.0, 10.0, false, 50),
+            float(11, 2002, 10, 1.0, 1.0, true, 52),
+            float(12, 2003, 10, 2.0, 1.0, true, 51),
+            // Separate editor floats that touch it (a preview on its right): the same group.
+            ev("grid_resize", vec![13.into(), 20.into(), 12.into()]),
+            float(13, 2004, 1, 4.0, 50.0, false, 50),
+            // A notification far away, and a float on a window: not in it.
+            ev("grid_resize", vec![14.into(), 10.into(), 2.into()]),
+            float(14, 2005, 1, 0.0, 70.0, false, 60),
+            ev("grid_resize", vec![15.into(), 10.into(), 2.into()]),
+            float(15, 2006, 2, 3.0, 3.0, true, 40),
+            // A backdrop over the whole editor joins nothing.
+            ev("grid_resize", vec![1.into(), 80.into(), 24.into()]),
+            ev("grid_resize", vec![16.into(), 80.into(), 24.into()]),
+            float(16, 2007, 1, 0.0, 0.0, false, 45),
+        ]);
+        let groups = m.float_groups();
+        assert_eq!(groups.len(), 2);
+        let picker = groups.iter().find(|g| g.has_win(2002)).unwrap();
+        assert!(picker.has_win(2001) && picker.has_win(2003) && picker.has_win(2004));
+        assert_eq!(
+            picker.rect,
+            Rect {
+                row: 4,
+                col: 10,
+                rows: 12,
+                cols: 60
+            }
+        );
+        assert_eq!(picker.focus_target(), Some(2002));
+        assert!(!groups.iter().any(|g| g.has_win(2006)));
     }
 
     #[test]

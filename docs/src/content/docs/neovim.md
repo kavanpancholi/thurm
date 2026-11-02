@@ -20,6 +20,10 @@ Neovim configuration and plugins.
 - Closing a pane closes its window. Unsaved changes stay in the buffer.
 - `:q` in the last window quits Neovim, and `:qa` closes every pane. The pane you
   started from goes back to your shell.
+- Pickers (Snacks, Telescope, fzf-lua and others) open as floating cards over the
+  pane you were in: type in them as usual. A card follows its picker and closes with
+  it, and closing the card closes the picker. Popups that never take the focus (the
+  completion menu, a command-line popup, notifications) stay drawn inside the pane.
 - Each pane draws its window's statusline. The command line and messages appear
   at the bottom of the current window's pane, or in your plugin's popup if you
   use one.
