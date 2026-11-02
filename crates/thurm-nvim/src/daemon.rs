@@ -1545,11 +1545,14 @@ impl Daemon {
         };
         let mut p = self.panes.remove(i);
         p.release();
-        // A card closed by hand: its windows go, which closes the picker.
+        // A card closed by hand closes its picker: the windows taking the focus (its input and
+        // list) go, and the picker takes the rest with it. A popup that only touched it (a
+        // notification) is left alone, and back in its pane.
         if let Some(card) = &p.card {
-            for m in &card.group.members {
+            for m in card.group.members.iter().filter(|m| m.focusable) {
                 self.lua("thurm_nvim.close(...)", vec![m.win.into()], Pending::Ignore)?;
             }
+            self.draw_all();
             return Ok(true);
         }
         if self
@@ -1616,7 +1619,7 @@ mod tests {
                     focusable: true,
                     zindex: 50,
                     compindex: 0,
-                    born: 0,
+                    born: std::time::Instant::now(),
                 })
                 .collect(),
             rect,

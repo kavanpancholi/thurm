@@ -533,7 +533,7 @@ mod tests {
             focusable: true,
             zindex: 50,
             compindex,
-            born: 0,
+            born: std::time::Instant::now(),
         };
         let group = FloatGroup {
             tops: vec![7, 8],

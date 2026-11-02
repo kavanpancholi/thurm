@@ -2,6 +2,7 @@
 //! grid per window, the message grid, and where each window and float sits.
 
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 use rmpv::Value;
 
@@ -138,12 +139,14 @@ pub struct Model {
     /// The message grid, and its row on the editor grid.
     pub msg_grid: Option<u64>,
     pub msg_row: i64,
-    /// Redraws so far (`flush` events).
-    pub flushes: u64,
-    /// When each float window first showed up (in redraw `flushes`): a picker's windows come
-    /// together, a notification that happens to touch one comes on its own.
-    pub born: HashMap<i64, u64>,
+    /// When each float window first showed up: a picker's windows come together (or within
+    /// moments, a preview made once the list has an entry), a notification that comes to touch
+    /// one, on its own.
+    pub born: HashMap<i64, Instant>,
 }
+
+/// How close in time windows must have shown up to be parts of one picker.
+pub const BORN_TOGETHER: Duration = Duration::from_secs(1);
 
 impl Model {
     /// Applies a `redraw` notification's batches; true when it ended with `flush`.
@@ -251,10 +254,7 @@ impl Model {
             "mode_change" => self.mode = u(1) as usize,
             "busy_start" => self.busy = true,
             "busy_stop" => self.busy = false,
-            "flush" => {
-                self.flushes += 1;
-                return true;
-            }
+            "flush" => return true,
             _ => {}
         }
         false
@@ -263,7 +263,7 @@ impl Model {
     fn set_win(&mut self, grid: u64, win: Option<&Value>, kind: WinKind) {
         let win = win.and_then(handle).unwrap_or(0);
         if matches!(kind, WinKind::Float(_)) {
-            self.born.entry(win).or_insert(self.flushes);
+            self.born.entry(win).or_insert_with(Instant::now);
         }
         self.wins.insert(grid, Win { win, kind });
     }
@@ -453,7 +453,7 @@ impl Model {
                 focusable: pos.focusable,
                 zindex: pos.zindex,
                 compindex: pos.compindex,
-                born: self.born.get(&w.win).copied().unwrap_or(0),
+                born: self.born.get(&w.win).copied().unwrap_or_else(Instant::now),
             };
             match groups.iter_mut().find(|x| x.tops.contains(&top)) {
                 Some(x) => x.add(member),
@@ -474,13 +474,9 @@ impl Model {
             'outer: for i in 0..groups.len() {
                 for j in i + 1..groups.len() {
                     // Only parts of one picker merge: windows that showed up together (a
-                    // picker makes its windows at once, like Telescope's prompt, list and
-                    // preview). A notification that comes to touch one stays apart.
-                    if groups[i].rect.touches(&groups[j].rect)
-                        && groups[i]
-                            .births()
-                            .any(|b| groups[j].births().any(|c| c == b))
-                    {
+                    // picker makes its windows at once, or its preview a moment later). A
+                    // notification that comes to touch one later stays apart.
+                    if groups[i].rect.touches(&groups[j].rect) && groups[i].born_with(&groups[j]) {
                         let other = groups.remove(j);
                         groups[i].tops.extend(other.tops);
                         for m in other.members {
@@ -539,7 +535,7 @@ pub struct Member {
     pub zindex: i64,
     pub compindex: i64,
     /// When it showed up (see [`Model::born`]).
-    pub born: u64,
+    pub born: Instant,
 }
 
 impl Member {
@@ -574,9 +570,14 @@ impl FloatGroup {
         self.members.push(m);
     }
 
-    /// When each member showed up (see [`Model::born`]).
-    pub fn births(&self) -> impl Iterator<Item = u64> + '_ {
-        self.members.iter().map(|m| m.born)
+    /// Some members of the two showed up within [`BORN_TOGETHER`] of each other.
+    pub fn born_with(&self, other: &FloatGroup) -> bool {
+        self.members.iter().any(|a| {
+            other
+                .members
+                .iter()
+                .any(|b| a.born.max(b.born).duration_since(a.born.min(b.born)) <= BORN_TOGETHER)
+        })
     }
 
     pub fn has_win(&self, win: i64) -> bool {
@@ -911,6 +912,10 @@ mod tests {
             float(10, 2001, 1, 4.0, 10.0, false, 50),
             float(11, 2002, 10, 1.0, 1.0, true, 52),
             float(12, 2003, 10, 2.0, 1.0, true, 51),
+            Value::Array(vec!["flush".into(), Value::Array(vec![])]),
+        ]);
+        // A redraw later (a preview made once the list has an entry): still part of it.
+        m.apply_redraw(&[
             // Separate editor floats that touch it (a preview on its right): the same group.
             ev("grid_resize", vec![13.into(), 20.into(), 12.into()]),
             float(13, 2004, 1, 4.0, 50.0, false, 50),
@@ -931,6 +936,11 @@ mod tests {
             ev("grid_resize", vec![16.into(), 80.into(), 24.into()]),
             float(16, 2007, 1, 0.0, 0.0, false, 45),
         ]);
+        // The notifications came seconds after the picker.
+        for win in [2005, 2008] {
+            let at = m.born[&win] + Duration::from_secs(2);
+            m.born.insert(win, at);
+        }
         let groups = m.float_groups();
         assert_eq!(groups.len(), 3);
         assert!(
