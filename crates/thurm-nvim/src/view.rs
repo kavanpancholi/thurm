@@ -533,6 +533,7 @@ mod tests {
             focusable: true,
             zindex: 50,
             compindex,
+            born: 0,
         };
         let group = FloatGroup {
             tops: vec![7, 8],

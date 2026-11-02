@@ -138,6 +138,11 @@ pub struct Model {
     /// The message grid, and its row on the editor grid.
     pub msg_grid: Option<u64>,
     pub msg_row: i64,
+    /// Redraws so far (`flush` events).
+    pub flushes: u64,
+    /// When each float window first showed up (in redraw `flushes`): a picker's windows come
+    /// together, a notification that happens to touch one comes on its own.
+    pub born: HashMap<i64, u64>,
 }
 
 impl Model {
@@ -185,7 +190,9 @@ impl Model {
             }
             "grid_destroy" => {
                 self.grids.remove(&u(0));
-                self.wins.remove(&u(0));
+                if let Some(w) = self.wins.remove(&u(0)) {
+                    self.born.remove(&w.win);
+                }
             }
             "win_pos" => self.set_win(u(0), a.get(1), WinKind::Ordinary),
             "win_external_pos" => self.set_win(u(0), a.get(1), WinKind::External),
@@ -211,7 +218,9 @@ impl Model {
                 }
             }
             "win_close" => {
-                self.wins.remove(&u(0));
+                if let Some(w) = self.wins.remove(&u(0)) {
+                    self.born.remove(&w.win);
+                }
             }
             "msg_set_pos" => {
                 self.msg_grid = Some(u(0));
@@ -242,7 +251,10 @@ impl Model {
             "mode_change" => self.mode = u(1) as usize,
             "busy_start" => self.busy = true,
             "busy_stop" => self.busy = false,
-            "flush" => return true,
+            "flush" => {
+                self.flushes += 1;
+                return true;
+            }
             _ => {}
         }
         false
@@ -250,6 +262,9 @@ impl Model {
 
     fn set_win(&mut self, grid: u64, win: Option<&Value>, kind: WinKind) {
         let win = win.and_then(handle).unwrap_or(0);
+        if matches!(kind, WinKind::Float(_)) {
+            self.born.entry(win).or_insert(self.flushes);
+        }
         self.wins.insert(grid, Win { win, kind });
     }
 
@@ -438,6 +453,7 @@ impl Model {
                 focusable: pos.focusable,
                 zindex: pos.zindex,
                 compindex: pos.compindex,
+                born: self.born.get(&w.win).copied().unwrap_or(0),
             };
             match groups.iter_mut().find(|x| x.tops.contains(&top)) {
                 Some(x) => x.add(member),
@@ -457,14 +473,13 @@ impl Model {
             merged = false;
             'outer: for i in 0..groups.len() {
                 for j in i + 1..groups.len() {
-                    // Only parts of one picker merge: both can take the focus, or they share a level
-                    // (a picker's separate windows are made together, like Telescope's preview).
-                    // Popups on a level of their own (notifications) stay apart even touching it.
+                    // Only parts of one picker merge: windows that showed up together (a
+                    // picker makes its windows at once, like Telescope's prompt, list and
+                    // preview). A notification that comes to touch one stays apart.
                     if groups[i].rect.touches(&groups[j].rect)
-                        && ((groups[i].focusable() && groups[j].focusable())
-                            || groups[i]
-                                .levels()
-                                .any(|z| groups[j].levels().any(|w| w == z)))
+                        && groups[i]
+                            .births()
+                            .any(|b| groups[j].births().any(|c| c == b))
                     {
                         let other = groups.remove(j);
                         groups[i].tops.extend(other.tops);
@@ -523,6 +538,8 @@ pub struct Member {
     pub focusable: bool,
     pub zindex: i64,
     pub compindex: i64,
+    /// When it showed up (see [`Model::born`]).
+    pub born: u64,
 }
 
 impl Member {
@@ -557,14 +574,9 @@ impl FloatGroup {
         self.members.push(m);
     }
 
-    /// The zindex of each member.
-    pub fn levels(&self) -> impl Iterator<Item = i64> + '_ {
-        self.members.iter().map(|m| m.zindex)
-    }
-
-    /// Some member can take the focus.
-    pub fn focusable(&self) -> bool {
-        self.members.iter().any(|m| m.focusable)
+    /// When each member showed up (see [`Model::born`]).
+    pub fn births(&self) -> impl Iterator<Item = u64> + '_ {
+        self.members.iter().map(|m| m.born)
     }
 
     pub fn has_win(&self, win: i64) -> bool {
@@ -902,12 +914,16 @@ mod tests {
             // Separate editor floats that touch it (a preview on its right): the same group.
             ev("grid_resize", vec![13.into(), 20.into(), 12.into()]),
             float(13, 2004, 1, 4.0, 50.0, false, 50),
+            Value::Array(vec!["flush".into(), Value::Array(vec![])]),
+        ]);
+        // Later, on their own: popups that are not part of it.
+        m.apply_redraw(&[
             // A notification far away, and a float on a window: not in it.
             ev("grid_resize", vec![14.into(), 10.into(), 2.into()]),
             float(14, 2005, 1, 0.0, 70.0, false, 60),
-            // A notification touching the picker stays on its own.
+            // A notification touching the picker stays on its own, even at the picker's level.
             ev("grid_resize", vec![17.into(), 10.into(), 3.into()]),
-            float(17, 2008, 1, 16.0, 20.0, false, 60),
+            float(17, 2008, 1, 16.0, 20.0, false, 50),
             ev("grid_resize", vec![15.into(), 10.into(), 2.into()]),
             float(15, 2006, 2, 3.0, 3.0, true, 40),
             // A backdrop over the whole editor joins nothing.

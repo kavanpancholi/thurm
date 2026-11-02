@@ -363,33 +363,7 @@ fn serve(dir: &Path, nvim_args: &[String]) -> io::Result<()> {
         std::thread::spawn(move || read_nvim(reader, tx));
     }
 
-    let mut d = Daemon {
-        tx: tx.clone(),
-        nvim,
-        model: Model::default(),
-        panes: Vec::new(),
-        next_id: 1,
-        pending: HashMap::new(),
-        ready: false,
-        anchor: 0,
-        current: 0,
-        asked: HashSet::new(),
-        reopening: HashSet::new(),
-        splits: HashMap::new(),
-        statuslines_wanted: false,
-        statuslines_in_flight: false,
-        editor_size: (0, 0),
-        ui_focused: true,
-        focus_gen: 0,
-        own_focus: None,
-        current_float: None,
-        no_card: HashSet::new(),
-        editor_pane: 0,
-        thurm_ops: None,
-        nvim_exiting: false,
-        exe: std::env::current_exe()?,
-        socket,
-    };
+    let mut d = Daemon::new(tx.clone(), nvim, std::env::current_exe()?, socket);
     d.thurm_ops = start_thurm(tx.clone());
     let mut launcher = Pane::new(0, None);
     launcher.thurm = std::env::var(thurm_proto::ENV_PANE_ID)
@@ -616,6 +590,36 @@ fn card(
 }
 
 impl Daemon {
+    fn new(tx: Sender<Msg>, nvim: Nvim, exe: PathBuf, socket: PathBuf) -> Daemon {
+        Daemon {
+            tx,
+            nvim,
+            model: Model::default(),
+            panes: Vec::new(),
+            next_id: 1,
+            pending: HashMap::new(),
+            ready: false,
+            anchor: 0,
+            current: 0,
+            asked: HashSet::new(),
+            reopening: HashSet::new(),
+            splits: HashMap::new(),
+            statuslines_wanted: false,
+            statuslines_in_flight: false,
+            editor_size: (0, 0),
+            ui_focused: true,
+            focus_gen: 0,
+            own_focus: None,
+            current_float: None,
+            no_card: HashSet::new(),
+            editor_pane: 0,
+            thurm_ops: None,
+            nvim_exiting: false,
+            exe,
+            socket,
+        }
+    }
+
     fn start(&mut self) -> io::Result<()> {
         let (cols, rows) = self
             .panes
@@ -977,6 +981,7 @@ impl Daemon {
                 None => gone.push(p.id),
             }
         }
+        let retired = !gone.is_empty();
         for id in gone {
             if let Some(i) = self.panes.iter().position(|p| p.id == id) {
                 let mut p = self.panes.remove(i);
@@ -987,6 +992,11 @@ impl Daemon {
             for (pane, place) in places {
                 let _ = ops.send(ThurmOp::Place { pane, place });
             }
+        }
+        // A card that went may have had the focus while its group lives on in another (two
+        // merged): the focus goes to the card now showing Neovim's.
+        if retired && let Some(w) = self.current_float {
+            self.focus_card_of(w);
         }
         let Some(win) = self.current_float else {
             return Ok(());
@@ -1042,6 +1052,7 @@ impl Daemon {
         if let (Some(p), Some(ops)) = (card, &self.thurm_ops)
             && !p.focused
             && let Some(t) = p.thurm
+            && !matches!(self.own_focus, Some((o, at)) if o == t && at.elapsed() < OWN_FOCUS_GRACE)
         {
             self.own_focus = Some((t, Instant::now()));
             let _ = ops.send(ThurmOp::Focus(t));
@@ -1605,10 +1616,84 @@ mod tests {
                     focusable: true,
                     zindex: 50,
                     compindex: 0,
+                    born: 0,
                 })
                 .collect(),
             rect,
         }
+    }
+
+    /// A daemon with no Neovim or Thurm behind it; the Thurm requests it makes come out of
+    /// the receiver.
+    fn daemon() -> (Daemon, Receiver<ThurmOp>) {
+        let (a, _b) = UnixStream::pair().unwrap();
+        std::mem::forget(_b);
+        let (tx, _rx) = unbounded();
+        std::mem::forget(_rx);
+        let mut d = Daemon::new(tx, Nvim::new(a), "thurm-nvim".into(), "sock".into());
+        let (ops_tx, ops_rx) = unbounded();
+        d.thurm_ops = Some(ops_tx);
+        d.ready = true;
+        (d, ops_rx)
+    }
+
+    fn card_pane(id: u32, thurm: PaneId, g: FloatGroup, focused: bool) -> Pane {
+        let mut p = Pane::new(id, None);
+        p.thurm = Some(thurm);
+        p.focused = focused;
+        p.card = Some(Card {
+            placed: g.rect,
+            group: g,
+            anchor: 100,
+        });
+        p
+    }
+
+    #[test]
+    fn a_retired_card_hands_the_focus_to_the_one_keeping_its_group() {
+        use crate::grid::{FloatPos, Grid, Win, WinKind};
+        let (mut d, ops) = daemon();
+        // Two pickers' windows, born together, now touching: one group.
+        for (grid, win, col) in [(10u64, 2001i64, 0.0), (11, 2002, 4.0)] {
+            d.model.grids.insert(
+                grid,
+                Grid {
+                    cols: 4,
+                    rows: 2,
+                    cells: vec![Default::default(); 8],
+                },
+            );
+            d.model.wins.insert(
+                grid,
+                Win {
+                    win,
+                    kind: WinKind::Float(FloatPos {
+                        anchor: "NW".into(),
+                        anchor_grid: crate::grid::EDITOR,
+                        row: 0.0,
+                        col,
+                        focusable: true,
+                        zindex: 50,
+                        compindex: 0,
+                        screen: None,
+                    }),
+                },
+            );
+        }
+        // Each had a card; the second (showing Neovim's focus) had Thurm's focus too.
+        d.panes.push(card_pane(1, 501, group(&[2001]), false));
+        d.panes.push(card_pane(2, 502, group(&[2002]), true));
+        d.current_float = Some(2002);
+        d.reconcile_cards().unwrap();
+        assert_eq!(d.panes.iter().filter(|p| p.card.is_some()).count(), 1);
+        let focused: Vec<PaneId> = ops
+            .try_iter()
+            .filter_map(|op| match op {
+                ThurmOp::Focus(p) => Some(p),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(focused, vec![501]);
     }
 
     #[test]
