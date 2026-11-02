@@ -557,6 +557,9 @@ mod tests {
         assert!(contains(&out, b"\x1b[2J"));
         assert_eq!(cup_rows(&out), vec![1, 2, 3]);
         t.advance(&out);
+        // The emulator holds frames after a resize until the redraw settles.
+        let settled = t.sync_deadline().expect("resize redraw deadline");
+        std::thread::sleep(settled.saturating_duration_since(std::time::Instant::now()));
         assert_screen(&mut t, &b);
     }
 
