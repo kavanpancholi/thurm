@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.17.0 - 2026-11-02
+
+This release gives you floating panes that open at an exact place and size. It also adds `thurm-nvim`, which runs Neovim in Thurm panes, and fixes macOS sidebar and resize problems.
+
+### New features
+
+- `thurm new-float` and `thurm float` now accept `--frame` and `--cells`. You can open or move a floating pane at an exact place and size.
+- `thurm-nvim` runs Neovim with one Thurm pane for each of its windows. Buffers, registers, undo history and language servers are shared by all panes.
+- Pickers in `thurm-nvim`, such as Snacks, open as floating cards. Focus moves into the card, so you can filter the list with the keyboard.
+
+### Fixes
+
+- The macOS sidebar no longer shows a strip of a different color at the edge of a pane. Terminal text resizes smoothly when the sidebar opens or closes.
+- The New Tab button stays in the macOS toolbar when the sidebar is hidden. Before, it could move into the overflow menu.
+- Command palette shortcuts on macOS now use the system font. Each modifier symbol has more space after it, so the shortcuts are easier to read.
+
 ## v0.16.0 - 2026-10-29
 
 This release adds three sidebar settings to the macOS app. It also fixes agent icons behind PTY proxies, sidebar drawing for new tabs, and keyboard focus after a tab closes.
