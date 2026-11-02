@@ -483,3 +483,67 @@ fn ending_a_session_keeps_unsaved_changes_recoverable() {
     drop(process);
     assert_eq!(swaps("quit"), 0);
 }
+
+#[test]
+fn a_pickers_prompt_is_reported_before_it_is_drawn() {
+    let Some(mut live) = Live::start() else {
+        eprintln!("no nvim on PATH: skipped");
+        return;
+    };
+    setup(&mut live);
+    live.notes.clear();
+    // As Snacks opens a picker: its prompt in a float it doesn't enter, drawn, entered later.
+    live.lua(
+        "vim.schedule(function()
+           local buf = vim.api.nvim_create_buf(false, true)
+           vim.bo[buf].buftype = 'prompt'
+           local win = vim.api.nvim_open_win(buf, false, {relative = 'editor', row = 2, col = 4, width = 20, height = 1})
+           vim.cmd.redraw()
+           vim.defer_fn(function() vim.api.nvim_set_current_win(win) end, 50)
+         end)",
+        vec![],
+    )
+    .unwrap();
+    // The daemon makes the card when it hears of the prompt: the first redraw that shows it
+    // must find it heard of already, or the picker shows in its pane first.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let drawn = loop {
+        assert!(Instant::now() < deadline, "the prompt never showed");
+        let Ok(m) = live.rx.recv_timeout(Duration::from_millis(100)) else {
+            continue;
+        };
+        live.take(m);
+        if let Some(w) = live
+            .model
+            .wins
+            .values()
+            .find(|w| matches!(w.kind, WinKind::Float(_)))
+        {
+            break w.win;
+        }
+    };
+    assert_eq!(
+        live.note("thurm_picker").and_then(|p| nvim::handle(&p[0])),
+        Some(drawn),
+        "drawn before it was reported: {:?}",
+        live.notes
+    );
+    assert!(live.note("thurm_float").is_none());
+    // Then it takes the focus.
+    live.settle();
+    assert_eq!(
+        live.note("thurm_float").and_then(|p| nvim::handle(&p[0])),
+        Some(drawn)
+    );
+
+    // A float that isn't a prompt (a hover, a notification) is no picker.
+    live.notes.clear();
+    live.lua(
+        "local buf = vim.api.nvim_create_buf(false, true)
+         vim.api.nvim_open_win(buf, false, {relative = 'editor', row = 5, col = 4, width = 20, height = 1})",
+        vec![],
+    )
+    .unwrap();
+    live.settle();
+    assert!(live.note("thurm_picker").is_none());
+}

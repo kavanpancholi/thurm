@@ -44,6 +44,11 @@ const NVIM_EXIT_GRACE: Duration = Duration::from_secs(2);
 
 const OWN_FOCUS_GRACE: Duration = Duration::from_millis(600);
 
+/// How long a card may take to show: its pane is made unseen and shown once it has drawn the
+/// picker, which meanwhile shows nowhere. A card not shown by then is given up, and the picker
+/// goes back to its pane.
+const CARD_OPEN_GRACE: Duration = Duration::from_secs(1);
+
 enum Msg {
     Nvim(Message),
     NvimGone,
@@ -65,6 +70,8 @@ enum Msg {
     /// A pane's read ended in a lone ESC, this many reads in: if no read came since, it was
     /// the Escape key.
     EscapeTimer(u32, u64),
+    /// Card pane `id` was asked for [`CARD_OPEN_GRACE`] ago.
+    CardTimer(u32),
     Signal,
 }
 
@@ -78,13 +85,26 @@ enum ThurmOp {
         size: (u16, u16),
     },
     Focus(PaneId),
-    /// A floating card for a float group, counting from pane `anchor`.
+    /// The pane of a floating card, not shown yet, its terminal `size`.
     Card {
         id: u32,
         command: Vec<String>,
         anchor: PaneId,
+        size: (u16, u16),
+    },
+    /// A card that has drawn its picker shows, at `place`.
+    ShowCard {
+        id: u32,
+        pane: PaneId,
         place: FloatPlace,
     },
+    /// A card not shown yet takes its group's size, which grew while it started.
+    Resize {
+        pane: PaneId,
+        size: (u16, u16),
+    },
+    /// A card given up on.
+    Close(PaneId),
     /// A card follows its group.
     Place {
         pane: PaneId,
@@ -100,6 +120,11 @@ struct Card {
     placed: Rect,
     /// The pane it counts from: the one the editor was sized to when it opened.
     anchor: PaneId,
+    /// Shown in Thurm: only once it has drawn its group at its size, so it never opens empty
+    /// or drawn at another size.
+    shown: bool,
+    /// The size asked of Thurm for it before it shows.
+    sizing: Option<(u16, u16)>,
 }
 
 impl Card {
@@ -126,13 +151,22 @@ fn assign_groups(cards: &[Option<&FloatGroup>], groups: &[FloatGroup]) -> Vec<Op
 
 /// Where a card goes: its group's cells, counted from `anchor`'s first cell.
 fn card_place(anchor: PaneId, r: Rect) -> FloatPlace {
+    let (cols, rows) = card_size(r);
     FloatPlace::Cells {
         anchor,
         col: r.col,
         row: r.row,
-        cols: r.cols.clamp(2, u16::MAX as i32) as u16,
-        rows: r.rows.clamp(1, u16::MAX as i32) as u16,
+        cols,
+        rows,
     }
+}
+
+/// The terminal size of a card showing `r`.
+fn card_size(r: Rect) -> (u16, u16) {
+    (
+        r.cols.clamp(2, u16::MAX as i32) as u16,
+        r.rows.clamp(1, u16::MAX as i32) as u16,
+    )
 }
 
 /// One pane, showing one Neovim window.
@@ -252,6 +286,9 @@ pub struct Daemon {
     own_focus: Option<(PaneId, Instant)>,
     /// The float Neovim's focus is in (a picker's input), if any: its group gets a card.
     current_float: Option<i64>,
+    /// A picker's prompt, shown before the picker takes the focus (Snacks draws its windows
+    /// first): its group gets a card from its first draw, so it never shows in its pane.
+    picker: Option<i64>,
     /// Windows of groups no card could be made for (an older app): drawn in their pane.
     no_card: HashSet<i64>,
     /// The pane the editor is sized to: the last window pane current. It shows the message
@@ -490,10 +527,37 @@ fn start_thurm(tx: Sender<Msg>) -> Option<Sender<ThurmOp>> {
                     id,
                     command,
                     anchor,
-                    place,
+                    size,
                 } => {
-                    let pane = card(&client, command, anchor, place);
+                    let pane = card(&client, command, anchor, size);
                     let _ = tx.send(Msg::Created { id, pane });
+                }
+                ThurmOp::ShowCard { id, pane, place } => {
+                    let open = UiCommand::OpenFloatingAt {
+                        pane,
+                        target: place.anchor(),
+                        place,
+                        background: false,
+                    };
+                    if let Err(e) = client.request(Request::Ui(open)) {
+                        // An app too old for cards: the group stays drawn in its pane.
+                        log::warn!("showing card {pane}: {e}");
+                        let _ = client.request(Request::ClosePane { pane });
+                        let _ = tx.send(Msg::Created { id, pane: None });
+                    }
+                }
+                ThurmOp::Resize { pane, size } => {
+                    let size = PaneSize {
+                        cols: size.0,
+                        rows: size.1,
+                        ..PaneSize::default()
+                    };
+                    if let Err(e) = client.request(Request::Resize { pane, size }) {
+                        log::warn!("sizing card {pane}: {e}");
+                    }
+                }
+                ThurmOp::Close(pane) => {
+                    let _ = client.request(Request::ClosePane { pane });
                 }
                 ThurmOp::Place { pane, place } => {
                     let cmd = UiCommand::PlaceFloating { pane, place };
@@ -556,37 +620,30 @@ fn split(
     Some(pane)
 }
 
-/// A floating card at `place` running `command`; `None` when the app can't show one (older
-/// apps place no cards: the group then stays drawn in its pane).
+/// The pane of a floating card running `command`, shown nowhere yet: it shows once it has
+/// drawn its group ([`ThurmOp::ShowCard`]).
 fn card(
     client: &Arc<Client>,
     command: Vec<String>,
     anchor: PaneId,
-    place: FloatPlace,
+    size: (u16, u16),
 ) -> Option<PaneId> {
-    let pane = match client.request(Request::CreatePane(CreatePane {
+    match client.request(Request::CreatePane(CreatePane {
         command: Some(command),
+        size: PaneSize {
+            cols: size.0,
+            rows: size.1,
+            ..PaneSize::default()
+        },
         inherit_cwd_from: Some(anchor),
         ..Default::default()
     })) {
-        Ok(Response::PaneCreated { pane }) => pane,
+        Ok(Response::PaneCreated { pane }) => Some(pane),
         other => {
             log::warn!("creating a card: {other:?}");
-            return None;
+            None
         }
-    };
-    let open = UiCommand::OpenFloatingAt {
-        pane,
-        target: Some(anchor),
-        place,
-        background: false,
-    };
-    if let Err(e) = client.request(Request::Ui(open)) {
-        log::warn!("showing card {pane}: {e}");
-        let _ = client.request(Request::ClosePane { pane });
-        return None;
     }
-    Some(pane)
 }
 
 impl Daemon {
@@ -611,6 +668,7 @@ impl Daemon {
             focus_gen: 0,
             own_focus: None,
             current_float: None,
+            picker: None,
             no_card: HashSet::new(),
             editor_pane: 0,
             thurm_ops: None,
@@ -697,6 +755,7 @@ impl Daemon {
                     self.attach_tty(id, stream, tty);
                     self.size_windows()?;
                     self.draw_all();
+                    self.show_card(id);
                 } else {
                     log::warn!("a helper nobody asked for: {id}");
                 }
@@ -713,6 +772,7 @@ impl Daemon {
                 self.size_windows()?;
                 self.size_editor()?;
                 self.draw_all();
+                self.show_card(id);
             }
             Msg::HelperGone(id) => return self.pane_gone(id),
             Msg::Input(id, bytes) => self.on_input(id, &bytes)?,
@@ -720,9 +780,17 @@ impl Daemon {
                 Some(t) => {
                     let current = self.current;
                     let Some(p) = self.pane_mut(id) else {
+                        // A card given up on meanwhile.
+                        if let Some(ops) = &self.thurm_ops {
+                            let _ = ops.send(ThurmOp::Close(t));
+                        }
                         return Ok(true);
                     };
                     p.thurm = Some(t);
+                    if p.card.is_some() {
+                        self.show_card(id);
+                        return Ok(true);
+                    }
                     // Its window became current before Thurm made the pane (`:vsplit`).
                     if p.win == Some(current)
                         && !p.focused
@@ -736,7 +804,8 @@ impl Daemon {
                     // No pane for it: close the window rather than leave it unseen. A card
                     // that couldn't open leaves its group drawn in its pane, for good.
                     if let Some(i) = self.panes.iter().position(|p| p.id == id) {
-                        let p = self.panes.remove(i);
+                        let mut p = self.panes.remove(i);
+                        p.release();
                         if let Some(c) = &p.card {
                             self.no_card.extend(c.group.members.iter().map(|m| m.win));
                         }
@@ -755,6 +824,25 @@ impl Daemon {
                     let events = p.parser.flush_escape();
                     self.input_events(id, events)?;
                 }
+            }
+            Msg::CardTimer(id) => {
+                let Some(i) = self
+                    .panes
+                    .iter()
+                    .position(|p| p.id == id && p.card.as_ref().is_some_and(|c| !c.shown))
+                else {
+                    return Ok(true);
+                };
+                log::warn!("card {id} didn't come up: its floats go back to their pane");
+                let mut p = self.panes.remove(i);
+                p.release();
+                if let Some(c) = &p.card {
+                    self.no_card.extend(c.group.members.iter().map(|m| m.win));
+                }
+                if let (Some(t), Some(ops)) = (p.thurm, &self.thurm_ops) {
+                    let _ = ops.send(ThurmOp::Close(t));
+                }
+                self.draw_all();
             }
             Msg::FocusOutTimer(generation) => {
                 if generation == self.focus_gen
@@ -846,7 +934,11 @@ impl Daemon {
                 "thurm_win" => {
                     let win = params.first().and_then(nvim::handle).unwrap_or(0);
                     self.current_float = None;
+                    self.picker = None;
                     self.current_changed(win)?;
+                }
+                "thurm_picker" => {
+                    self.picker = params.first().and_then(nvim::handle);
                 }
                 "thurm_float" => {
                     let win = params.first().and_then(nvim::handle).unwrap_or(0);
@@ -971,7 +1063,8 @@ impl Daemon {
                 Some(i) => {
                     let g = &groups[i];
                     card.group = g.clone();
-                    if g.rect != card.placed
+                    if card.shown
+                        && g.rect != card.placed
                         && let Some(t) = p.thurm
                     {
                         card.placed = g.rect;
@@ -992,12 +1085,15 @@ impl Daemon {
                 let _ = ops.send(ThurmOp::Place { pane, place });
             }
         }
-        let Some(win) = self.current_float else {
+        let Some(group) = groups.into_iter().find(|g| {
+            [self.current_float, self.picker]
+                .into_iter()
+                .flatten()
+                .any(|w| g.has_win(w))
+        }) else {
             return Ok(());
         };
-        let Some(group) = groups.into_iter().find(|g| g.has_win(win)) else {
-            return Ok(());
-        };
+        self.picker = None;
         let shown = self
             .panes
             .iter()
@@ -1015,11 +1111,13 @@ impl Daemon {
         let id = self.next_id;
         self.next_id += 1;
         let mut pane = Pane::new(id, None);
-        let place = card_place(anchor, group.rect);
+        let size = card_size(group.rect);
         pane.card = Some(Card {
             placed: group.rect,
             group,
             anchor,
+            shown: false,
+            sizing: None,
         });
         let command = vec![
             self.exe.display().to_string(),
@@ -1031,18 +1129,53 @@ impl Daemon {
             id,
             command,
             anchor,
-            place,
+            size,
         });
         self.panes.push(pane);
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(CARD_OPEN_GRACE);
+            let _ = tx.send(Msg::CardTimer(id));
+        });
         Ok(())
+    }
+
+    /// Shows card pane `id` once Thurm has made it and it has drawn its group at the group's
+    /// size (asking for that size first if the group grew), where the group is now.
+    fn show_card(&mut self, id: u32) {
+        let Some(p) = self.panes.iter_mut().find(|p| p.id == id) else {
+            return;
+        };
+        let (Some(card), Some(pane), true, Some(ops)) =
+            (&mut p.card, p.thurm, p.tty.is_some(), &self.thurm_ops)
+        else {
+            return;
+        };
+        if card.shown {
+            return;
+        }
+        let size = card_size(card.group.rect);
+        if (p.cols, p.rows) != size {
+            if card.sizing != Some(size) {
+                card.sizing = Some(size);
+                let _ = ops.send(ThurmOp::Resize { pane, size });
+            }
+            return;
+        }
+        card.shown = true;
+        card.placed = card.group.rect;
+        let place = card_place(card.anchor, card.group.rect);
+        self.own_focus = Some((pane, Instant::now()));
+        let _ = ops.send(ThurmOp::ShowCard { id, pane, place });
     }
 
     /// Neovim's focus went into float `win`: into the card showing it, if there is one.
     fn focus_card_of(&mut self, win: i64) {
-        let card = self
-            .panes
-            .iter()
-            .find(|p| p.card.as_ref().is_some_and(|c| c.group.has_win(win)));
+        let card = self.panes.iter().find(|p| {
+            p.card
+                .as_ref()
+                .is_some_and(|c| c.shown && c.group.has_win(win))
+        });
         if let (Some(p), Some(ops)) = (card, &self.thurm_ops)
             && !p.focused
             && let Some(t) = p.thurm
@@ -1053,12 +1186,12 @@ impl Daemon {
         }
     }
 
-    /// The floats shown in cards, which their panes leave out: only once a card draws them
-    /// (its terminal attached), so a picker never goes missing while its card opens or fails.
+    /// The floats shown in cards, which their panes leave out: from the moment a card is asked
+    /// for, so a picker doesn't show in its pane first. A card that fails or doesn't come up
+    /// within [`CARD_OPEN_GRACE`] is dropped, and its pane draws them again.
     fn carded_grids(&self) -> Vec<u64> {
         self.panes
             .iter()
-            .filter(|p| p.tty.is_some())
             .filter_map(|p| p.card.as_ref())
             .flat_map(|c| c.group.grids())
             .collect()
