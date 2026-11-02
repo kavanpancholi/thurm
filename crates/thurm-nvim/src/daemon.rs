@@ -92,11 +92,13 @@ enum ThurmOp {
         anchor: PaneId,
         size: (u16, u16),
     },
-    /// A card that has drawn its picker shows, at `place`.
+    /// A card that has drawn its picker shows, at `place`; in the `background` while Neovim's
+    /// focus is elsewhere (its prompt not entered yet), so showing it doesn't enter it.
     ShowCard {
         id: u32,
         pane: PaneId,
         place: FloatPlace,
+        background: bool,
     },
     /// A card not shown yet takes its group's size, which grew while it started.
     Resize {
@@ -131,6 +133,12 @@ impl Card {
     fn shows(&self, g: &FloatGroup) -> bool {
         self.group.members.iter().any(|m| g.has_win(m.win))
     }
+
+    /// Neovim's focus is in its group (`current_float`): it shows with the focus; otherwise
+    /// (a picker not entered yet) in the background, and takes the focus when Neovim's goes in.
+    fn entered(&self, current_float: Option<i64>) -> bool {
+        current_float.is_some_and(|w| self.group.has_win(w))
+    }
 }
 
 /// Which of `groups` each card (`cards`, the groups they showed; `None`: not a card) shows now:
@@ -147,6 +155,20 @@ fn assign_groups(cards: &[Option<&FloatGroup>], groups: &[FloatGroup]) -> Vec<Op
             (!std::mem::replace(&mut taken[i], true)).then_some(i)
         })
         .collect()
+}
+
+/// Which of `groups` gets a card, if any, and whether it is `picker`'s: a picker just reported
+/// (its prompt drawn, not entered yet) comes before the float Neovim's focus is in, which may
+/// be another picker's, carded already.
+fn card_group(
+    groups: &[FloatGroup],
+    picker: Option<i64>,
+    current_float: Option<i64>,
+) -> Option<(usize, bool)> {
+    let of = |w: Option<i64>| groups.iter().position(|g| w.is_some_and(|w| g.has_win(w)));
+    of(picker)
+        .map(|i| (i, true))
+        .or_else(|| of(current_float).map(|i| (i, false)))
 }
 
 /// Where a card goes: its group's cells, counted from `anchor`'s first cell.
@@ -532,12 +554,17 @@ fn start_thurm(tx: Sender<Msg>) -> Option<Sender<ThurmOp>> {
                     let pane = card(&client, command, anchor, size);
                     let _ = tx.send(Msg::Created { id, pane });
                 }
-                ThurmOp::ShowCard { id, pane, place } => {
+                ThurmOp::ShowCard {
+                    id,
+                    pane,
+                    place,
+                    background,
+                } => {
                     let open = UiCommand::OpenFloatingAt {
                         pane,
                         target: place.anchor(),
                         place,
-                        background: false,
+                        background,
                     };
                     if let Err(e) = client.request(Request::Ui(open)) {
                         // An app too old for cards: the group stays drawn in its pane.
@@ -1085,15 +1112,13 @@ impl Daemon {
                 let _ = ops.send(ThurmOp::Place { pane, place });
             }
         }
-        let Some(group) = groups.into_iter().find(|g| {
-            [self.current_float, self.picker]
-                .into_iter()
-                .flatten()
-                .any(|w| g.has_win(w))
-        }) else {
+        let Some((i, of_picker)) = card_group(&groups, self.picker, self.current_float) else {
             return Ok(());
         };
-        self.picker = None;
+        if of_picker {
+            self.picker = None;
+        }
+        let group = groups.into_iter().nth(i).expect("a group card_group found");
         let shown = self
             .panes
             .iter()
@@ -1165,8 +1190,18 @@ impl Daemon {
         card.shown = true;
         card.placed = card.group.rect;
         let place = card_place(card.anchor, card.group.rect);
-        self.own_focus = Some((pane, Instant::now()));
-        let _ = ops.send(ThurmOp::ShowCard { id, pane, place });
+        // Not entered yet (a picker reported before it takes the focus): shown without the
+        // focus, which `focus_card_of` hands it when Neovim's focus goes in.
+        let background = !card.entered(self.current_float);
+        if !background {
+            self.own_focus = Some((pane, Instant::now()));
+        }
+        let _ = ops.send(ThurmOp::ShowCard {
+            id,
+            pane,
+            place,
+            background,
+        });
     }
 
     /// Neovim's focus went into float `win`: into the card showing it, if there is one.
@@ -1750,6 +1785,33 @@ mod tests {
                 .collect(),
             rect,
         }
+    }
+
+    #[test]
+    fn an_unentered_pickers_card_shows_in_the_background() {
+        let card = Card {
+            group: group(&[1, 2]),
+            placed: group(&[1, 2]).rect,
+            anchor: 1,
+            shown: false,
+            sizing: None,
+        };
+        // Reported before Neovim enters it: showing it mustn't take the focus.
+        assert!(!card.entered(None));
+        assert!(!card.entered(Some(7)));
+        // Neovim's focus is in it already.
+        assert!(card.entered(Some(2)));
+    }
+
+    #[test]
+    fn a_new_picker_gets_its_card_before_the_focused_one() {
+        let groups = [group(&[1]), group(&[2])];
+        // A second picker reported while Neovim's focus is still in the first.
+        assert_eq!(card_group(&groups, Some(2), Some(1)), Some((1, true)));
+        // Not drawn yet: the focused float's group, and the report waits.
+        assert_eq!(card_group(&groups, Some(9), Some(1)), Some((0, false)));
+        assert_eq!(card_group(&groups, None, Some(2)), Some((1, false)));
+        assert_eq!(card_group(&groups, None, None), None);
     }
 
     #[test]
