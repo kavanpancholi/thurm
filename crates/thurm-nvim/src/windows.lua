@@ -203,6 +203,20 @@ local function schedule_report()
 end
 api.nvim_create_autocmd('WinEnter', { group = group, callback = schedule_report })
 
+-- A picker's prompt in a float, before the picker takes the focus (Snacks draws all its
+-- windows first): the daemon gives it a card from the start, so it never shows in its pane.
+api.nvim_create_autocmd('BufWinEnter', {
+  group = group,
+  callback = function(a)
+    local win = api.nvim_get_current_win()
+    if api.nvim_win_get_buf(win) ~= a.buf or vim.bo[a.buf].buftype ~= 'prompt' then return end
+    local config = api.nvim_win_get_config(win)
+    if config.relative ~= '' and config.focusable ~= false then
+      vim.rpcnotify(chan, 'thurm_picker', win)
+    end
+  end,
+})
+
 -- :q in the last window quits Neovim: make it the tab's only ordinary window first. If Neovim
 -- then refuses (unsaved changes), the daemon adopts it again.
 api.nvim_create_autocmd('QuitPre', {
