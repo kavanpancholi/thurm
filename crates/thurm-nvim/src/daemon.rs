@@ -957,8 +957,8 @@ impl Daemon {
         let groups = self.model.float_groups();
         let mut gone = Vec::new();
         let mut places = Vec::new();
-        // Each group to one card: when groups merge, the first card keeps it and the others
-        // go (without closing any window).
+        // Each group to one card (should two cards ever show one group, the first keeps it and
+        // the other goes, without closing any window).
         let shown: Vec<Option<&FloatGroup>> = self
             .panes
             .iter()
@@ -981,7 +981,6 @@ impl Daemon {
                 None => gone.push(p.id),
             }
         }
-        let retired = !gone.is_empty();
         for id in gone {
             if let Some(i) = self.panes.iter().position(|p| p.id == id) {
                 let mut p = self.panes.remove(i);
@@ -992,11 +991,6 @@ impl Daemon {
             for (pane, place) in places {
                 let _ = ops.send(ThurmOp::Place { pane, place });
             }
-        }
-        // A card that went may have had the focus while its group lives on in another (two
-        // merged): the focus goes to the card now showing Neovim's.
-        if retired && let Some(w) = self.current_float {
-            self.focus_card_of(w);
         }
         let Some(win) = self.current_float else {
             return Ok(());
@@ -1619,90 +1613,16 @@ mod tests {
                     focusable: true,
                     zindex: 50,
                     compindex: 0,
-                    born: std::time::Instant::now(),
                 })
                 .collect(),
             rect,
         }
     }
 
-    /// A daemon with no Neovim or Thurm behind it; the Thurm requests it makes come out of
-    /// the receiver.
-    fn daemon() -> (Daemon, Receiver<ThurmOp>) {
-        let (a, _b) = UnixStream::pair().unwrap();
-        std::mem::forget(_b);
-        let (tx, _rx) = unbounded();
-        std::mem::forget(_rx);
-        let mut d = Daemon::new(tx, Nvim::new(a), "thurm-nvim".into(), "sock".into());
-        let (ops_tx, ops_rx) = unbounded();
-        d.thurm_ops = Some(ops_tx);
-        d.ready = true;
-        (d, ops_rx)
-    }
-
-    fn card_pane(id: u32, thurm: PaneId, g: FloatGroup, focused: bool) -> Pane {
-        let mut p = Pane::new(id, None);
-        p.thurm = Some(thurm);
-        p.focused = focused;
-        p.card = Some(Card {
-            placed: g.rect,
-            group: g,
-            anchor: 100,
-        });
-        p
-    }
-
-    #[test]
-    fn a_retired_card_hands_the_focus_to_the_one_keeping_its_group() {
-        use crate::grid::{FloatPos, Grid, Win, WinKind};
-        let (mut d, ops) = daemon();
-        // Two pickers' windows, born together, now touching: one group.
-        for (grid, win, col) in [(10u64, 2001i64, 0.0), (11, 2002, 4.0)] {
-            d.model.grids.insert(
-                grid,
-                Grid {
-                    cols: 4,
-                    rows: 2,
-                    cells: vec![Default::default(); 8],
-                },
-            );
-            d.model.wins.insert(
-                grid,
-                Win {
-                    win,
-                    kind: WinKind::Float(FloatPos {
-                        anchor: "NW".into(),
-                        anchor_grid: crate::grid::EDITOR,
-                        row: 0.0,
-                        col,
-                        focusable: true,
-                        zindex: 50,
-                        compindex: 0,
-                        screen: None,
-                    }),
-                },
-            );
-        }
-        // Each had a card; the second (showing Neovim's focus) had Thurm's focus too.
-        d.panes.push(card_pane(1, 501, group(&[2001]), false));
-        d.panes.push(card_pane(2, 502, group(&[2002]), true));
-        d.current_float = Some(2002);
-        d.reconcile_cards().unwrap();
-        assert_eq!(d.panes.iter().filter(|p| p.card.is_some()).count(), 1);
-        let focused: Vec<PaneId> = ops
-            .try_iter()
-            .filter_map(|op| match op {
-                ThurmOp::Focus(p) => Some(p),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(focused, vec![501]);
-    }
-
     #[test]
     fn a_merged_group_goes_to_one_card() {
         let (a, b) = (group(&[1]), group(&[2]));
-        // The two groups touched and Neovim's floats now make one: the first card keeps it.
+        // Two cards showing one group: the first keeps it.
         let merged = [group(&[1, 2])];
         assert_eq!(
             assign_groups(&[Some(&a), None, Some(&b)], &merged),

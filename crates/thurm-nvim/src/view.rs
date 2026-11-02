@@ -477,21 +477,22 @@ mod tests {
         );
         m.grids.insert(4, grid(&["pick"]));
         m.grids.insert(5, grid(&["list"]));
-        let float = |win, row: f64, z| Win {
+        // The list hangs from the input's box, as a picker's windows do.
+        let float = |win, anchor_grid, row: f64, col, z| Win {
             win,
             kind: WinKind::Float(FloatPos {
                 anchor: "NW".into(),
-                anchor_grid: 1,
+                anchor_grid,
                 row,
-                col: 3.0,
+                col,
                 focusable: true,
                 zindex: z,
                 compindex: 0,
                 screen: None,
             }),
         };
-        m.wins.insert(4, float(1001, 1.0, 50));
-        m.wins.insert(5, float(1002, 2.0, 50));
+        m.wins.insert(4, float(1001, 1, 1.0, 3.0, 50));
+        m.wins.insert(5, float(1002, 4, 1.0, 0.0, 50));
         m.cursor_grid = 4;
         m.cursor = (0, 4);
         let groups = m.float_groups();
@@ -533,7 +534,6 @@ mod tests {
             focusable: true,
             zindex: 50,
             compindex,
-            born: std::time::Instant::now(),
         };
         let group = FloatGroup {
             tops: vec![7, 8],

@@ -2,7 +2,6 @@
 //! grid per window, the message grid, and where each window and float sits.
 
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
 
 use rmpv::Value;
 
@@ -139,14 +138,7 @@ pub struct Model {
     /// The message grid, and its row on the editor grid.
     pub msg_grid: Option<u64>,
     pub msg_row: i64,
-    /// When each float window first showed up: a picker's windows come together (or within
-    /// moments, a preview made once the list has an entry), a notification that comes to touch
-    /// one, on its own.
-    pub born: HashMap<i64, Instant>,
 }
-
-/// How close in time windows must have shown up to be parts of one picker.
-pub const BORN_TOGETHER: Duration = Duration::from_secs(1);
 
 impl Model {
     /// Applies a `redraw` notification's batches; true when it ended with `flush`.
@@ -193,9 +185,7 @@ impl Model {
             }
             "grid_destroy" => {
                 self.grids.remove(&u(0));
-                if let Some(w) = self.wins.remove(&u(0)) {
-                    self.born.remove(&w.win);
-                }
+                self.wins.remove(&u(0));
             }
             "win_pos" => self.set_win(u(0), a.get(1), WinKind::Ordinary),
             "win_external_pos" => self.set_win(u(0), a.get(1), WinKind::External),
@@ -221,9 +211,7 @@ impl Model {
                 }
             }
             "win_close" => {
-                if let Some(w) = self.wins.remove(&u(0)) {
-                    self.born.remove(&w.win);
-                }
+                self.wins.remove(&u(0));
             }
             "msg_set_pos" => {
                 self.msg_grid = Some(u(0));
@@ -262,9 +250,6 @@ impl Model {
 
     fn set_win(&mut self, grid: u64, win: Option<&Value>, kind: WinKind) {
         let win = win.and_then(handle).unwrap_or(0);
-        if matches!(kind, WinKind::Float(_)) {
-            self.born.entry(win).or_insert_with(Instant::now);
-        }
         self.wins.insert(grid, Win { win, kind });
     }
 
@@ -412,9 +397,10 @@ impl Model {
         None
     }
 
-    /// The floats over the editor in groups: by the editor float each hangs from, and groups
-    /// that overlap or touch merged (a picker made of separate editor floats is one). Only
-    /// real windows: Neovim's own popup menu (no window) stays out.
+    /// The floats over the editor in groups, by the editor float each hangs from: a picker
+    /// built as one box (Snacks: its input, list and preview hang from its root) is one group,
+    /// and a popup opened on its own never joins it. Only real windows: Neovim's own popup
+    /// menu (no window) stays out.
     pub fn float_groups(&self) -> Vec<FloatGroup> {
         let mut groups: Vec<FloatGroup> = Vec::new();
         let mut floats: Vec<(&u64, &Win)> = self.wins.iter().collect();
@@ -453,7 +439,6 @@ impl Model {
                 focusable: pos.focusable,
                 zindex: pos.zindex,
                 compindex: pos.compindex,
-                born: self.born.get(&w.win).copied().unwrap_or_else(Instant::now),
             };
             match groups.iter_mut().find(|x| x.tops.contains(&top)) {
                 Some(x) => x.add(member),
@@ -465,27 +450,6 @@ impl Model {
                     }
                     .with(member),
                 ),
-            }
-        }
-        // Merge groups whose rectangles overlap or touch, until none do.
-        let mut merged = true;
-        while merged {
-            merged = false;
-            'outer: for i in 0..groups.len() {
-                for j in i + 1..groups.len() {
-                    // Only parts of one picker merge: windows that showed up together (a
-                    // picker makes its windows at once, or its preview a moment later). A
-                    // notification that comes to touch one later stays apart.
-                    if groups[i].rect.touches(&groups[j].rect) && groups[i].born_with(&groups[j]) {
-                        let other = groups.remove(j);
-                        groups[i].tops.extend(other.tops);
-                        for m in other.members {
-                            groups[i].add(m);
-                        }
-                        merged = true;
-                        break 'outer;
-                    }
-                }
             }
         }
         groups
@@ -515,14 +479,6 @@ impl Rect {
             cols: c1 - c0,
         }
     }
-
-    /// Overlapping, or within a cell of each other.
-    pub fn touches(&self, o: &Rect) -> bool {
-        self.row <= o.row + o.rows
-            && o.row <= self.row + self.rows
-            && self.col <= o.col + o.cols
-            && o.col <= self.col + self.cols
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -534,8 +490,6 @@ pub struct Member {
     pub focusable: bool,
     pub zindex: i64,
     pub compindex: i64,
-    /// When it showed up (see [`Model::born`]).
-    pub born: Instant,
 }
 
 impl Member {
@@ -568,16 +522,6 @@ impl FloatGroup {
             self.rect.union(&m.rect)
         };
         self.members.push(m);
-    }
-
-    /// Some members of the two showed up within [`BORN_TOGETHER`] of each other.
-    pub fn born_with(&self, other: &FloatGroup) -> bool {
-        self.members.iter().any(|a| {
-            other
-                .members
-                .iter()
-                .any(|b| a.born.max(b.born).duration_since(a.born.min(b.born)) <= BORN_TOGETHER)
-        })
     }
 
     pub fn has_win(&self, win: i64) -> bool {
@@ -914,40 +858,39 @@ mod tests {
             float(12, 2003, 10, 2.0, 1.0, true, 51),
             Value::Array(vec!["flush".into(), Value::Array(vec![])]),
         ]);
-        // A redraw later (a preview made once the list has an entry): still part of it.
+        // A redraw later (a preview made once the list has an entry), hanging from the box:
+        // part of it.
         m.apply_redraw(&[
-            // Separate editor floats that touch it (a preview on its right): the same group.
             ev("grid_resize", vec![13.into(), 20.into(), 12.into()]),
-            float(13, 2004, 1, 4.0, 50.0, false, 50),
-            Value::Array(vec!["flush".into(), Value::Array(vec![])]),
-        ]);
-        // Later, on their own: popups that are not part of it.
-        m.apply_redraw(&[
-            // A notification far away, and a float on a window: not in it.
-            ev("grid_resize", vec![14.into(), 10.into(), 2.into()]),
-            float(14, 2005, 1, 0.0, 70.0, false, 60),
-            // A notification touching the picker stays on its own, even at the picker's level.
+            float(13, 2004, 10, 0.0, 40.0, false, 50),
+            // In the same redraw, popups opened on their own: a notification touching the
+            // picker, at its level, and one far away; a float on a window.
             ev("grid_resize", vec![17.into(), 10.into(), 3.into()]),
             float(17, 2008, 1, 16.0, 20.0, false, 50),
+            ev("grid_resize", vec![14.into(), 10.into(), 2.into()]),
+            float(14, 2005, 1, 0.0, 70.0, false, 60),
             ev("grid_resize", vec![15.into(), 10.into(), 2.into()]),
             float(15, 2006, 2, 3.0, 3.0, true, 40),
+            // Separate editor floats touching it (as Telescope's are): groups of their own.
+            ev("grid_resize", vec![18.into(), 10.into(), 2.into()]),
+            float(18, 2009, 1, 2.0, 10.0, true, 50),
             // A backdrop over the whole editor joins nothing.
             ev("grid_resize", vec![1.into(), 80.into(), 24.into()]),
             ev("grid_resize", vec![16.into(), 80.into(), 24.into()]),
             float(16, 2007, 1, 0.0, 0.0, false, 45),
+            Value::Array(vec!["flush".into(), Value::Array(vec![])]),
         ]);
-        // The notifications came seconds after the picker.
-        for win in [2005, 2008] {
-            let at = m.born[&win] + Duration::from_secs(2);
-            m.born.insert(win, at);
-        }
         let groups = m.float_groups();
-        assert_eq!(groups.len(), 3);
-        assert!(
-            groups
-                .iter()
-                .any(|g| g.has_win(2008) && g.members.len() == 1)
-        );
+        // The picker, the two notifications, the separate float.
+        assert_eq!(groups.len(), 4);
+        for alone in [2008, 2005, 2009] {
+            assert!(
+                groups
+                    .iter()
+                    .any(|g| g.has_win(alone) && g.members.len() == 1),
+                "{alone}"
+            );
+        }
         let picker = groups.iter().find(|g| g.has_win(2002)).unwrap();
         assert!(picker.has_win(2001) && picker.has_win(2003) && picker.has_win(2004));
         assert_eq!(
