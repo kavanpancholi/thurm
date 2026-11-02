@@ -2,7 +2,7 @@
 //! pane of Neovim's current window, the message grid (command line, messages) at the bottom.
 
 use crate::cell::{Cursor, CursorShape, Frame, FrameCell, Style, Text};
-use crate::grid::{EDITOR, Grid, Model};
+use crate::grid::{EDITOR, FloatGroup, Grid, Model};
 
 /// One pane to compose.
 pub struct PaneView<'a> {
@@ -16,6 +16,8 @@ pub struct PaneView<'a> {
     pub current: bool,
     /// Its window's statusline cells, drawn on the row above the message line.
     pub status: Option<&'a [FrameCell]>,
+    /// Floats shown in a card of their own (a picker), not here.
+    pub skip: &'a [u64],
 }
 
 impl PaneView<'_> {
@@ -103,6 +105,9 @@ pub fn compose(model: &Model, p: &PaneView) -> Frame {
         let Some(g) = model.grids.get(&fg) else {
             continue;
         };
+        if p.skip.contains(&fg) {
+            continue;
+        }
         blit(&mut frame, g, at.row, at.col, p.rows, &resolve, Some(()));
         if model.cursor_grid == fg {
             cursor = cursor_at(
@@ -113,6 +118,52 @@ pub fn compose(model: &Model, p: &PaneView) -> Frame {
         }
     }
 
+    mend_wide(&mut frame);
+    if !model.busy {
+        let mode = model.mode_info();
+        frame.cursor = cursor.map(|(row, col)| Cursor {
+            row,
+            col,
+            shape: if model.cursor_style_enabled {
+                mode.shape
+            } else {
+                CursorShape::Block
+            },
+            blink: model.cursor_style_enabled && mode.blink,
+        });
+    }
+    frame
+}
+
+/// A card showing float group `group` (a picker) on its own: its floats, bottom to top, from
+/// the group's top left corner, over the default background.
+pub fn compose_card(model: &Model, cols: u16, rows: u16, group: &FloatGroup) -> Frame {
+    let mut frame = Frame::blank(cols, rows);
+    let resolve = |hl| model.styles.resolve(hl);
+    let blank = FrameCell {
+        text: Text::SPACE,
+        width: 1,
+        style: resolve(0),
+    };
+    for line in &mut frame.lines {
+        line.fill(blank);
+    }
+    let mut members = group.members.clone();
+    members.sort_by_key(|m| m.order());
+    let mut cursor = None;
+    for m in members {
+        let Some(g) = model.grids.get(&m.grid) else {
+            continue;
+        };
+        let (row, col) = (m.rect.row - group.rect.row, m.rect.col - group.rect.col);
+        blit(&mut frame, g, row, col, rows, &resolve, Some(()));
+        if model.cursor_grid == m.grid {
+            let (r, c) = (row + model.cursor.0 as i32, col + model.cursor.1 as i32);
+            if r >= 0 && c >= 0 && r < rows as i32 && c < cols as i32 {
+                cursor = Some((r as u16, c as u16));
+            }
+        }
+    }
     mend_wide(&mut frame);
     if !model.busy {
         let mode = model.mode_info();
@@ -279,6 +330,7 @@ mod tests {
             grid: Some(2),
             current: true,
             status: Some(&status),
+            skip: &[],
         };
         assert_eq!(view.text_rows(), 4);
         let f = compose(&m, &view);
@@ -344,6 +396,7 @@ mod tests {
                 grid: Some(2),
                 current: false,
                 status: None,
+                skip: &[],
             },
         );
         assert_eq!(rows(&f)[1], "se[x]d line");
@@ -362,6 +415,7 @@ mod tests {
                 grid: Some(2),
                 current: false,
                 status: None,
+                skip: &[],
             },
         );
         assert_eq!(rows(&f)[1], "se[o]d line");
@@ -408,8 +462,85 @@ mod tests {
                 grid: Some(2),
                 current: false,
                 status: None,
+                skip: &[],
             },
         );
         assert_eq!(rows(&f)[0], "ab X");
+    }
+
+    #[test]
+    fn a_card_shows_its_group_and_its_pane_leaves_it_out() {
+        let mut m = model();
+        m.grids.insert(
+            1,
+            grid(&["           ", "           ", "           ", "           "]),
+        );
+        m.grids.insert(4, grid(&["pick"]));
+        m.grids.insert(5, grid(&["list"]));
+        // The list hangs from the input's box, as a picker's windows do.
+        let float = |win, anchor_grid, row: f64, col, z| Win {
+            win,
+            kind: WinKind::Float(FloatPos {
+                anchor: "NW".into(),
+                anchor_grid,
+                row,
+                col,
+                focusable: true,
+                zindex: z,
+                compindex: 0,
+                screen: None,
+            }),
+        };
+        m.wins.insert(4, float(1001, 1, 1.0, 3.0, 50));
+        m.wins.insert(5, float(1002, 4, 1.0, 0.0, 50));
+        m.cursor_grid = 4;
+        m.cursor = (0, 4);
+        let groups = m.float_groups();
+        assert_eq!(groups.len(), 1);
+        let card = compose_card(&m, 6, 2, &groups[0]);
+        assert_eq!(rows(&card), ["pick  ", "list  "]);
+        assert_eq!(card.cursor.map(|c| (c.row, c.col)), Some((0, 4)));
+
+        // Its pane draws the window without the picker, which is in the card.
+        let view = PaneView {
+            cols: 11,
+            rows: 5,
+            grid: Some(2),
+            current: true,
+            status: None,
+            skip: &[4, 5],
+        };
+        assert_eq!(rows(&compose(&m, &view))[1], "second line");
+        let inline = PaneView { skip: &[], ..view };
+        assert_eq!(rows(&compose(&m, &inline))[1], "secpickline");
+    }
+
+    #[test]
+    fn a_card_paints_its_floats_in_neovims_order() {
+        let mut m = Model::default();
+        m.grids.insert(7, grid(&["top"]));
+        m.grids.insert(8, grid(&["low"]));
+        let rect = crate::grid::Rect {
+            row: 0,
+            col: 0,
+            rows: 1,
+            cols: 3,
+        };
+        // Same zindex: compindex orders them, against the grid ids (7 is painted last).
+        let member = |grid, compindex| crate::grid::Member {
+            grid,
+            win: grid as i64,
+            rect,
+            focusable: true,
+            zindex: 50,
+            compindex,
+        };
+        let group = FloatGroup {
+            tops: vec![7, 8],
+            members: vec![member(7, 2), member(8, 1)],
+            rect,
+        };
+        let card = compose_card(&m, 3, 1, &group);
+        assert_eq!(rows(&card), ["top"]);
     }
 }

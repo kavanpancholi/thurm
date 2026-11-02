@@ -15,15 +15,17 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use rmpv::Value;
 use thurm_client::{Client, ConnectOptions};
-use thurm_proto::{CreatePane, PaneId, PaneSize, Request, Response, SplitDir, UiCommand};
+use thurm_proto::{
+    CreatePane, FloatPlace, PaneId, PaneSize, Request, Response, SplitDir, UiCommand,
+};
 
 use crate::cell::{FrameCell, Text};
-use crate::grid::{Model, WinKind, style_from_get_hl};
+use crate::grid::{FloatGroup, Model, Rect, WinKind, style_from_get_hl};
 use crate::input::{InputEvent, InputParser};
 use crate::launch::{self, helper_socket, log_path, nvim_socket};
 use crate::nvim::{self, Message, Nvim};
 use crate::render::{PaneRenderer, enter_modes, leave_modes};
-use crate::view::{PaneView, compose};
+use crate::view::{PaneView, compose, compose_card};
 use crate::{fdpass, helper, tty};
 
 const WINDOWS_LUA: &str = include_str!("windows.lua");
@@ -76,6 +78,61 @@ enum ThurmOp {
         size: (u16, u16),
     },
     Focus(PaneId),
+    /// A floating card for a float group, counting from pane `anchor`.
+    Card {
+        id: u32,
+        command: Vec<String>,
+        anchor: PaneId,
+        place: FloatPlace,
+    },
+    /// A card follows its group.
+    Place {
+        pane: PaneId,
+        place: FloatPlace,
+    },
+}
+
+/// A pane that is a floating card showing a float group (a picker), not a window.
+struct Card {
+    /// Its group as last seen; the group it shows is the one sharing a window with it.
+    group: FloatGroup,
+    /// Where it was last placed, on the editor.
+    placed: Rect,
+    /// The pane it counts from: the one the editor was sized to when it opened.
+    anchor: PaneId,
+}
+
+impl Card {
+    fn shows(&self, g: &FloatGroup) -> bool {
+        self.group.members.iter().any(|m| g.has_win(m.win))
+    }
+}
+
+/// Which of `groups` each card (`cards`, the groups they showed; `None`: not a card) shows now:
+/// the group sharing a window with it, each group to the first card only.
+fn assign_groups(cards: &[Option<&FloatGroup>], groups: &[FloatGroup]) -> Vec<Option<usize>> {
+    let mut taken = vec![false; groups.len()];
+    cards
+        .iter()
+        .map(|card| {
+            let card = (*card)?;
+            let i = groups
+                .iter()
+                .position(|g| card.members.iter().any(|m| g.has_win(m.win)))?;
+            (!std::mem::replace(&mut taken[i], true)).then_some(i)
+        })
+        .collect()
+}
+
+/// Where a card goes: its group's cells, counted from `anchor`'s first cell.
+fn card_place(anchor: PaneId, r: Rect) -> FloatPlace {
+    FloatPlace::Cells {
+        anchor,
+        col: r.col,
+        row: r.row,
+        cols: r.cols.clamp(2, u16::MAX as i32) as u16,
+        rows: r.rows.clamp(1, u16::MAX as i32) as u16,
+    }
 }
 
 /// One pane, showing one Neovim window.
@@ -102,6 +159,8 @@ struct Pane {
     pasting: bool,
     /// Reads from its terminal so far, to tell whether one came after a lone ESC.
     reads: u64,
+    /// A floating card rather than a window's pane.
+    card: Option<Card>,
 }
 
 struct Tty {
@@ -127,6 +186,7 @@ impl Pane {
             asked_size: None,
             pasting: false,
             reads: 0,
+            card: None,
         }
     }
 
@@ -137,6 +197,7 @@ impl Pane {
             grid: None,
             current,
             status: self.status.as_deref(),
+            skip: &[],
         }
     }
 
@@ -189,6 +250,13 @@ pub struct Daemon {
     focus_gen: u64,
     /// A Thurm focus change of ours, and when: until it lands, focus reports are stale.
     own_focus: Option<(PaneId, Instant)>,
+    /// The float Neovim's focus is in (a picker's input), if any: its group gets a card.
+    current_float: Option<i64>,
+    /// Windows of groups no card could be made for (an older app): drawn in their pane.
+    no_card: HashSet<i64>,
+    /// The pane the editor is sized to: the last window pane current. It shows the message
+    /// grid and the editor's floats, also while a card has the focus.
+    editor_pane: u32,
     thurm_ops: Option<Sender<ThurmOp>>,
     /// Neovim closed our connection: it is exiting on its own.
     nvim_exiting: bool,
@@ -295,30 +363,7 @@ fn serve(dir: &Path, nvim_args: &[String]) -> io::Result<()> {
         std::thread::spawn(move || read_nvim(reader, tx));
     }
 
-    let mut d = Daemon {
-        tx: tx.clone(),
-        nvim,
-        model: Model::default(),
-        panes: Vec::new(),
-        next_id: 1,
-        pending: HashMap::new(),
-        ready: false,
-        anchor: 0,
-        current: 0,
-        asked: HashSet::new(),
-        reopening: HashSet::new(),
-        splits: HashMap::new(),
-        statuslines_wanted: false,
-        statuslines_in_flight: false,
-        editor_size: (0, 0),
-        ui_focused: true,
-        focus_gen: 0,
-        own_focus: None,
-        thurm_ops: None,
-        nvim_exiting: false,
-        exe: std::env::current_exe()?,
-        socket,
-    };
+    let mut d = Daemon::new(tx.clone(), nvim, std::env::current_exe()?, socket);
     d.thurm_ops = start_thurm(tx.clone());
     let mut launcher = Pane::new(0, None);
     launcher.thurm = std::env::var(thurm_proto::ENV_PANE_ID)
@@ -441,6 +486,21 @@ fn start_thurm(tx: Sender<Msg>) -> Option<Sender<ThurmOp>> {
                         log::warn!("focus {pane}: {e}");
                     }
                 }
+                ThurmOp::Card {
+                    id,
+                    command,
+                    anchor,
+                    place,
+                } => {
+                    let pane = card(&client, command, anchor, place);
+                    let _ = tx.send(Msg::Created { id, pane });
+                }
+                ThurmOp::Place { pane, place } => {
+                    let cmd = UiCommand::PlaceFloating { pane, place };
+                    if let Err(e) = client.request(Request::Ui(cmd)) {
+                        log::warn!("placing card {pane}: {e}");
+                    }
+                }
             }
         }
     });
@@ -496,7 +556,70 @@ fn split(
     Some(pane)
 }
 
+/// A floating card at `place` running `command`; `None` when the app can't show one (older
+/// apps place no cards: the group then stays drawn in its pane).
+fn card(
+    client: &Arc<Client>,
+    command: Vec<String>,
+    anchor: PaneId,
+    place: FloatPlace,
+) -> Option<PaneId> {
+    let pane = match client.request(Request::CreatePane(CreatePane {
+        command: Some(command),
+        inherit_cwd_from: Some(anchor),
+        ..Default::default()
+    })) {
+        Ok(Response::PaneCreated { pane }) => pane,
+        other => {
+            log::warn!("creating a card: {other:?}");
+            return None;
+        }
+    };
+    let open = UiCommand::OpenFloatingAt {
+        pane,
+        target: Some(anchor),
+        place,
+        background: false,
+    };
+    if let Err(e) = client.request(Request::Ui(open)) {
+        log::warn!("showing card {pane}: {e}");
+        let _ = client.request(Request::ClosePane { pane });
+        return None;
+    }
+    Some(pane)
+}
+
 impl Daemon {
+    fn new(tx: Sender<Msg>, nvim: Nvim, exe: PathBuf, socket: PathBuf) -> Daemon {
+        Daemon {
+            tx,
+            nvim,
+            model: Model::default(),
+            panes: Vec::new(),
+            next_id: 1,
+            pending: HashMap::new(),
+            ready: false,
+            anchor: 0,
+            current: 0,
+            asked: HashSet::new(),
+            reopening: HashSet::new(),
+            splits: HashMap::new(),
+            statuslines_wanted: false,
+            statuslines_in_flight: false,
+            editor_size: (0, 0),
+            ui_focused: true,
+            focus_gen: 0,
+            own_focus: None,
+            current_float: None,
+            no_card: HashSet::new(),
+            editor_pane: 0,
+            thurm_ops: None,
+            nvim_exiting: false,
+            exe,
+            socket,
+        }
+    }
+
     fn start(&mut self) -> io::Result<()> {
         let (cols, rows) = self
             .panes
@@ -551,7 +674,7 @@ impl Daemon {
             if self
                 .panes
                 .iter()
-                .all(|p| p.win.is_none() && p.tty.is_none())
+                .all(|p| p.card.is_some() || (p.win.is_none() && p.tty.is_none()))
                 && self.ready
             {
                 return Ok(());
@@ -610,12 +733,17 @@ impl Daemon {
                     }
                 }
                 None => {
-                    // No pane for it: close the window rather than leave it unseen.
+                    // No pane for it: close the window rather than leave it unseen. A card
+                    // that couldn't open leaves its group drawn in its pane, for good.
                     if let Some(i) = self.panes.iter().position(|p| p.id == id) {
                         let p = self.panes.remove(i);
+                        if let Some(c) = &p.card {
+                            self.no_card.extend(c.group.members.iter().map(|m| m.win));
+                        }
                         if let Some(w) = p.win {
                             self.lua("thurm_nvim.close(...)", vec![w.into()], Pending::Ignore)?;
                         }
+                        self.draw_all();
                     }
                 }
             },
@@ -717,7 +845,14 @@ impl Daemon {
                 }
                 "thurm_win" => {
                     let win = params.first().and_then(nvim::handle).unwrap_or(0);
+                    self.current_float = None;
                     self.current_changed(win)?;
+                }
+                "thurm_float" => {
+                    let win = params.first().and_then(nvim::handle).unwrap_or(0);
+                    self.current_float = Some(win);
+                    self.reconcile_cards()?;
+                    self.focus_card_of(win);
                 }
                 "thurm_reopen" => {
                     if let Some(w) = params.first().and_then(nvim::handle) {
@@ -805,6 +940,7 @@ impl Daemon {
     fn after_flush(&mut self) -> io::Result<()> {
         if self.ready {
             self.reconcile()?;
+            self.reconcile_cards()?;
             if self.statuslines_in_flight {
                 self.statuslines_wanted = true;
             } else {
@@ -813,6 +949,119 @@ impl Daemon {
         }
         self.draw_all();
         Ok(())
+    }
+
+    /// Cards follow their float groups: placed again when a group moves or resizes, closed when
+    /// it goes; and the group Neovim's focus is in (a picker taking it) gets a card.
+    fn reconcile_cards(&mut self) -> io::Result<()> {
+        let groups = self.model.float_groups();
+        let mut gone = Vec::new();
+        let mut places = Vec::new();
+        // Each group to one card (should two cards ever show one group, the first keeps it and
+        // the other goes, without closing any window).
+        let shown: Vec<Option<&FloatGroup>> = self
+            .panes
+            .iter()
+            .map(|p| p.card.as_ref().map(|c| &c.group))
+            .collect();
+        let owners = assign_groups(&shown, &groups);
+        for (p, owner) in self.panes.iter_mut().zip(owners) {
+            let Some(card) = &mut p.card else { continue };
+            match owner {
+                Some(i) => {
+                    let g = &groups[i];
+                    card.group = g.clone();
+                    if g.rect != card.placed
+                        && let Some(t) = p.thurm
+                    {
+                        card.placed = g.rect;
+                        places.push((t, card_place(card.anchor, g.rect)));
+                    }
+                }
+                None => gone.push(p.id),
+            }
+        }
+        for id in gone {
+            if let Some(i) = self.panes.iter().position(|p| p.id == id) {
+                let mut p = self.panes.remove(i);
+                p.release();
+            }
+        }
+        if let Some(ops) = &self.thurm_ops {
+            for (pane, place) in places {
+                let _ = ops.send(ThurmOp::Place { pane, place });
+            }
+        }
+        let Some(win) = self.current_float else {
+            return Ok(());
+        };
+        let Some(group) = groups.into_iter().find(|g| g.has_win(win)) else {
+            return Ok(());
+        };
+        let shown = self
+            .panes
+            .iter()
+            .any(|p| p.card.as_ref().is_some_and(|c| c.shows(&group)));
+        let refused = group.members.iter().any(|m| self.no_card.contains(&m.win));
+        let anchor = self
+            .panes
+            .iter()
+            .find(|p| p.id == self.editor_pane)
+            .and_then(|p| p.thurm);
+        let (Some(anchor), Some(ops), false, false) = (anchor, &self.thurm_ops, shown, refused)
+        else {
+            return Ok(());
+        };
+        let id = self.next_id;
+        self.next_id += 1;
+        let mut pane = Pane::new(id, None);
+        let place = card_place(anchor, group.rect);
+        pane.card = Some(Card {
+            placed: group.rect,
+            group,
+            anchor,
+        });
+        let command = vec![
+            self.exe.display().to_string(),
+            launch::PANE.into(),
+            self.socket.display().to_string(),
+            id.to_string(),
+        ];
+        let _ = ops.send(ThurmOp::Card {
+            id,
+            command,
+            anchor,
+            place,
+        });
+        self.panes.push(pane);
+        Ok(())
+    }
+
+    /// Neovim's focus went into float `win`: into the card showing it, if there is one.
+    fn focus_card_of(&mut self, win: i64) {
+        let card = self
+            .panes
+            .iter()
+            .find(|p| p.card.as_ref().is_some_and(|c| c.group.has_win(win)));
+        if let (Some(p), Some(ops)) = (card, &self.thurm_ops)
+            && !p.focused
+            && let Some(t) = p.thurm
+            && !matches!(self.own_focus, Some((o, at)) if o == t && at.elapsed() < OWN_FOCUS_GRACE)
+        {
+            self.own_focus = Some((t, Instant::now()));
+            let _ = ops.send(ThurmOp::Focus(t));
+        }
+    }
+
+    /// The floats shown in cards, which their panes leave out: only once a card draws them
+    /// (its terminal attached), so a picker never goes missing while its card opens or fails.
+    fn carded_grids(&self) -> Vec<u64> {
+        self.panes
+            .iter()
+            .filter(|p| p.tty.is_some())
+            .filter_map(|p| p.card.as_ref())
+            .flat_map(|c| c.group.grids())
+            .collect()
     }
 
     /// Gives new windows panes, and lets panes of closed windows go.
@@ -866,7 +1115,7 @@ impl Daemon {
                     if let Some(p) = self
                         .panes
                         .iter_mut()
-                        .find(|p| p.win.is_none() && p.tty.is_some())
+                        .find(|p| p.win.is_none() && p.tty.is_some() && p.card.is_none())
                     {
                         p.win = Some(win);
                         p.asked_size = None;
@@ -988,6 +1237,9 @@ impl Daemon {
 
     fn current_changed(&mut self, win: i64) -> io::Result<()> {
         self.current = win;
+        if let Some(id) = self.current_pane().map(|p| p.id) {
+            self.editor_pane = id;
+        }
         self.size_editor()?;
         let target = self
             .current_pane()
@@ -1145,6 +1397,21 @@ impl Daemon {
                     }
                 }
                 InputEvent::Mouse(m) => {
+                    if let Some((g, row, col)) = self.card_hit(id, m.row as i32, m.col as i32) {
+                        self.request(
+                            "nvim_input_mouse",
+                            vec![
+                                m.button.into(),
+                                m.action.into(),
+                                m.modifier.into(),
+                                g.into(),
+                                row.into(),
+                                col.into(),
+                            ],
+                            Pending::Ignore,
+                        )?;
+                        continue;
+                    }
                     let Some(g) = grid else { continue };
                     if m.row >= rows {
                         continue;
@@ -1183,6 +1450,23 @@ impl Daemon {
         (g, row, col)
     }
 
+    /// In card pane `id`: the grid under (`row`, `col`), topmost first, and the cell in it.
+    fn card_hit(&self, id: u32, row: i32, col: i32) -> Option<(u64, i32, i32)> {
+        let card = self.panes.iter().find(|p| p.id == id)?.card.as_ref()?;
+        let mut members = card.group.members.clone();
+        members.sort_by_key(|m| std::cmp::Reverse(m.order()));
+        let (r, c) = (row + card.group.rect.row, col + card.group.rect.col);
+        members
+            .iter()
+            .find(|m| {
+                r >= m.rect.row
+                    && c >= m.rect.col
+                    && r < m.rect.row + m.rect.rows
+                    && c < m.rect.col + m.rect.cols
+            })
+            .map(|m| (m.grid, r - m.rect.row, c - m.rect.col))
+    }
+
     /// Typing into a pane whose window isn't current: it is now.
     fn make_current(&mut self, win: Option<i64>) -> io::Result<()> {
         if let Some(w) = win
@@ -1213,7 +1497,24 @@ impl Daemon {
                 self.own_focus = None;
             }
             if !stale {
-                self.make_current(win)?;
+                // Into a card: its group's input, unless Neovim's focus is in the group already.
+                let current_float = self.current_float;
+                let card_target = self
+                    .panes
+                    .iter()
+                    .find(|p| p.id == id)
+                    .and_then(|p| p.card.as_ref())
+                    .and_then(|c| {
+                        let inside = current_float.is_some_and(|w| c.group.has_win(w));
+                        if inside { None } else { c.group.focus_target() }
+                    });
+                match card_target {
+                    Some(w) => {
+                        self.current_float = Some(w);
+                        self.request("nvim_set_current_win", vec![w.into()], Pending::Ignore)?;
+                    }
+                    None => self.make_current(win)?,
+                }
                 self.size_editor()?;
                 self.draw_all();
             }
@@ -1238,10 +1539,20 @@ impl Daemon {
         };
         let mut p = self.panes.remove(i);
         p.release();
+        // A card closed by hand closes its picker: the windows taking the focus (its input and
+        // list) go, and the picker takes the rest with it. A popup that only touched it (a
+        // notification) is left alone, and back in its pane.
+        if let Some(card) = &p.card {
+            for m in card.group.members.iter().filter(|m| m.focusable) {
+                self.lua("thurm_nvim.close(...)", vec![m.win.into()], Pending::Ignore)?;
+            }
+            self.draw_all();
+            return Ok(true);
+        }
         if self
             .panes
             .iter()
-            .all(|p| p.tty.is_none() && p.win.is_none())
+            .all(|p| p.card.is_some() || (p.tty.is_none() && p.win.is_none()))
         {
             return Ok(false);
         }
@@ -1252,15 +1563,21 @@ impl Daemon {
     }
 
     fn draw_all(&mut self) {
-        let current = self.current;
+        let skip = self.carded_grids();
         for i in 0..self.panes.len() {
             let p = &self.panes[i];
             if p.tty.is_none() {
                 continue;
             }
-            let mut view = p.view(p.win == Some(current));
-            view.grid = p.win.and_then(|w| self.model.grid_of_win(w));
-            let frame = compose(&self.model, &view);
+            let frame = match &p.card {
+                Some(card) => compose_card(&self.model, p.cols, p.rows, &card.group),
+                None => {
+                    let mut view = p.view(p.id == self.editor_pane);
+                    view.grid = p.win.and_then(|w| self.model.grid_of_win(w));
+                    view.skip = &skip;
+                    compose(&self.model, &view)
+                }
+            };
             let p = &mut self.panes[i];
             let mut out = Vec::new();
             p.renderer.draw(&frame, &mut out);
@@ -1270,5 +1587,53 @@ impl Daemon {
                 let _ = self.tx.send(Msg::HelperGone(p.id));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::grid::Member;
+
+    fn group(wins: &[i64]) -> FloatGroup {
+        let rect = Rect {
+            row: 0,
+            col: 0,
+            rows: 1,
+            cols: 2,
+        };
+        FloatGroup {
+            tops: wins.iter().map(|w| *w as u64).collect(),
+            members: wins
+                .iter()
+                .map(|&win| Member {
+                    grid: win as u64,
+                    win,
+                    rect,
+                    focusable: true,
+                    zindex: 50,
+                    compindex: 0,
+                })
+                .collect(),
+            rect,
+        }
+    }
+
+    #[test]
+    fn a_merged_group_goes_to_one_card() {
+        let (a, b) = (group(&[1]), group(&[2]));
+        // Two cards showing one group: the first keeps it.
+        let merged = [group(&[1, 2])];
+        assert_eq!(
+            assign_groups(&[Some(&a), None, Some(&b)], &merged),
+            vec![Some(0), None, None]
+        );
+        // Apart, each keeps its own; a card whose group is gone shows nothing.
+        let apart = [group(&[2]), group(&[1])];
+        assert_eq!(
+            assign_groups(&[Some(&a), Some(&b)], &apart),
+            vec![Some(1), Some(0)]
+        );
+        assert_eq!(assign_groups(&[Some(&group(&[9]))], &apart), vec![None]);
     }
 }
