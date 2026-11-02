@@ -149,7 +149,7 @@ pub fn compose_card(model: &Model, cols: u16, rows: u16, group: &FloatGroup) -> 
         line.fill(blank);
     }
     let mut members = group.members.clone();
-    members.sort_by_key(|m| (m.zindex, m.grid));
+    members.sort_by_key(|m| m.order());
     let mut cursor = None;
     for m in members {
         let Some(g) = model.grids.get(&m.grid) else {
@@ -512,5 +512,34 @@ mod tests {
         assert_eq!(rows(&compose(&m, &view))[1], "second line");
         let inline = PaneView { skip: &[], ..view };
         assert_eq!(rows(&compose(&m, &inline))[1], "secpickline");
+    }
+
+    #[test]
+    fn a_card_paints_its_floats_in_neovims_order() {
+        let mut m = Model::default();
+        m.grids.insert(7, grid(&["top"]));
+        m.grids.insert(8, grid(&["low"]));
+        let rect = crate::grid::Rect {
+            row: 0,
+            col: 0,
+            rows: 1,
+            cols: 3,
+        };
+        // Same zindex: compindex orders them, against the grid ids (7 is painted last).
+        let member = |grid, compindex| crate::grid::Member {
+            grid,
+            win: grid as i64,
+            rect,
+            focusable: true,
+            zindex: 50,
+            compindex,
+        };
+        let group = FloatGroup {
+            tops: vec![7, 8],
+            members: vec![member(7, 2), member(8, 1)],
+            rect,
+        };
+        let card = compose_card(&m, 3, 1, &group);
+        assert_eq!(rows(&card), ["top"]);
     }
 }

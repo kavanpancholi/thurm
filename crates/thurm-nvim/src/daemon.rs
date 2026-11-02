@@ -108,6 +108,22 @@ impl Card {
     }
 }
 
+/// Which of `groups` each card (`cards`, the groups they showed; `None`: not a card) shows now:
+/// the group sharing a window with it, each group to the first card only.
+fn assign_groups(cards: &[Option<&FloatGroup>], groups: &[FloatGroup]) -> Vec<Option<usize>> {
+    let mut taken = vec![false; groups.len()];
+    cards
+        .iter()
+        .map(|card| {
+            let card = (*card)?;
+            let i = groups
+                .iter()
+                .position(|g| card.members.iter().any(|m| g.has_win(m.win)))?;
+            (!std::mem::replace(&mut taken[i], true)).then_some(i)
+        })
+        .collect()
+}
+
 /// Where a card goes: its group's cells, counted from `anchor`'s first cell.
 fn card_place(anchor: PaneId, r: Rect) -> FloatPlace {
     FloatPlace::Cells {
@@ -937,10 +953,19 @@ impl Daemon {
         let groups = self.model.float_groups();
         let mut gone = Vec::new();
         let mut places = Vec::new();
-        for p in &mut self.panes {
+        // Each group to one card: when groups merge, the first card keeps it and the others
+        // go (without closing any window).
+        let shown: Vec<Option<&FloatGroup>> = self
+            .panes
+            .iter()
+            .map(|p| p.card.as_ref().map(|c| &c.group))
+            .collect();
+        let owners = assign_groups(&shown, &groups);
+        for (p, owner) in self.panes.iter_mut().zip(owners) {
             let Some(card) = &mut p.card else { continue };
-            match groups.iter().find(|g| card.shows(g)) {
-                Some(g) => {
+            match owner {
+                Some(i) => {
+                    let g = &groups[i];
                     card.group = g.clone();
                     if g.rect != card.placed
                         && let Some(t) = p.thurm
@@ -1023,10 +1048,12 @@ impl Daemon {
         }
     }
 
-    /// The floats shown in cards, which their panes leave out.
+    /// The floats shown in cards, which their panes leave out: only once a card draws them
+    /// (its terminal attached), so a picker never goes missing while its card opens or fails.
     fn carded_grids(&self) -> Vec<u64> {
         self.panes
             .iter()
+            .filter(|p| p.tty.is_some())
             .filter_map(|p| p.card.as_ref())
             .flat_map(|c| c.group.grids())
             .collect()
@@ -1422,7 +1449,7 @@ impl Daemon {
     fn card_hit(&self, id: u32, row: i32, col: i32) -> Option<(u64, i32, i32)> {
         let card = self.panes.iter().find(|p| p.id == id)?.card.as_ref()?;
         let mut members = card.group.members.clone();
-        members.sort_by_key(|m| std::cmp::Reverse((m.zindex, m.grid)));
+        members.sort_by_key(|m| std::cmp::Reverse(m.order()));
         let (r, c) = (row + card.group.rect.row, col + card.group.rect.col);
         members
             .iter()
@@ -1552,5 +1579,53 @@ impl Daemon {
                 let _ = self.tx.send(Msg::HelperGone(p.id));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::grid::Member;
+
+    fn group(wins: &[i64]) -> FloatGroup {
+        let rect = Rect {
+            row: 0,
+            col: 0,
+            rows: 1,
+            cols: 2,
+        };
+        FloatGroup {
+            tops: wins.iter().map(|w| *w as u64).collect(),
+            members: wins
+                .iter()
+                .map(|&win| Member {
+                    grid: win as u64,
+                    win,
+                    rect,
+                    focusable: true,
+                    zindex: 50,
+                    compindex: 0,
+                })
+                .collect(),
+            rect,
+        }
+    }
+
+    #[test]
+    fn a_merged_group_goes_to_one_card() {
+        let (a, b) = (group(&[1]), group(&[2]));
+        // The two groups touched and Neovim's floats now make one: the first card keeps it.
+        let merged = [group(&[1, 2])];
+        assert_eq!(
+            assign_groups(&[Some(&a), None, Some(&b)], &merged),
+            vec![Some(0), None, None]
+        );
+        // Apart, each keeps its own; a card whose group is gone shows nothing.
+        let apart = [group(&[2]), group(&[1])];
+        assert_eq!(
+            assign_groups(&[Some(&a), Some(&b)], &apart),
+            vec![Some(1), Some(0)]
+        );
+        assert_eq!(assign_groups(&[Some(&group(&[9]))], &apart), vec![None]);
     }
 }

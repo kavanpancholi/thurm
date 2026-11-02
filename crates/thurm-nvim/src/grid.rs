@@ -437,6 +437,7 @@ impl Model {
                 rect,
                 focusable: pos.focusable,
                 zindex: pos.zindex,
+                compindex: pos.compindex,
             };
             match groups.iter_mut().find(|x| x.tops.contains(&top)) {
                 Some(x) => x.add(member),
@@ -456,7 +457,15 @@ impl Model {
             merged = false;
             'outer: for i in 0..groups.len() {
                 for j in i + 1..groups.len() {
-                    if groups[i].rect.touches(&groups[j].rect) {
+                    // Only parts of one picker merge: both can take the focus, or they share a level
+                    // (a picker's separate windows are made together, like Telescope's preview).
+                    // Popups on a level of their own (notifications) stay apart even touching it.
+                    if groups[i].rect.touches(&groups[j].rect)
+                        && ((groups[i].focusable() && groups[j].focusable())
+                            || groups[i]
+                                .levels()
+                                .any(|z| groups[j].levels().any(|w| w == z)))
+                    {
                         let other = groups.remove(j);
                         groups[i].tops.extend(other.tops);
                         for m in other.members {
@@ -513,6 +522,14 @@ pub struct Member {
     pub rect: Rect,
     pub focusable: bool,
     pub zindex: i64,
+    pub compindex: i64,
+}
+
+impl Member {
+    /// Neovim's paint order: bottom first.
+    pub fn order(&self) -> (i64, i64, u64) {
+        (self.zindex, self.compindex, self.grid)
+    }
 }
 
 /// Floats over the editor that belong together (see [`Model::float_groups`]).
@@ -538,6 +555,16 @@ impl FloatGroup {
             self.rect.union(&m.rect)
         };
         self.members.push(m);
+    }
+
+    /// The zindex of each member.
+    pub fn levels(&self) -> impl Iterator<Item = i64> + '_ {
+        self.members.iter().map(|m| m.zindex)
+    }
+
+    /// Some member can take the focus.
+    pub fn focusable(&self) -> bool {
+        self.members.iter().any(|m| m.focusable)
     }
 
     pub fn has_win(&self, win: i64) -> bool {
@@ -878,6 +905,9 @@ mod tests {
             // A notification far away, and a float on a window: not in it.
             ev("grid_resize", vec![14.into(), 10.into(), 2.into()]),
             float(14, 2005, 1, 0.0, 70.0, false, 60),
+            // A notification touching the picker stays on its own.
+            ev("grid_resize", vec![17.into(), 10.into(), 3.into()]),
+            float(17, 2008, 1, 16.0, 20.0, false, 60),
             ev("grid_resize", vec![15.into(), 10.into(), 2.into()]),
             float(15, 2006, 2, 3.0, 3.0, true, 40),
             // A backdrop over the whole editor joins nothing.
@@ -886,7 +916,12 @@ mod tests {
             float(16, 2007, 1, 0.0, 0.0, false, 45),
         ]);
         let groups = m.float_groups();
-        assert_eq!(groups.len(), 2);
+        assert_eq!(groups.len(), 3);
+        assert!(
+            groups
+                .iter()
+                .any(|g| g.has_win(2008) && g.members.len() == 1)
+        );
         let picker = groups.iter().find(|g| g.has_win(2002)).unwrap();
         assert!(picker.has_win(2001) && picker.has_win(2003) && picker.has_win(2004));
         assert_eq!(
