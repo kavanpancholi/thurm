@@ -964,11 +964,20 @@ final class TabContentView: NSView {
             }
             return
         }
-        // Cards: the header strips in the terminal's color, under the headers, shaded with the
-        // pane's dim. The gutters and outlines are `CardChrome`'s, over the terminals' square
-        // corners.
+        // Moving cards already have a full fill; don't double their translucent backgrounds.
+        guard !isMoving else { return }
+        // Fill the header and the 1pt rim around the terminal with the same dimmed surface.
+        // Otherwise the outline sits on the undimmed window below the header and disappears
+        // into light panes. Keep the terminal itself clear: its layer owns that background.
         for (id, rect) in frames {
-            fills.append((NSRect(x: rect.minX, y: rect.minY, width: rect.width, height: 1 + PaneHeader.height), surface(id)))
+            let (header, body) = rect.divided(atDistance: 1 + PaneHeader.height, from: .minYEdge)
+            let (left, rest) = body.divided(atDistance: 1, from: .minXEdge)
+            let (right, middle) = rest.divided(atDistance: 1, from: .maxXEdge)
+            let (bottom, _) = middle.divided(atDistance: 1, from: .maxYEdge)
+            let color = surface(id)
+            for strip in [header, left, right, bottom] where !strip.isEmpty {
+                fills.append((strip, color))
+            }
         }
     }
 
