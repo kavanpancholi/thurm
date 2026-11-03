@@ -128,6 +128,46 @@ final class TerminalBackdropTests: XCTestCase {
         }
     }
 
+    /// The hairline needs the same base along the terminal as along the header. Leaving the
+    /// 1pt rim unfilled makes the light theme's outline blend into a dimmed pane.
+    func testCardRimFollowsPaneSurfaceWithoutDoublingTerminalOpacity() throws {
+        try requireMetal()
+        let config = SessionManager.shared.config
+        config.paneHeaders = true
+        for background: UInt32 in [0x1E1E2E, 0xEFF1F5] {
+            config.theme.background = background
+            for opacity: CGFloat in [1, 0.6] {
+                config.opacity = opacity
+                let a = PaneKey.local(1), b = PaneKey.local(2)
+                let content = TabContentView(root: .split(axis: .horizontal, ratio: 0.5,
+                                                        first: .leaf(a), second: .leaf(b)),
+                                             focused: b, zoomed: nil)
+                defer { content.detachAll() }
+                content.frame = CGRect(x: 0, y: 0, width: 600, height: 400)
+                let panes = try [a, b].map { try pane(in: content, key: $0) }
+                RunLoop.main.run(until: Date(timeIntervalSinceNow: Motion.fast + 0.02))
+                for (view, layer) in panes {
+                    view.renderNow()
+                    let background = try XCTUnwrap(layer.backgroundColor)
+                    let terminal = view.frame
+                    let rim = [
+                        CGPoint(x: terminal.midX, y: terminal.minY - 10),
+                        CGPoint(x: terminal.minX - 0.5, y: terminal.midY),
+                        CGPoint(x: terminal.maxX + 0.5, y: terminal.midY),
+                        CGPoint(x: terminal.midX, y: terminal.maxY + 0.5),
+                    ]
+                    for point in rim {
+                        let layers = fills(in: content, at: point)
+                        XCTAssertEqual(layers.count, 1, "exactly one surface fill at \(point)")
+                        XCTAssertEqual(layers.first?.backgroundColor, background)
+                    }
+                    XCTAssertTrue(fills(in: content, at: CGPoint(x: terminal.midX, y: terminal.midY)).isEmpty,
+                                  "the terminal owns its background, including translucent windows")
+                }
+            }
+        }
+    }
+
     func testMacFramePresentsInTheCallingTransaction() throws {
         try requireMetal()
         let key = PaneKey.local(1)
