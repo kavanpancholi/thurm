@@ -135,6 +135,63 @@ final class TabHistoryTests: XCTestCase {
         XCTAssertEqual(h.back(isOpen: allOpen), tab(1))
     }
 
+    func testBackFromATabNotRecordedGoesToTheTabLeft() {
+        var h = history([tab(1), tab(2)])
+
+        XCTAssertEqual(h.back(fromCurrent: false, isOpen: allOpen), tab(2))
+        XCTAssertEqual(h.back(isOpen: allOpen), tab(1))
+    }
+
+    func testAnEntryFollowsThePanesThatStay() {
+        var h = history([tab(1), tab(2)])
+
+        h.tabChanged(from: tab(1), to: tab(1, 5))
+        h.tabChanged(from: tab(1, 5), to: tab(5))
+
+        XCTAssertEqual(h.entries, [tab(5), tab(2)])
+    }
+
+    func testAPaneMovedToAnotherTabLeavesTheEntryItCameFrom() {
+        var h = history([tab(1, 5), tab(2)])
+
+        h.tabChanged(from: tab(1, 5), to: tab(1))
+        h.tabChanged(from: tab(2), to: tab(2, 5))
+
+        XCTAssertEqual(h.entries, [tab(1), tab(2, 5)])
+    }
+
+    func testATabStaysInHistoryWhenItsPanesAreSplitAndClosed() throws {
+        let a = manager.makeController(root: .leaf(pane(1)), focused: pane(1), zoomed: nil, title: nil, frame: nil)
+        let b = manager.makeController(root: .leaf(pane(2)), focused: pane(2), zoomed: nil, title: nil, frame: nil)
+        manager.controllerBecameKey(a)
+
+        a.content.split(newPane: pane(3), direction: .right)
+        _ = a.content.remove(pane: pane(1))
+        manager.controllerBecameKey(b)
+
+        XCTAssertEqual(manager.tabHistory.entries, [tab(3), tab(2)])
+        XCTAssertTrue(manager.canGoBackInTabHistory)
+        guard case .shown(let found) = manager.tabTarget(manager.tabHistory.entries[0]) else {
+            return XCTFail("tab A is still open")
+        }
+        XCTAssertTrue(found === a)
+    }
+
+    func testBackFromTheAgentWallReturnsToTheTabLeft() {
+        let a = manager.makeController(root: .leaf(pane(1)), focused: pane(1), zoomed: nil, title: nil, frame: nil)
+        let b = manager.makeController(root: .leaf(pane(2)), focused: pane(2), zoomed: nil, title: nil, frame: nil)
+        let wall = manager.makeController(root: .leaf(pane(3)), focused: pane(3), zoomed: nil, title: nil, frame: nil)
+        wall.wall = []
+        manager.controllerBecameKey(a)
+        manager.controllerBecameKey(b)
+        manager.controllerBecameKey(wall)
+
+        manager.goBackInTabHistory()
+
+        XCTAssertEqual(manager.tabHistory.entries, [tab(1), tab(2)])
+        XCTAssertEqual(manager.tabHistory.cursor, 1)
+    }
+
     func testTargetsResolveAcrossWorkspaces() throws {
         let hidden = manager.makeWorkspace(name: "hidden")
         hidden.hiddenTabs = [
@@ -151,6 +208,9 @@ final class TabHistoryTests: XCTestCase {
         XCTAssertEqual(h, HiddenTab(workspace: hidden.id, index: 0))
         XCTAssertNil(manager.tabTarget(tab(8)), "the agent wall is no target")
         XCTAssertNil(manager.tabTarget(tab(42)), "a closed tab is no target")
+        let wall = manager.makeController(root: .leaf(pane(4)), focused: pane(4), zoomed: nil, title: nil, frame: nil)
+        wall.wall = []
+        guard case .shown = manager.tabTarget(tab(4, 1)) else { return XCTFail("a pane on the wall is skipped") }
     }
 
     func testTheAgentWallIsNotRecorded() {
