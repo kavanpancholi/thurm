@@ -85,6 +85,13 @@ To keep a tab in sight whatever workspace the sidebar shows, right-click it and 
 sidebar, in every workspace, and not again in their own group. Click one from another workspace
 to switch to it. **Only Active Tabs** never hides a pinned tab. Pins are kept across restarts.
 
+The **Agents** panel at the bottom of the sidebar lists every pane running an agent,
+in any window or workspace. Drag its header to show more or fewer rows. Click the
+header, or use **View > Collapse Agents**, to fold the panel down to its header, which
+keeps showing how many agents are waiting or working. Click it again to bring the list
+back. The panel stays folded across restarts. To remove it entirely, turn off
+**View > Agents in Sidebar** (`window.sidebar_agents`).
+
 When the sidebar is hidden, the filter button beside its toggle becomes **+** (New Tab).
 Showing the sidebar restores the filter button, with its setting preserved.
 
