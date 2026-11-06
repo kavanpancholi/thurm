@@ -2571,6 +2571,7 @@ mod tests {
                 })
                 .collect(),
             floating_hidden: false,
+            pinned: false,
         };
         let layout = thurm_proto::Layout {
             windows: vec![thurm_proto::WindowLayout {

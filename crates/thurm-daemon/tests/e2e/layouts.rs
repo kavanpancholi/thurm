@@ -33,6 +33,7 @@ fn apply(
             wall: None,
             floating: Vec::new(),
             floating_hidden: false,
+            pinned: false,
         };
         tx.send(client.request(Request::ApplyLayout {
             json: serde_json::to_string(&tab).unwrap(),
