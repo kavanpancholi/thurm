@@ -1033,14 +1033,26 @@ final class AgentsPanel: NSView, NSTableViewDataSource, NSTableViewDelegate {
 
     private let separator = NSBox()
     private let header = NSTextField(labelWithString: "Agents")
+    private let chevron = NSImageView()
     private let summary = NSTextField(labelWithString: "")
     private let scroll = NSScrollView()
     private let table = NSTableView()
     private var rows: [AgentBox] = []
     private let handle = DragHandle()
     private var height: NSLayoutConstraint!
+    private var listHeight: NSLayoutConstraint!
     private static let rowHeight: CGFloat = 40
-    private static let headerHeight: CGFloat = 30
+    static let headerHeight: CGFloat = 30
+    static let collapsedChanged = Notification.Name("ThurmAgentsPanelCollapsedChanged")
+    static var defaults = UserDefaults.standard
+    static var collapsed: Bool {
+        get { defaults.bool(forKey: "SidebarAgentsCollapsed") }
+        set {
+            guard newValue != collapsed else { return }
+            defaults.set(newValue, forKey: "SidebarAgentsCollapsed")
+            NotificationCenter.default.post(name: collapsedChanged, object: nil)
+        }
+    }
     /// Kept for the tab list when the panel is dragged taller.
     private static let minTabsHeight: CGFloat = 160
     /// Rows shown before the panel scrolls: `window.sidebar_agent_rows`, or where the header
@@ -1057,6 +1069,7 @@ final class AgentsPanel: NSView, NSTableViewDataSource, NSTableViewDelegate {
         header.font = .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold)
         summary.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         summary.alignment = .right
+        chevron.symbolConfiguration = .init(pointSize: 9, weight: .semibold)
 
         let column = NSTableColumn(identifier: .init("agent"))
         table.addTableColumn(column)
@@ -1076,7 +1089,6 @@ final class AgentsPanel: NSView, NSTableViewDataSource, NSTableViewDelegate {
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
 
-        handle.toolTip = "Drag to show more or fewer agents"
         var start = 0
         handle.began = { [weak self] in start = self?.visibleRows ?? 0 }
         handle.dragged = { [weak self] dy in
@@ -1095,36 +1107,62 @@ final class AgentsPanel: NSView, NSTableViewDataSource, NSTableViewDelegate {
             SessionManager.shared.config.sidebarAgentRows = rows
             self.draggedRows = nil
         }
+        handle.clicked = { Self.collapsed.toggle() }
+        handle.setAccessibilityElement(true)
+        handle.setAccessibilityRole(.button)
+        handle.setAccessibilityLabel("Agents")
 
-        for v in [separator, header, summary, scroll, handle] as [NSView] {
+        for v in [separator, header, chevron, summary, scroll, handle] as [NSView] {
             v.translatesAutoresizingMaskIntoConstraints = false
             addSubview(v)
         }
+        clipsToBounds = true
         height = heightAnchor.constraint(equalToConstant: 0)
+        listHeight = scroll.heightAnchor.constraint(equalToConstant: 0)
         NSLayoutConstraint.activate([
             height,
+            listHeight,
             separator.topAnchor.constraint(equalTo: topAnchor),
             separator.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
             separator.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
             header.topAnchor.constraint(equalTo: separator.bottomAnchor, constant: 8),
             header.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
             summary.firstBaselineAnchor.constraint(equalTo: header.firstBaselineAnchor),
-            summary.leadingAnchor.constraint(greaterThanOrEqualTo: header.trailingAnchor, constant: 8),
+            chevron.leadingAnchor.constraint(equalTo: header.trailingAnchor, constant: 4),
+            chevron.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+            summary.leadingAnchor.constraint(greaterThanOrEqualTo: chevron.trailingAnchor, constant: 8),
             summary.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
             scroll.topAnchor.constraint(equalTo: topAnchor, constant: Self.headerHeight),
             scroll.leadingAnchor.constraint(equalTo: leadingAnchor),
             scroll.trailingAnchor.constraint(equalTo: trailingAnchor),
-            scroll.bottomAnchor.constraint(equalTo: bottomAnchor),
             handle.topAnchor.constraint(equalTo: topAnchor),
             handle.leadingAnchor.constraint(equalTo: leadingAnchor),
             handle.trailingAnchor.constraint(equalTo: trailingAnchor),
             handle.heightAnchor.constraint(equalToConstant: Self.headerHeight),
         ])
         isHidden = true
+        showCollapsed()
+        NotificationCenter.default.addObserver(self, selector: #selector(collapsedChanged),
+                                               name: Self.collapsedChanged, object: nil)
     }
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) is not supported")
+    }
+
+    @objc private func collapsedChanged() {
+        showCollapsed()
+        updateSummary()
+        updateHeight(duration: window?.isKeyWindow == true ? Motion.duration(Motion.sidebar) : 0)
+    }
+
+    private func showCollapsed() {
+        let collapsed = Self.collapsed
+        chevron.image = NSImage(systemSymbolName: collapsed ? "chevron.up" : "chevron.down",
+                                accessibilityDescription: nil)
+        handle.resizable = !collapsed
+        handle.toolTip = collapsed ? "Click to show agents" : "Click to hide agents, drag to show more or fewer"
+        handle.setAccessibilityValue(collapsed ? "collapsed" : "expanded")
     }
 
     func reload() {
@@ -1133,6 +1171,7 @@ final class AgentsPanel: NSView, NSTableViewDataSource, NSTableViewDelegate {
         if repaint {
             themed = theme
             header.textColor = SessionManager.shared.config.chrome.contentSecondary
+            chevron.contentTintColor = SessionManager.shared.config.chrome.contentSecondary
             summary.textColor = SessionManager.shared.config.chrome.contentTertiary
         }
         let next = agentRows()
@@ -1172,14 +1211,24 @@ final class AgentsPanel: NSView, NSTableViewDataSource, NSTableViewDelegate {
     }
 
     private func updateSummary() {
-        let waiting = rows.filter { $0.row.status == .needsInput }.count
-        let working = rows.filter { $0.row.status == .working }.count
-        let text = [waiting > 0 ? "\(waiting) waiting" : nil, working > 0 ? "\(working) working" : nil]
-            .compactMap { $0 }.joined(separator: " · ")
+        let text = Self.summary(rows.compactMap(\.row.status), collapsed: Self.collapsed)
         if summary.stringValue != text { summary.stringValue = text }
     }
 
-    private func updateHeight() {
+    static func summary(_ statuses: [AgentStatus], collapsed: Bool) -> String {
+        let waiting = statuses.filter { $0 == .needsInput }.count
+        let working = statuses.filter { $0 == .working }.count
+        let text = [waiting > 0 ? "\(waiting) waiting" : nil, working > 0 ? "\(working) working" : nil]
+            .compactMap { $0 }.joined(separator: " · ")
+        guard text.isEmpty, collapsed, !statuses.isEmpty else { return text }
+        return statuses.count == 1 ? "1 agent" : "\(statuses.count) agents"
+    }
+
+    static func height(rows: Int, list: CGFloat, collapsed: Bool) -> CGFloat {
+        rows == 0 ? 0 : headerHeight + (collapsed ? 0 : list)
+    }
+
+    private func updateHeight(duration: TimeInterval = 0) {
         shownLimit = visibleRows
         // The source list style pads below the last row: size to the table itself, or the
         // rows don't fit and scrolling to the selected one cuts off the first. Its intrinsic
@@ -1188,7 +1237,24 @@ final class AgentsPanel: NSView, NSTableViewDataSource, NSTableViewDelegate {
         let visible = min(rows.count, shownLimit)
         let padding = rows.isEmpty ? 0 : max(0, table.intrinsicContentSize.height - table.rect(ofRow: rows.count - 1).maxY)
         let content = visible == 0 ? 0 : table.rect(ofRow: visible - 1).maxY + padding
-        height.constant = rows.isEmpty ? 0 : Self.headerHeight + content
+        listHeight.constant = content
+        let collapsed = Self.collapsed
+        let target = Self.height(rows: rows.count, list: content, collapsed: collapsed)
+        if !collapsed { scroll.isHidden = false }
+        let finish: () -> Void = { [weak self] in self?.scroll.isHidden = Self.collapsed }
+        guard duration > 0, !isHidden, let root = superview else {
+            height.constant = target
+            finish()
+            return
+        }
+        root.layoutSubtreeIfNeeded()
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = duration
+            ctx.timingFunction = Motion.sidebarTimingFunction
+            ctx.allowsImplicitAnimation = true
+            self.height.constant = target
+            root.layoutSubtreeIfNeeded()
+        }, completionHandler: finish)
     }
 
     /// Every agent pane: this window's tabs first, then other windows, then hidden workspaces.
@@ -1613,28 +1679,43 @@ final class WorkingDots: NSView {
     }
 }
 
-/// The agents panel's header: dragging it up shows more agents, down fewer.
+/// The agents panel's header: a click folds or unfolds the panel; while unfolded, dragging it
+/// up shows more agents, down fewer.
 private final class DragHandle: NSView {
     var began: () -> Void = {}
     /// Points moved up since the drag began.
     var dragged: (CGFloat) -> Void = { _ in }
     var ended: () -> Void = {}
-    private var startY: CGFloat = 0
+    var clicked: () -> Void = {}
+    var resizable = true {
+        didSet { if resizable != oldValue { window?.invalidateCursorRects(for: self) } }
+    }
+    private var start: NSPoint = .zero
+    private var travel: CGFloat = 0
 
     override func resetCursorRects() {
-        addCursorRect(bounds, cursor: .resizeUpDown)
+        addCursorRect(bounds, cursor: resizable ? .resizeUpDown : .pointingHand)
     }
 
     override func mouseDown(with event: NSEvent) {
-        startY = event.locationInWindow.y
-        began()
+        start = event.locationInWindow
+        travel = 0
+        if resizable { began() }
     }
 
     override func mouseDragged(with event: NSEvent) {
-        dragged(event.locationInWindow.y - startY)
+        let p = event.locationInWindow
+        travel = max(travel, hypot(p.x - start.x, p.y - start.y))
+        if resizable { dragged(p.y - start.y) }
     }
 
     override func mouseUp(with event: NSEvent) {
-        ended()
+        if resizable { ended() }
+        if travel < 3, event.clickCount <= 1 { clicked() }
+    }
+
+    override func accessibilityPerformPress() -> Bool {
+        clicked()
+        return true
     }
 }
