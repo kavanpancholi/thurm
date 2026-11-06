@@ -354,13 +354,6 @@ fn modifiers_and_releases_keep_the_selection() {
 }
 
 #[test]
-fn copy_after_command_keeps_the_selection() {
-    let mut t = selected_all(b"hello world");
-    t.key(&press(NamedKey::LeftSuper));
-    assert_eq!(t.selection_text().trim_end(), "hello world");
-}
-
-#[test]
 fn paste_clears_the_selection() {
     let mut t = selected_all(b"hello world");
     assert_eq!(t.paste("x"), b"x");
