@@ -281,6 +281,18 @@ final class TerminalWindow: NSWindow, NSToolbarDelegate {
             makeKeyAndOrderFront(nil)
             return
         }
+        if [.otherMouseDown, .otherMouseUp, .otherMouseDragged].contains(event.type),
+           event.buttonNumber == 3 || event.buttonNumber == 4,
+           SessionManager.shared.config.mouseNavigationButtons {
+            if event.type == .otherMouseDown {
+                if event.buttonNumber == 3 {
+                    SessionManager.shared.goBackInTabHistory()
+                } else {
+                    SessionManager.shared.goForwardInTabHistory()
+                }
+            }
+            return
+        }
         if event.type == .leftMouseDown, event.clickCount == 2, isEmptyTitlebar(at: event.locationInWindow) {
             TitlebarDoubleClick.current.perform(on: self)
             return

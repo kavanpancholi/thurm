@@ -151,6 +151,7 @@ final class AppConfig {
     var sidebarAllWorkspaces = false
     /// `window.sidebar_active_only`: only the tabs where something is going on.
     var sidebarActiveOnly = false
+    var mouseNavigationButtons = true
     /// `window.sidebar_agents`: the agents panel below the sidebar's tabs.
     var sidebarAgents = true
     /// Agents the sidebar lists before its agents panel scrolls.
@@ -353,6 +354,7 @@ final class AppConfig {
             sidebarGroupByRepo = jsonBool(w["sidebar_group_by_repo"]) ?? sidebarGroupByRepo
             sidebarAllWorkspaces = jsonBool(w["sidebar_all_workspaces"]) ?? sidebarAllWorkspaces
             sidebarActiveOnly = jsonBool(w["sidebar_active_only"]) ?? sidebarActiveOnly
+            mouseNavigationButtons = jsonBool(w["mouse_navigation_buttons"]) ?? mouseNavigationButtons
             sidebarAgents = jsonBool(w["sidebar_agents"]) ?? sidebarAgents
             sidebarAgentRows = min(100, max(1, jsonInt(w["sidebar_agent_rows"]) ?? sidebarAgentRows))
             for p in UsageProvider.allCases {

@@ -548,6 +548,7 @@ pub struct WindowConfig {
     pub sidebar_usage_claude: bool,
     /// Show what is left of the Codex subscription limits at the bottom of the sidebar.
     pub sidebar_usage_codex: bool,
+    pub mouse_navigation_buttons: bool,
 }
 
 impl Default for WindowConfig {
@@ -578,6 +579,7 @@ impl Default for WindowConfig {
             sidebar_agent_rows: 5,
             sidebar_usage_claude: false,
             sidebar_usage_codex: false,
+            mouse_navigation_buttons: true,
         }
     }
 }
