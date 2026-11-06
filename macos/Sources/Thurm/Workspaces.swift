@@ -447,7 +447,7 @@ extension SessionManager {
         return f.localizedString(for: date, relativeTo: Date())
     }
 
-    /// The workspace list plus actions, for the sidebar header and Window > Workspaces.
+    /// The workspace list plus actions for Window > Workspaces.
     func fillWorkspaceMenu(_ menu: NSMenu) {
         menu.removeAllItems()
         let current = currentController?.workspaceID

@@ -270,9 +270,8 @@ final class TabSidebarViewController: NSViewController, NSOutlineViewDataSource,
     }
     /// Headers only when there is more than one group.
     private var showHeaders = false
-    /// The window's workspace; click for the workspace menu.
+    /// The window's workspace; click for the workspace picker.
     private let workspaceButton = NSButton(title: "", target: nil, action: nil)
-    private let workspaceMenu = NSMenu()
     private let agents = AgentsPanel()
     private let usage = UsagePanel()
 
@@ -354,10 +353,9 @@ final class TabSidebarViewController: NSViewController, NSOutlineViewDataSource,
 
     // MARK: Model
 
-    /// Rebuilds the rows from the window's tab group (visual order) and the pane metadata.
+    /// Opens the same picker as the native tab strip's workspace button.
     @objc private func showWorkspaceMenu(_ sender: NSButton) {
-        SessionManager.shared.fillWorkspaceMenu(workspaceMenu)
-        workspaceMenu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.maxY + 4), in: sender)
+        WorkspacePicker.shared.toggle(relativeTo: sender)
     }
 
     /// How far the tab list is scrolled.
