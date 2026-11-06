@@ -57,15 +57,16 @@ final class SidebarGroup {
     let name: String
     /// What its collapsed state is kept under: the name, or for a workspace its id.
     let key: String
-    /// Another workspace's tabs: listed, but this window's tabs can't be dropped among them.
     let elsewhere: Bool
+    let workspace: UInt64?
     var tabs: [SidebarTab] = []
     /// Row objects, built once per reload (NSOutlineView tracks items by identity).
     var boxes: [TabBox] = []
-    init(name: String, key: String? = nil, elsewhere: Bool = false) {
+    init(name: String, key: String? = nil, elsewhere: Bool = false, workspace: UInt64? = nil) {
         self.name = name
         self.key = key ?? name
         self.elsewhere = elsewhere
+        self.workspace = workspace
     }
 }
 
@@ -549,7 +550,8 @@ final class TabSidebarViewController: NSViewController, NSOutlineViewDataSource,
                     order.append(other)
                     continue
                 }
-                let g = SidebarGroup(name: Self.heading(ws), key: Self.collapseKey(ws), elsewhere: true)
+                let g = SidebarGroup(name: Self.heading(ws), key: Self.collapseKey(ws), elsewhere: true,
+                                     workspace: ws.id)
                 if let shownIn = sm.controllerShowing(ws) {
                     g.tabs = sm.group(of: shownIn).map {
                         Self.row($0, shortcut: nil, selected: false, info: panes, config: config)
@@ -685,16 +687,37 @@ final class TabSidebarViewController: NSViewController, NSOutlineViewDataSource,
 
     func outlineView(_ outlineView: NSOutlineView, validateDrop info: NSDraggingInfo, proposedItem item: Any?,
                      proposedChildIndex index: Int) -> NSDragOperation {
+        guard let moving = draggedTab(info) else { return [] }
+        if let target = workspaceGroup(at: item) {
+            guard moveTarget(moving, into: target) != nil else { return [] }
+            outlineView.setDropItem(target, dropChildIndex: NSOutlineViewDropOnItemIndex)
+            return .move
+        }
         // One of this window's tabs, dropped between rows (not onto one) among them.
-        guard draggedTab(info) != nil, index != NSOutlineViewDropOnItemIndex,
-              (item as? SidebarGroup)?.elsewhere != true else { return [] }
+        guard index != NSOutlineViewDropOnItemIndex else { return [] }
         return .move
+    }
+
+    private func workspaceGroup(at item: Any?) -> SidebarGroup? {
+        let group = item as? SidebarGroup ?? outline.parent(forItem: item) as? SidebarGroup
+        return group?.elsewhere == true ? group : nil
+    }
+
+    private func moveTarget(_ moving: NSWindow, into group: SidebarGroup) -> Workspace? {
+        guard let c = moving.windowController as? TerminalWindowController else { return nil }
+        return SessionManager.shared.moveTargets(for: c).first { $0.id == group.workspace }
     }
 
     func outlineView(_ outlineView: NSOutlineView, acceptDrop info: NSDraggingInfo, item: Any?,
                      childIndex index: Int) -> Bool {
-        guard let moving = draggedTab(info), (item as? SidebarGroup)?.elsewhere != true,
-              let group = controller?.window?.tabGroup else { return false }
+        guard let moving = draggedTab(info) else { return false }
+        if let target = workspaceGroup(at: item) {
+            guard let ws = moveTarget(moving, into: target),
+                  let c = moving.windowController as? TerminalWindowController else { return false }
+            DispatchQueue.main.async { SessionManager.shared.moveTab(c, to: ws) }
+            return true
+        }
+        guard let group = controller?.window?.tabGroup else { return false }
         // Rows of the drop's group in order, and the tab that ends up right after the dropped one.
         let rows: [TabBox] = (item as? SidebarGroup)?.boxes ?? (showHeaders ? [] : groups.first?.boxes ?? [])
         let all = rows.compactMap { $0.tab.controller?.window }
@@ -777,6 +800,11 @@ final class TabSidebarViewController: NSViewController, NSOutlineViewDataSource,
         let move = NSMenuItem(title: "Move Tab to New Workspace", action: #selector(moveClicked(_:)), keyEquivalent: "")
         move.target = self
         menu.addItem(move)
+        let moveTo = NSMenuItem(title: "Move Tab to Workspace", action: nil, keyEquivalent: "")
+        moveTo.submenu = NSMenu(title: "Move Tab to Workspace")
+        moveTo.submenu?.delegate = self
+        menu.addItem(moveTo)
+        menu.delegate = self
         return menu
     }
 
@@ -793,6 +821,16 @@ final class TabSidebarViewController: NSViewController, NSOutlineViewDataSource,
     @objc private func moveClicked(_ sender: Any?) {
         guard let c = clickedTab() else { return }
         SessionManager.shared.moveTabToNewWorkspace(c)
+    }
+}
+
+extension TabSidebarViewController: NSMenuDelegate {
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        if menu === outline.menu {
+            menu.items.last?.isHidden = clickedTab() == nil
+        } else {
+            SessionManager.shared.fillMoveTabMenu(menu, for: clickedTab())
+        }
     }
 }
 

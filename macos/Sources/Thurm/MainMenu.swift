@@ -450,6 +450,11 @@ enum MainMenu {
         menu.addItem(.separator())
         menu.addItem(item("Move Tab to New Workspace", #selector(NSWindow.moveTabToNewWindow(_:)),
                           name: "move_tab_to_new_workspace"))
+        let moveTo = NSMenu(title: "Move Tab to Workspace")
+        moveTo.delegate = MoveTabMenuDelegate.shared
+        let moveToItem = item("Move Tab to Workspace", nil)
+        moveToItem.submenu = moveTo
+        menu.addItem(moveToItem)
         menu.addItem(.separator())
         menu.addItem(item("Quick Terminal", #selector(AppDelegate.toggleQuickTerminal(_:)), name: "quick_terminal"))
         menu.addItem(.separator())
@@ -563,5 +568,14 @@ final class WorkspaceMenuDelegate: NSObject, NSMenuDelegate {
         // File has these actions (with their shortcuts); keep only the list here.
         while let last = menu.items.last, !(last.isSeparatorItem) { menu.removeItem(last) }
         if let last = menu.items.last, last.isSeparatorItem { menu.removeItem(last) }
+    }
+}
+
+final class MoveTabMenuDelegate: NSObject, NSMenuDelegate {
+    static let shared = MoveTabMenuDelegate()
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        let sm = SessionManager.shared
+        sm.fillMoveTabMenu(menu, for: sm.currentController)
     }
 }
