@@ -27,11 +27,22 @@ final class WorkspacePicker: NSObject, NSTextFieldDelegate, NSWindowDelegate {
     private weak var targetWindow: NSWindow?
     private var clickMonitor: Any?
     private var observers: [NSObjectProtocol] = []
+    private let announceSelection: (String) -> Void
     private static let width: CGFloat = 248
     private static let inset: CGFloat = 8
     private static let listTop: CGFloat = 48
 
     var isVisible: Bool { panel?.isVisible == true }
+
+    init(announceSelection: @escaping (String) -> Void = { title in
+        NSAccessibility.post(element: NSApplication.shared, notification: .announcementRequested, userInfo: [
+            .announcement: title,
+            .priority: NSAccessibilityPriorityLevel.high.rawValue,
+        ])
+    }) {
+        self.announceSelection = announceSelection
+        super.init()
+    }
 
     func toggle(relativeTo view: NSView) {
         if isVisible { close(); return }
@@ -230,19 +241,25 @@ final class WorkspacePicker: NSObject, NSTextFieldDelegate, NSWindowDelegate {
         clearSearch.frame = NSRect(x: width - 22, y: 8, width: 14, height: 14)
         clearSearch.isHidden = search.stringValue.isEmpty
         scroll.frame = NSRect(x: Self.inset, y: Self.listTop, width: width,
-                              height: frame.height - Self.listTop - Self.inset)
+                              height: max(0, frame.height - Self.listTop - Self.inset))
         list.frame = NSRect(x: 0, y: 0, width: width, height: y)
         select(search.stringValue.isEmpty ? (rows.firstIndex(where: \.isCurrent) ?? 0) : 0)
     }
 
-    /// Below the button when possible, above it near the bottom, always inside the screen.
+    /// Prefer below when the content fits. Otherwise use above, or the larger side with a
+    /// shorter scroll area when neither side fits, so the picker never covers its button.
     static func frame(anchor: NSRect, contentHeight: CGFloat, screen: NSRect) -> NSRect {
         let visible = screen.insetBy(dx: 8, dy: 8)
-        let height = min(contentHeight, 460, visible.height)
+        let desiredHeight = min(contentHeight, 460, visible.height)
+        let belowTop = min(max(anchor.minY - 6, visible.minY), visible.maxY)
+        let aboveBottom = min(max(anchor.maxY + 6, visible.minY), visible.maxY)
+        let belowHeight = belowTop - visible.minY
+        let aboveHeight = visible.maxY - aboveBottom
+        let below = belowHeight >= desiredHeight || (aboveHeight < desiredHeight && belowHeight >= aboveHeight)
+        let height = min(desiredHeight, below ? belowHeight : aboveHeight)
         let x = min(max(anchor.minX, visible.minX), visible.maxX - width)
-        let below = anchor.minY - 6 - height
-        let y = below >= visible.minY ? below : min(anchor.maxY + 6, visible.maxY - height)
-        return NSRect(x: x, y: max(visible.minY, y), width: width, height: height)
+        let y = below ? belowTop - height : aboveBottom
+        return NSRect(x: x, y: y, width: width, height: height)
     }
 
     private func newWorkspaceShortcut() -> String {
@@ -256,11 +273,17 @@ final class WorkspacePicker: NSObject, NSTextFieldDelegate, NSWindowDelegate {
         return NSApp.mainMenu.flatMap(find).map(CommandPalette.shortcut) ?? "⌘N"
     }
 
-    private func select(_ index: Int, scrollToVisible: Bool = true) {
+    private func select(_ index: Int, scrollToVisible: Bool = true, announce: Bool = false) {
         guard !rows.isEmpty else { return }
+        let previous = selected
         selected = min(max(index, 0), rows.count - 1)
         for (i, row) in rows.enumerated() { row.isSelected = i == selected }
         if scrollToVisible { list.scrollToVisible(rows[selected].frame) }
+        // Keyboard focus stays in the filter. Speak arrow-key changes so VoiceOver users
+        // know what Return will activate; hover, reloads and boundary presses stay silent.
+        if announce, selected != previous {
+            announceSelection(rows[selected].accessibilityLabel() ?? rows[selected].title)
+        }
     }
 
     func controlTextDidChange(_ obj: Notification) { reload() }
@@ -274,9 +297,9 @@ final class WorkspacePicker: NSObject, NSTextFieldDelegate, NSWindowDelegate {
     func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
         switch selector {
         case #selector(NSResponder.moveDown(_:)):
-            select(selected + 1)
+            select(selected + 1, announce: true)
         case #selector(NSResponder.moveUp(_:)):
-            select(selected - 1)
+            select(selected - 1, announce: true)
         case #selector(NSResponder.insertNewline(_:)):
             if rows.indices.contains(selected) { rows[selected].performClick(nil) }
         case #selector(NSResponder.cancelOperation(_:)):
@@ -319,6 +342,7 @@ private final class WorkspacePickerRow: NSButton {
     override var isFlipped: Bool { true }
     // Keep typing in the filter after navigating with the pointer.
     override var acceptsFirstResponder: Bool { false }
+    override func isAccessibilitySelected() -> Bool { isSelected }
     override func mouseEntered(with event: NSEvent) { onHover?() }
     @objc private func run() { onSelect?() }
 
