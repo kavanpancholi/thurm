@@ -332,6 +332,9 @@ pub struct Client {
     /// Shows one pane at a time and holds the size of the one it shows
     /// ([`thurm_proto::CAP_PANE_PAGER`]).
     pub pane_pager: AtomicBool,
+    /// Claims panes with `OwnPanes` and hears whose size they have
+    /// ([`thurm_proto::CAP_PANE_OWNER`]).
+    pub pane_owner: AtomicBool,
     /// `thurm events` ([`thurm_proto::CAP_STATE_EVENTS`]): gets every `PaneInfo`.
     pub state_events: AtomicBool,
     /// A UI that carries out the newer UI commands ([`thurm_proto::CAP_UI_LAYOUT`]).
@@ -423,6 +426,8 @@ pub struct PaneState {
     pub size_owner: Option<u64>,
     /// The phone showing the pane: other clients' `Resize` waits until it lets go.
     pub size_held_by: Option<u64>,
+    /// The holder claimed the pane with `OwnPanes`, rather than holding it as a phone.
+    pub size_claimed_by: Option<u64>,
     pub agent: AgentTracker,
     osc_cwd: Option<String>,
     command_started: Option<Instant>,
@@ -732,6 +737,7 @@ impl Daemon {
             socket: Mutex::new(None),
             active_size: AtomicBool::new(false),
             pane_pager: AtomicBool::new(false),
+            pane_owner: AtomicBool::new(false),
             state_events: AtomicBool::new(false),
             ui_layout: AtomicBool::new(false),
             agent_wall: AtomicBool::new(false),
@@ -941,6 +947,7 @@ impl Daemon {
                 wanted: HashMap::new(),
                 size_owner: None,
                 size_held_by: None,
+                size_claimed_by: None,
                 agent: AgentTracker::default(),
                 osc_cwd: p.osc_cwd,
                 command_started: None,
@@ -2553,6 +2560,9 @@ impl Daemon {
                 if has(thurm_proto::CAP_PANE_PAGER) {
                     client.pane_pager.store(true, Ordering::Relaxed);
                 }
+                if has(thurm_proto::CAP_PANE_OWNER) {
+                    client.pane_owner.store(true, Ordering::Relaxed);
+                }
                 if has(thurm_proto::CAP_STATE_EVENTS) {
                     client.state_events.store(true, Ordering::Relaxed);
                 }
@@ -2575,7 +2585,7 @@ impl Daemon {
                     client.deflate.store(true, Ordering::Relaxed);
                 }
                 log::info!(
-                    "client {} hello: {name} (protocol {version}{}{}{}{})",
+                    "client {} hello: {name} (protocol {version}{}{}{}{}{})",
                     client.id,
                     if has(thurm_proto::CAP_MOBILE) {
                         ", mobile"
@@ -2589,6 +2599,11 @@ impl Daemon {
                     },
                     if has(thurm_proto::CAP_PANE_PAGER) {
                         ", pane pager"
+                    } else {
+                        ""
+                    },
+                    if has(thurm_proto::CAP_PANE_OWNER) {
+                        ", pane owner"
                     } else {
                         ""
                     },
@@ -2692,6 +2707,14 @@ impl Daemon {
             }
             Request::Resize { pane, size } => {
                 self.resize_for(client, pane, size)?;
+                Ok(Response::Ok)
+            }
+            Request::OwnPanes { panes, mode } => {
+                self.own_panes(client, &panes, mode);
+                Ok(Response::Ok)
+            }
+            Request::DisownPanes { panes } => {
+                self.disown_panes(client, &panes);
                 Ok(Response::Ok)
             }
             Request::Input { pane, data } => {
@@ -2814,6 +2837,12 @@ impl Daemon {
                     let size = st.term.size();
                     client.send(ServerMessage::Event(Event::Attach { pane, size, state }));
                     st.subscribers.insert(client.id, Subscriber::default());
+                    if client.pane_owner.load(Ordering::Relaxed) {
+                        client.send(ServerMessage::Event(Event::SizeOwner {
+                            pane,
+                            yours: st.size_owner == Some(client.id),
+                        }));
+                    }
                 })?;
                 Ok(Response::Ok)
             }
@@ -4054,6 +4083,7 @@ mod tests {
             socket: Mutex::new(None),
             active_size: AtomicBool::new(false),
             pane_pager: AtomicBool::new(false),
+            pane_owner: AtomicBool::new(false),
             state_events: AtomicBool::new(false),
             ui_layout: AtomicBool::new(false),
             agent_wall: AtomicBool::new(false),
