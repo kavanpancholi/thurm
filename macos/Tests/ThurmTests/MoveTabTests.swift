@@ -84,6 +84,24 @@ final class MoveTabTests: XCTestCase {
         assertNoPaneClosed()
     }
 
+    func testFloatingPanesMoveWithTheTab() throws {
+        let (tabs, _, hidden) = setUp(shown: [.leaf(pane(1))])
+        let card = FloatingPane(pane: pane(4), frame: [0.1, 0.2, 0.5, 0.4])
+        let c = manager.makeController(root: .leaf(pane(2)), focused: pane(2), zoomed: nil, title: nil, frame: nil,
+                                       floating: [card], floatingHidden: true)
+        manager.attachAsTab(c, to: tabs[0])
+
+        manager.moveTab(c, to: hidden)
+
+        let moved = try XCTUnwrap(hidden.hiddenTabs.last)
+        XCTAssertEqual(moved.floating?.map(\.pane), [pane(4)])
+        let frame = try XCTUnwrap(moved.floating?.first?.frame)
+        for (a, b) in zip(frame, card.frame) { XCTAssertEqual(a, b, accuracy: 0.001) }
+        XCTAssertEqual(moved.floatingHidden, true)
+        XCTAssertEqual(moved.panes, [pane(2), pane(4)])
+        assertNoPaneClosed()
+    }
+
     func testLastTabTakesTheWindowToTheTarget() throws {
         let (tabs, shown, hidden) = setUp(shown: [.leaf(pane(1))])
 
