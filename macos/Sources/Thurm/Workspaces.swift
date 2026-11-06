@@ -242,13 +242,57 @@ extension SessionManager {
             NSSound.beep()
             return
         }
-        let ws = makeWorkspace(host: workspace(c.workspaceID)?.host ?? c.host)
-        ws.hiddenTabs = [c.content.tabLayout(title: c.titleOverride)]
+        moveInBackground(c, to: makeWorkspace(host: workspace(c.workspaceID)?.host ?? c.host))
+    }
+
+    private func moveInBackground(_ c: TerminalWindowController, to ws: Workspace) {
+        ws.hiddenTabs.append(c.content.tabLayout(title: c.titleOverride))
         c.closingWithoutConfirmation = true
         c.window?.close()
         currentRegularController?.content.focusedView?.showToast("Tab moved to workspace \(ws.name)", duration: 4)
         refreshSidebars()
         scheduleLayoutSave()
+    }
+
+    func moveTargets(for c: TerminalWindowController) -> [Workspace] {
+        guard !c.isQuick, !c.isClosed, c.window != nil, c.wall == nil else { return [] }
+        let host = workspace(c.workspaceID)?.host ?? c.host
+        return workspacesByRecency.filter { $0.id != c.workspaceID && $0.host == host && !isShown($0) }
+    }
+
+    func moveTab(_ c: TerminalWindowController, to ws: Workspace) {
+        guard moveTargets(for: c).contains(where: { $0 === ws }) else {
+            NSSound.beep()
+            return
+        }
+        if group(of: c).count > 1 {
+            moveInBackground(c, to: ws)
+            return
+        }
+        ws.hiddenTabs.append(c.content.tabLayout(title: c.titleOverride))
+        c.content.isHidden = true
+        c.content.detachAll()
+        workspaces.removeAll { $0.id == c.workspaceID }
+        c.workspaceID = 0
+        ws.hiddenSelectedTab = ws.hiddenTabs.count - 1
+        switchWorkspace(in: c, to: ws)
+        currentController?.content.focusedView?.showToast("Tab moved to workspace \(ws.name)", duration: 4)
+    }
+
+    func fillMoveTabMenu(_ menu: NSMenu, for c: TerminalWindowController?) {
+        menu.removeAllItems()
+        let targets = c.map(moveTargets) ?? []
+        for ws in targets {
+            menu.addItem(BlockMenuItem(TabSidebarViewController.heading(ws)) { [weak c] in
+                guard let c else { return }
+                SessionManager.shared.moveTab(c, to: ws)
+            })
+        }
+        if targets.isEmpty {
+            let none = NSMenuItem(title: "No Other Workspaces", action: nil, keyEquivalent: "")
+            none.isEnabled = false
+            menu.addItem(none)
+        }
     }
 
     /// Thurm has one window. Another one (a tab dragged out of the tab bar) goes into a
