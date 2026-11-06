@@ -36,6 +36,14 @@ its edges to resize it, and double-click the header to zoom it. To put it in the
 splits, use **View › Dock Pane**, or hold Cmd while dragging its header over a pane
 and drop it on the side where it should go (Esc cancels the drag).
 
+Drag a tab's row from the sidebar onto the terminal area to float that tab as a
+card in the tab you're looking at; its programs keep running and its own floating
+panes come along. Only a tab with one pane in its splits can float, and only into
+a tab of the same window and host. **View › Float Tab Here** (or **Float Tab
+Here** in a sidebar row's menu) does the same. The other way, drag a card's header
+onto the sidebar and drop it between two rows to make it a tab of its own there,
+or use **View › Move Floating Pane to New Tab**. Esc cancels either drag.
+
 Closing a pane stops its process. Quitting the app keeps processes running by
 default. See [Sessions](/sessions/).
 
@@ -47,6 +55,10 @@ to run. A tab opened for another workspace, such as `thurm launch` on a remote
 host while the window shows a local workspace, goes to that workspace in the
 background, and the window says where. **Move Tab to New Workspace** (or
 dragging a tab out of the tab bar) moves a tab into a new workspace.
+**Move Tab to Workspace** (in the Window menu, the command palette, and a
+sidebar tab's context menu) moves it into an existing workspace on the same
+host. Its splits and programs move with it. Moving a workspace's last tab
+shows the workspace it moved to, and the emptied workspace closes.
 
 By default, tabs show in a sidebar grouped by repository. To use native tabs in the
 titlebar:
@@ -63,7 +75,7 @@ The View menu changes what the sidebar lists, as do the settings below:
   the tabs form one list in tab order.
 - **Tabs from All Workspaces** (`window.sidebar_all_workspaces`). Every workspace's
   tabs show under a header for the workspace. Click a tab of another workspace to
-  switch to it.
+  switch to it. Drag a tab onto another workspace to move it there.
 - **Only Active Tabs** (`window.sidebar_active_only`, or the filter button next to
   the sidebar button in the titlebar). The sidebar lists only the tabs with an agent that isn't
   idle or a program reporting progress, plus the selected tab.

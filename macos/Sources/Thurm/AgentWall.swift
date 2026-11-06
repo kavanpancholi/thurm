@@ -125,6 +125,11 @@ extension SessionManager {
         group(of: c).first { $0.wall != nil }
     }
 
+    func isWallOrigin(_ c: TerminalWindowController) -> Bool {
+        let here = Set(c.content.paneIds)
+        return agentWall(near: c)?.wall?.contains { $0.tab.panes.contains(where: here.contains) } == true
+    }
+
     /// Gathers the agents of `c`'s window into a wall (`on` true), puts them back (false), or
     /// toggles.
     func toggleAgentWall(in c: TerminalWindowController, on: Bool? = nil) {
@@ -250,9 +255,7 @@ extension SessionManager {
     /// layout there is already taken.
     func agentStarted(_ pane: PaneKey) {
         guard let c = controller(for: pane), !c.isQuick, c.wall == nil, c.handoffID == nil,
-              let wall = agentWall(near: c), var origins = wall.wall else { return }
-        let here = Set(c.content.paneIds)
-        guard !origins.contains(where: { $0.tab.panes.contains(where: here.contains) }) else { return }
+              let wall = agentWall(near: c), var origins = wall.wall, !isWallOrigin(c) else { return }
         let tabs = group(of: wall).filter { $0 !== wall && !$0.isQuick }
         let i = tabs.firstIndex { $0 === c } ?? tabs.count
         origins.append(WallOrigin(index: i, after: AgentWall.anchor(before: i, in: tabs),

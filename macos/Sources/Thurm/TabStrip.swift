@@ -87,12 +87,11 @@ final class TabStrip: NSView {
 }
 
 /// The workspace, as Rex shows the session: an icon over its name and where it runs. Opens the
-/// workspace menu.
+/// workspace picker.
 private final class WorkspaceBlock: NSView {
     private let icon = NSImageView()
     private let name = NSTextField(labelWithString: "")
     private let detail = NSTextField(labelWithString: "")
-    private let workspaceMenu = NSMenu()
 
     init() {
         super.init(frame: .zero)
@@ -149,9 +148,10 @@ private final class WorkspaceBlock: NSView {
         detail.textColor = fg.withAlphaComponent(0.5)
     }
 
+    override var mouseDownCanMoveWindow: Bool { false }
+
     override func mouseDown(with event: NSEvent) {
-        SessionManager.shared.fillWorkspaceMenu(workspaceMenu)
-        workspaceMenu.popUp(positioning: nil, at: NSPoint(x: 0, y: bounds.maxY + 6), in: self)
+        WorkspacePicker.shared.toggle(relativeTo: self)
     }
 }
 

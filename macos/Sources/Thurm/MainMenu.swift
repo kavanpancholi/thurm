@@ -350,6 +350,7 @@ enum MainMenu {
 
     private static func viewMenu() -> NSMenu {
         let menu = NSMenu(title: "View")
+        menu.delegate = FloatTabMenu.shared
         menu.addItem(item("Increase Font Size", #selector(AppDelegate.increaseFontSize(_:)), "=",
                           name: "increase_font_size"))
         let plus = item("Increase Font Size", #selector(AppDelegate.increaseFontSize(_:)), "+",
@@ -395,6 +396,13 @@ enum MainMenu {
         menu.addItem(item("New Floating Pane", #selector(TerminalWindowController.newFloatingPane(_:)),
                           name: "new_floating_pane"))
         menu.addItem(item("Float Pane", #selector(TerminalWindowController.toggleFloat(_:)), name: "float_pane"))
+        menu.addItem(item("Move Floating Pane to New Tab",
+                          #selector(TerminalWindowController.moveFloatingPaneToNewTab(_:)), name: "float_pane_to_tab"))
+        let floatTab = NSMenu(title: "Float Tab Here")
+        floatTab.delegate = FloatTabMenu.shared
+        let floatTabItem = item("Float Tab Here", nil)
+        floatTabItem.submenu = floatTab
+        menu.addItem(floatTabItem)
         menu.addItem(item("Equalize Splits", #selector(TerminalWindowController.equalizeSplits(_:)), "=",
                           [.command, .control], name: "equalize_splits"))
         menu.addItem(.separator())
@@ -450,6 +458,11 @@ enum MainMenu {
         menu.addItem(.separator())
         menu.addItem(item("Move Tab to New Workspace", #selector(NSWindow.moveTabToNewWindow(_:)),
                           name: "move_tab_to_new_workspace"))
+        let moveTo = NSMenu(title: "Move Tab to Workspace")
+        moveTo.delegate = MoveTabMenuDelegate.shared
+        let moveToItem = item("Move Tab to Workspace", nil)
+        moveToItem.submenu = moveTo
+        menu.addItem(moveToItem)
         menu.addItem(item("Pin Tab", #selector(TerminalWindowController.togglePinTab(_:)), name: "toggle_pin_tab"))
         menu.addItem(.separator())
         menu.addItem(item("Quick Terminal", #selector(AppDelegate.toggleQuickTerminal(_:)), name: "quick_terminal"))
@@ -469,6 +482,27 @@ enum MainMenu {
         let menu = NSMenu(title: "Help")
         menu.addItem(item("Open Configuration File", #selector(AppDelegate.openConfig(_:)), name: "open_config_file"))
         return menu
+    }
+}
+
+final class FloatTabMenu: NSObject, NSMenuDelegate {
+    static let shared = FloatTabMenu()
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        let manager = SessionManager.shared
+        let sources = manager.currentRegularController.map { manager.floatSources(into: $0) } ?? []
+        guard menu.title == "Float Tab Here" else {
+            menu.items.first { $0.submenu?.delegate === self }?.isHidden = sources.isEmpty
+            return
+        }
+        menu.removeAllItems()
+        guard let c = manager.currentRegularController else { return }
+        for src in sources {
+            menu.addItem(BlockMenuItem(src.window?.title ?? "Tab") { [weak src, weak c] in
+                guard let src, let c else { return }
+                manager.floatTab(src, into: c)
+            })
+        }
     }
 }
 
@@ -564,5 +598,14 @@ final class WorkspaceMenuDelegate: NSObject, NSMenuDelegate {
         // File has these actions (with their shortcuts); keep only the list here.
         while let last = menu.items.last, !(last.isSeparatorItem) { menu.removeItem(last) }
         if let last = menu.items.last, last.isSeparatorItem { menu.removeItem(last) }
+    }
+}
+
+final class MoveTabMenuDelegate: NSObject, NSMenuDelegate {
+    static let shared = MoveTabMenuDelegate()
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        let sm = SessionManager.shared
+        sm.fillMoveTabMenu(menu, for: sm.currentController)
     }
 }

@@ -630,11 +630,12 @@ final class SessionManager: NSObject, CoreDelegate {
         return c
     }
 
-    func attachAsTab(_ c: TerminalWindowController, to host: TerminalWindowController) {
+    func attachAsTab(_ c: TerminalWindowController, to host: TerminalWindowController,
+                     ordered: NSWindow.OrderingMode = .above) {
         c.workspaceID = host.workspaceID
         guard let hostWindow = host.window, let w = c.window else { return }
         w.setFrame(hostWindow.frame, display: false)
-        hostWindow.addTabbedWindow(w, ordered: .above)
+        hostWindow.addTabbedWindow(w, ordered: ordered)
         // Its sidebar lists the whole tab group from its first frame, not just itself until the
         // next refresh.
         c.tabSplit?.match(host.tabSplit)
@@ -686,7 +687,7 @@ final class SessionManager: NSObject, CoreDelegate {
     @discardableResult
     func newTab(from hostIn: TerminalWindowController?, pane existing: PaneKey? = nil, preset: String? = nil,
                 cwd: String? = nil, host daemonIn: HostId? = nil, handoff: String? = nil,
-                reveal: Bool = false, background: Bool = false) -> PaneKey? {
+                reveal: Bool = false, background: Bool = false, ordered: NSWindow.OrderingMode = .above) -> PaneKey? {
         // The quick terminal has one tab: new ones go to the last regular window.
         var host = hostIn ?? currentController
         if host?.isQuick ?? false { host = currentRegularController }
@@ -709,7 +710,7 @@ final class SessionManager: NSObject, CoreDelegate {
                     attachAsTab(c, to: host)
                     if let selected { selected.tabGroup?.selectedWindow = selected }
                 } else {
-                    attachAsTab(c, to: host)
+                    attachAsTab(c, to: host, ordered: ordered)
                     c.window?.makeKeyAndOrderFront(nil)
                 }
             } else {

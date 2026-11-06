@@ -484,6 +484,10 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         SessionManager.shared.newFloatingPane(in: self)
     }
 
+    @objc func moveFloatingPaneToNewTab(_ sender: Any?) {
+        SessionManager.shared.moveCardToNewTab(content.focusedPane, from: self)
+    }
+
     @objc func toggleAgentWall(_ sender: Any?) {
         SessionManager.shared.toggleAgentWall(in: self)
     }
@@ -573,6 +577,8 @@ extension TerminalWindowController: NSMenuItemValidation {
         case #selector(togglePinTab(_:)):
             menuItem.title = pinned ? "Unpin Tab" : "Pin Tab"
             return !isQuick && SessionManager.shared.config.sidebarTabs
+        case #selector(moveFloatingPaneToNewTab(_:)):
+            return SessionManager.shared.canMoveCards(self) && content.isFloating(content.focusedPane)
         default:
             return true
         }

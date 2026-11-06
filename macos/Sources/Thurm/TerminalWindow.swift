@@ -281,7 +281,21 @@ final class TerminalWindow: NSWindow, NSToolbarDelegate {
             makeKeyAndOrderFront(nil)
             return
         }
+        if event.type == .leftMouseDown, event.clickCount == 2, isEmptyTitlebar(at: event.locationInWindow) {
+            TitlebarDoubleClick.current.perform(on: self)
+            return
+        }
         super.sendEvent(event)
+    }
+
+    private func isEmptyTitlebar(at point: NSPoint) -> Bool {
+        guard !styleMask.contains(.fullScreen), point.y >= contentLayoutRect.maxY,
+              let frame = contentView?.superview, var view = frame.hitTest(point) else { return false }
+        while view !== frame {
+            guard view.mouseDownCanMoveWindow, let parent = view.superview else { return false }
+            view = parent
+        }
+        return true
     }
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
