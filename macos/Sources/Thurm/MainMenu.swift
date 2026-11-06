@@ -372,6 +372,8 @@ enum MainMenu {
                           name: "toggle_sidebar_active_only"))
         menu.addItem(item("Agents in Sidebar", #selector(AppDelegate.toggleSidebarAgents(_:)),
                           name: "toggle_sidebar_agents"))
+        menu.addItem(item("Collapse Agents", #selector(AppDelegate.toggleSidebarAgentsCollapsed(_:)),
+                          name: "toggle_sidebar_agents_collapsed"))
         let usage = NSMenu(title: "Usage Limits in Sidebar")
         usage.addItem(item("Claude Code", #selector(AppDelegate.toggleSidebarUsageClaude(_:)),
                            name: "toggle_sidebar_usage_claude"))
