@@ -170,6 +170,24 @@ final class SidebarTests: XCTestCase {
         XCTAssertEqual(pinned.tabs, [idle, busy])
         XCTAssertEqual(other.tabs, [busy, selected])
     }
+
+    func testPinnedTabsReorderOnlyAmongThisWindowsPins() {
+        let pinned = SidebarGroup(name: "Pinned", key: TabSidebarViewController.pinnedKey)
+        let terminals = SidebarGroup(name: "Terminals")
+        let elsewhere = SidebarGroup(name: "api", key: "workspace:2", elsewhere: true)
+        let drop = { (group: SidebarGroup?, index: Int, pinned: Bool, own: Int) in
+            TabSidebarViewController.allowsDrop(into: group, at: index, pinned: pinned, ownPinnedRows: own)
+        }
+        XCTAssertTrue(drop(pinned, 0, true, 2))
+        XCTAssertTrue(drop(pinned, 2, true, 2))
+        XCTAssertFalse(drop(pinned, 3, true, 2))
+        XCTAssertFalse(drop(pinned, 1, false, 2))
+        XCTAssertFalse(drop(pinned, NSOutlineViewDropOnItemIndex, true, 2))
+        XCTAssertFalse(drop(terminals, 0, true, 2))
+        XCTAssertTrue(drop(terminals, 0, false, 0))
+        XCTAssertTrue(drop(nil, 0, false, 0))
+        XCTAssertFalse(drop(elsewhere, 0, false, 0))
+    }
 }
 
 final class CommandHoldTests: XCTestCase {

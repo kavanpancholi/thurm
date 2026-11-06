@@ -538,7 +538,7 @@ final class TabSidebarViewController: NSViewController, NSOutlineViewDataSource,
         let byRepo = Self.groupsByRepo(config)
         var byRoot: [String: SidebarGroup] = [:]
         var order: [SidebarGroup] = []
-        let pinned = SidebarGroup(name: "Pinned", key: Self.pinnedKey, elsewhere: true)
+        let pinned = SidebarGroup(name: "Pinned", key: Self.pinnedKey)
         // Every workspace listed: this window's tabs under its workspace.
         let other = config.sidebarAllWorkspaces
             ? SidebarGroup(name: shownWorkspace.map(Self.heading) ?? "Tabs", key: shownWorkspace.map(Self.collapseKey))
@@ -717,18 +717,31 @@ final class TabSidebarViewController: NSViewController, NSOutlineViewDataSource,
     func outlineView(_ outlineView: NSOutlineView, validateDrop info: NSDraggingInfo, proposedItem item: Any?,
                      proposedChildIndex index: Int) -> NSDragOperation {
         // One of this window's tabs, dropped between rows (not onto one) among them.
-        guard draggedTab(info) != nil, index != NSOutlineViewDropOnItemIndex,
-              (item as? SidebarGroup)?.elsewhere != true else { return [] }
+        guard let moving = draggedTab(info), allowsDrop(moving, into: item, at: index) else { return [] }
         return .move
+    }
+
+    static func allowsDrop(into group: SidebarGroup?, at index: Int, pinned: Bool, ownPinnedRows: Int) -> Bool {
+        guard index != NSOutlineViewDropOnItemIndex else { return false }
+        if group?.key == pinnedKey { return pinned && index <= ownPinnedRows }
+        return !pinned && group?.elsewhere != true
+    }
+
+    private func allowsDrop(_ moving: NSWindow, into item: Any?, at index: Int) -> Bool {
+        let group = item as? SidebarGroup
+        let own = group?.boxes.prefix { $0.tab.controller?.window.map(ownsTab) == true }.count ?? 0
+        return Self.allowsDrop(into: group, at: index,
+                               pinned: (moving.windowController as? TerminalWindowController)?.pinned == true,
+                               ownPinnedRows: own)
     }
 
     func outlineView(_ outlineView: NSOutlineView, acceptDrop info: NSDraggingInfo, item: Any?,
                      childIndex index: Int) -> Bool {
-        guard let moving = draggedTab(info), (item as? SidebarGroup)?.elsewhere != true,
+        guard let moving = draggedTab(info), allowsDrop(moving, into: item, at: index),
               let group = controller?.window?.tabGroup else { return false }
         // Rows of the drop's group in order, and the tab that ends up right after the dropped one.
         let rows: [TabBox] = (item as? SidebarGroup)?.boxes ?? (showHeaders ? [] : groups.first?.boxes ?? [])
-        let all = rows.compactMap { $0.tab.controller?.window }
+        let all = rows.compactMap { $0.tab.controller?.window }.filter(ownsTab)
         let windows = all.filter { $0 !== moving }
         // `index` counts the dragged row too when it comes from above the drop point.
         let from = all.firstIndex { $0 === moving }
