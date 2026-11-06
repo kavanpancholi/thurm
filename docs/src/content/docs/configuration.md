@@ -155,6 +155,7 @@ the defaults alone.
 | `toggle_floating_panes` | View > Show Floating Panes |
 | `new_floating_pane` | View > New Floating Pane |
 | `float_pane` | View > Float Pane |
+| `float_pane_to_tab` | View > Move Floating Pane to New Tab |
 | `equalize_splits` | View > Equalize Splits |
 | `focus_left` | View > Select Split Left |
 | `focus_right` | View > Select Split Right |
