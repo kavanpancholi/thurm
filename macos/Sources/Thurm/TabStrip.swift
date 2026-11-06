@@ -148,6 +148,8 @@ private final class WorkspaceBlock: NSView {
         detail.textColor = fg.withAlphaComponent(0.5)
     }
 
+    override var mouseDownCanMoveWindow: Bool { false }
+
     override func mouseDown(with event: NSEvent) {
         WorkspacePicker.shared.toggle(relativeTo: self)
     }
