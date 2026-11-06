@@ -36,6 +36,14 @@ its edges to resize it, and double-click the header to zoom it. To put it in the
 splits, use **View › Dock Pane**, or hold Cmd while dragging its header over a pane
 and drop it on the side where it should go (Esc cancels the drag).
 
+Drag a tab's row from the sidebar onto the terminal area to float that tab as a
+card in the tab you're looking at; its programs keep running and its own floating
+panes come along. Only a tab with one pane in its splits can float, and only into
+a tab of the same window and host. **View › Float Tab Here** (or **Float Tab
+Here** in a sidebar row's menu) does the same. The other way, drag a card's header
+onto the sidebar and drop it between two rows to make it a tab of its own there,
+or use **View › Move Floating Pane to New Tab**. Esc cancels either drag.
+
 Closing a pane stops its process. Quitting the app keeps processes running by
 default. See [Sessions](/sessions/).
 

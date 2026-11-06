@@ -262,8 +262,14 @@ final class TabSidebarViewController: NSViewController, NSOutlineViewDataSource,
     private var shown: (names: [[String]], tabs: [[SidebarTab]], theme: Theme)?
 
     private let outline = NSOutlineView()
+    private let dropLine: NSView = {
+        let line = NSView()
+        line.wantsLayer = true
+        line.isHidden = true
+        return line
+    }()
     private var groups: [SidebarGroup] = []
-    private static let dragType = NSPasteboard.PasteboardType("com.thurm.sidebar-tab")
+    static let dragType = NSPasteboard.PasteboardType("com.thurm.sidebar-tab")
     /// Keys of the groups the user collapsed (kept across reloads and launches).
     private static var collapsed: Set<String> {
         get { Set(UserDefaults.standard.stringArray(forKey: "SidebarCollapsedGroups") ?? []) }
@@ -496,9 +502,13 @@ final class TabSidebarViewController: NSViewController, NSOutlineViewDataSource,
         if let h = c.handoffID.flatMap({ Remotes.shared.handoffs[$0] }) {
             return (h.repo, (h.repo as NSString).lastPathComponent)
         }
-        guard let root = SessionManager.shared.panes[c.focusedPane]?.git?.root else { return nil }
+        return group(for: c.focusedPane)
+    }
+
+    static func group(for pane: PaneKey) -> (key: String, name: String)? {
+        guard let root = SessionManager.shared.panes[pane]?.git?.root else { return nil }
         let name = (root as NSString).lastPathComponent
-        return c.host == localHost ? (root, name) : ("\(c.host):\(root)", "\(c.host) · \(name)")
+        return pane.host == localHost ? (root, name) : ("\(pane.host):\(root)", "\(pane.host) · \(name)")
     }
 
     func reload() {
@@ -671,9 +681,13 @@ final class TabSidebarViewController: NSViewController, NSOutlineViewDataSource,
 
     /// The tab a drag carries, when it is one of this window's.
     private func draggedTab(_ info: NSDraggingInfo) -> NSWindow? {
-        guard let s = info.draggingPasteboard.string(forType: Self.dragType), let number = Int(s),
-              let w = NSApp.window(withWindowNumber: number), ownsTab(w) else { return nil }
+        guard let w = Self.draggedWindow(info), ownsTab(w) else { return nil }
         return w
+    }
+
+    static func draggedWindow(_ info: NSDraggingInfo) -> NSWindow? {
+        guard let s = info.draggingPasteboard.string(forType: dragType), let number = Int(s) else { return nil }
+        return NSApp.window(withWindowNumber: number)
     }
 
     func outlineView(_ outlineView: NSOutlineView, pasteboardWriterForItem item: Any) -> NSPasteboardWriting? {
@@ -802,6 +816,9 @@ final class TabSidebarViewController: NSViewController, NSOutlineViewDataSource,
         moveTo.submenu = NSMenu(title: "Move Tab to Workspace")
         moveTo.submenu?.delegate = self
         menu.addItem(moveTo)
+        let float = NSMenuItem(title: "Float Tab Here", action: #selector(floatClicked(_:)), keyEquivalent: "")
+        float.target = self
+        menu.addItem(float)
         menu.delegate = self
         return menu
     }
@@ -820,12 +837,82 @@ final class TabSidebarViewController: NSViewController, NSOutlineViewDataSource,
         guard let c = clickedTab() else { return }
         SessionManager.shared.moveTabToNewWorkspace(c)
     }
+
+    @objc private func floatClicked(_ sender: Any?) {
+        guard let src = clickedTab(), let controller else { return }
+        SessionManager.shared.floatTab(src, into: controller)
+    }
+
+    func cardDrop(at windowPoint: NSPoint, for pane: PaneKey) -> (gap: TabGap, line: CGRect)? {
+        guard !view.isHiddenOrHasHiddenAncestor, view.window != nil else { return nil }
+        let p = outline.convert(windowPoint, from: nil)
+        guard outline.visibleRect.contains(p), !overOtherTabs(outline.row(at: p)) else { return nil }
+        let rows = cardDropRows()
+        let grouped = Self.groupsByRepo(SessionManager.shared.config)
+        let keys = rows.map { grouped ? Self.group(for: $0.tab)?.key : "" }
+        let key = grouped ? Self.group(for: pane)?.key : ""
+        if let gap = SidebarDrop.gap(rows: rows.map(\.rect), keys: keys, key: key, at: p.y) {
+            return ((rows[gap.index].tab, gap.after), Self.dropLine(rows[gap.index].rect, after: gap.after))
+        }
+        guard let edge = SidebarDrop.newGroupEdge(keys: keys, key: key),
+              let last = controller?.window?.tabGroup?.windows.last?.windowController as? TerminalWindowController
+        else { return nil }
+        return ((last, true), Self.dropLine(rows[edge.index].rect, after: edge.after))
+    }
+
+    private static func dropLine(_ row: CGRect, after: Bool) -> CGRect {
+        CGRect(x: row.minX + 8, y: (after ? row.maxY : row.minY) - 1, width: max(0, row.width - 16), height: 2)
+    }
+
+    func showCardDrop(_ line: CGRect?) {
+        guard let line else {
+            dropLine.isHidden = true
+            return
+        }
+        if dropLine.superview !== outline { outline.addSubview(dropLine) }
+        dropLine.frame = line
+        dropLine.layer?.backgroundColor = SessionManager.shared.config.chrome.accent.cgColor
+        dropLine.isHidden = false
+    }
+
+    private func overOtherTabs(_ row: Int) -> Bool {
+        guard row >= 0, let item = outline.item(atRow: row) else { return false }
+        if let group = item as? SidebarGroup { return group.elsewhere }
+        return ownedTab(row: row) == nil
+    }
+
+    private func ownedTab(row: Int) -> TerminalWindowController? {
+        guard let box = outline.item(atRow: row) as? TabBox, let c = box.tab.controller, let w = c.window,
+              ownsTab(w), (outline.parent(forItem: box) as? SidebarGroup)?.elsewhere != true else { return nil }
+        return c
+    }
+
+    private func cardDropRows() -> [(tab: TerminalWindowController, rect: CGRect)] {
+        (0..<outline.numberOfRows).compactMap { row in ownedTab(row: row).map { ($0, outline.rect(ofRow: row)) } }
+    }
+}
+
+enum SidebarDrop {
+    static func gap(rows: [CGRect], keys: [String?], key: String?, at y: CGFloat) -> (index: Int, after: Bool)? {
+        let nearest = rows.indices.filter { keys[$0] == key }.min { distance(y, rows[$0]) < distance(y, rows[$1]) }
+        return nearest.map { ($0, y >= rows[$0].midY) }
+    }
+
+    static func newGroupEdge(keys: [String?], key: String?) -> (index: Int, after: Bool)? {
+        guard !keys.isEmpty else { return nil }
+        guard key != nil else { return (keys.count - 1, true) }
+        return keys.lastIndex { $0 != nil }.map { ($0, true) } ?? (0, false)
+    }
+
+    private static func distance(_ y: CGFloat, _ rect: CGRect) -> CGFloat {
+        y < rect.minY ? rect.minY - y : y >= rect.maxY ? y - rect.maxY : 0
+    }
 }
 
 extension TabSidebarViewController: NSMenuDelegate {
     func menuNeedsUpdate(_ menu: NSMenu) {
         if menu === outline.menu {
-            menu.items.last?.isHidden = clickedTab() == nil
+            menu.items.first { $0.submenu != nil }?.isHidden = clickedTab() == nil
         } else {
             SessionManager.shared.fillMoveTabMenu(menu, for: clickedTab())
         }
@@ -835,7 +922,14 @@ extension TabSidebarViewController: NSMenuDelegate {
 extension TabSidebarViewController: NSMenuItemValidation {
     /// The row menu acts on a window's tab: not on a header or a hidden workspace's tab.
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
-        clickedTab() != nil
+        if menuItem.action == #selector(floatClicked(_:)) { return validateFloatItem(menuItem, for: clickedTab()) }
+        return clickedTab() != nil
+    }
+
+    func validateFloatItem(_ item: NSMenuItem, for src: TerminalWindowController?) -> Bool {
+        let can = src.flatMap { src in controller.map { SessionManager.shared.canFloat(src, into: $0) } } ?? false
+        item.isHidden = !can
+        return can
     }
 }
 

@@ -115,6 +115,15 @@ enum FloatingGeometry {
         return CGRect(x: 0.22 + step, y: 0.18 + step, width: 0.56, height: 0.6)
     }
 
+    static func centered(at point: CGPoint, in area: CGRect, index: Int) -> CGRect {
+        let d = defaultFraction(index: index)
+        guard area.width > 0, area.height > 0 else { return d }
+        let x = (point.x - area.minX) / area.width - d.width / 2
+        let y = (point.y - area.minY) / area.height - d.height / 2
+        return CGRect(x: min(max(0, x), 1 - d.width), y: min(max(0, y), 1 - d.height),
+                      width: d.width, height: d.height)
+    }
+
     /// The edges of `rect` within `band` of `point` (empty: not on its edge).
     static func edges(at point: CGPoint, of rect: CGRect) -> FloatingEdges {
         let outer = rect.insetBy(dx: -band, dy: -band)
