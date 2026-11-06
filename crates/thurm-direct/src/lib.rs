@@ -572,6 +572,8 @@ impl Inner {
             | Request::UnregisterPushDevice { .. }
             | Request::FollowAgent { .. }
             | Request::UnfollowAgent { .. } => Ok(Response::Ok),
+            // The app is the only client: every pane has its size already.
+            Request::OwnPanes { .. } | Request::DisownPanes { .. } => Ok(Response::Ok),
             _ => Err("not available on a host without Thurm".into()),
         }
     }

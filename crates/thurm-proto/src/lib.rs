@@ -76,6 +76,7 @@ pub const CAPABILITIES: &[&str] = &[
     CAP_FLOATING,
     CAP_FLOATING_NEW,
     CAP_FLOATING_PLACE,
+    CAP_PANE_OWNER,
 ];
 
 /// The pane takes the size of the client that used it last (see the daemon's `active_size`)
@@ -113,6 +114,12 @@ pub const CAP_MOBILE: &str = "mobile";
 /// between panes, so a pane it sizes keeps that size against other clients' `Resize` until it
 /// lets go (see the daemon's `active_size`). The web client, showing splits, does not send it.
 pub const CAP_PANE_PAGER: &str = "pane-pager";
+
+/// The daemon takes [`Request::OwnPanes`] and [`Request::DisownPanes`]: a client claims the
+/// panes it shows, and they keep its size against other clients' `Resize` until it lets go or
+/// another client really uses them. A client that sends it gets [`Event::SizeOwner`] for the
+/// panes it subscribes to.
+pub const CAP_PANE_OWNER: &str = "pane-owner";
 
 /// Sent only by `thurm events`: besides the events every client gets, it gets the [`PaneInfo`]
 /// changes that come from a pane's output (prompt, cwd, progress), which otherwise go only to
@@ -444,6 +451,34 @@ pub enum Request {
     PaneModes {
         pane: PaneId,
     },
+    /// Claim `panes` for this client ([`CAP_PANE_OWNER`]): they take its size (a pane it has
+    /// not sized yet, with its first `Resize`), and keep it against other clients' `Resize`
+    /// until it lets go ([`Request::DisownPanes`], leaving the pane or the host) or another
+    /// client really uses them (input, focus). Panes that are gone or have a terminal attached
+    /// are skipped, and a pane named twice counts once. At most 1024 panes. Answers Ok.
+    OwnPanes {
+        panes: Vec<PaneId>,
+        #[serde(default)]
+        mode: OwnMode,
+    },
+    /// Let go of `panes` (all the panes this client holds when empty): each one it holds goes to
+    /// the client that asked for it ([`OwnMode::Request`]), or else to the one that used it
+    /// last. Stops asking for the others. At most 1024 panes. Answers Ok.
+    DisownPanes {
+        #[serde(default)]
+        panes: Vec<PaneId>,
+    },
+}
+
+/// How [`Request::OwnPanes`] treats a pane another client holds.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum OwnMode {
+    /// Take it from the other client.
+    #[default]
+    Take,
+    /// Leave it to the other client; when that one lets go, the pane goes to the first client
+    /// still connected that asked for it.
+    Request,
 }
 
 /// A mobile client silent this long is taken for gone: iOS suspends apps without closing their
@@ -666,6 +701,12 @@ pub enum Event {
     Compressed {
         #[serde(with = "bytes")]
         data: Vec<u8>,
+    },
+    /// Whose size a subscribed pane has now: this client's (`yours`) or another's. Sent only to
+    /// clients with [`CAP_PANE_OWNER`], on subscribing and when it changes.
+    SizeOwner {
+        pane: PaneId,
+        yours: bool,
     },
 }
 
@@ -1495,4 +1536,98 @@ pub enum AgentPromptOutcome {
     NeedsInput,
     Timeout,
     Exited,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn own_panes_json() {
+        let req: Request =
+            serde_json::from_str(r#"{"OwnPanes":{"panes":[3,4],"mode":"Take"}}"#).expect("decodes");
+        assert!(
+            matches!(&req, Request::OwnPanes { panes, mode: OwnMode::Take } if panes == &[3, 4])
+        );
+        assert_eq!(
+            to_json(&req),
+            r#"{"OwnPanes":{"panes":[3,4],"mode":"Take"}}"#
+        );
+
+        let req: Request = serde_json::from_str(r#"{"OwnPanes":{"panes":[7],"mode":"Request"}}"#)
+            .expect("decodes");
+        assert!(
+            matches!(&req, Request::OwnPanes { panes, mode: OwnMode::Request } if panes == &[7])
+        );
+        assert_eq!(
+            to_json(&req),
+            r#"{"OwnPanes":{"panes":[7],"mode":"Request"}}"#
+        );
+
+        let req: Request = serde_json::from_str(r#"{"OwnPanes":{"panes":[5]}}"#).expect("decodes");
+        assert!(matches!(&req, Request::OwnPanes { panes, mode: OwnMode::Take } if panes == &[5]));
+    }
+
+    #[test]
+    fn disown_panes_json() {
+        let req: Request =
+            serde_json::from_str(r#"{"DisownPanes":{"panes":[]}}"#).expect("decodes");
+        assert!(matches!(&req, Request::DisownPanes { panes } if panes.is_empty()));
+        assert_eq!(to_json(&req), r#"{"DisownPanes":{"panes":[]}}"#);
+
+        let req: Request = serde_json::from_str(r#"{"DisownPanes":{}}"#).expect("decodes");
+        assert!(matches!(&req, Request::DisownPanes { panes } if panes.is_empty()));
+
+        let req: Request =
+            serde_json::from_str(r#"{"DisownPanes":{"panes":[2,9]}}"#).expect("decodes");
+        assert!(matches!(&req, Request::DisownPanes { panes } if panes == &[2, 9]));
+    }
+
+    #[test]
+    fn size_owner_json() {
+        let ev = Event::SizeOwner {
+            pane: 3,
+            yours: false,
+        };
+        assert_eq!(to_json(&ev), r#"{"SizeOwner":{"pane":3,"yours":false}}"#);
+        let ev: Event =
+            serde_json::from_str(r#"{"SizeOwner":{"pane":3,"yours":true}}"#).expect("decodes");
+        assert!(matches!(
+            ev,
+            Event::SizeOwner {
+                pane: 3,
+                yours: true
+            }
+        ));
+    }
+
+    #[test]
+    fn pane_owner_postcard() {
+        let env = Envelope {
+            id: 1,
+            request: Request::OwnPanes {
+                panes: vec![3, 4],
+                mode: OwnMode::Request,
+            },
+        };
+        let bytes = postcard::to_allocvec(&env).expect("encodes");
+        let back: Envelope = postcard::from_bytes(&bytes).expect("decodes");
+        assert!(matches!(
+            back.request,
+            Request::OwnPanes { panes, mode: OwnMode::Request } if panes == [3, 4]
+        ));
+        let msg = ServerMessage::Event(Event::SizeOwner {
+            pane: 3,
+            yours: true,
+        });
+        let bytes = postcard::to_allocvec(&msg).expect("encodes");
+        let back: ServerMessage = postcard::from_bytes(&bytes).expect("decodes");
+        assert!(matches!(
+            back,
+            ServerMessage::Event(Event::SizeOwner {
+                pane: 3,
+                yours: true
+            })
+        ));
+    }
 }
