@@ -138,6 +138,38 @@ final class SidebarTests: XCTestCase {
             XCTAssertFalse(TabSidebarViewController.isActive([shell], info: info, progress: nil), status)
         }
     }
+
+    func testTabLayoutCodesPin() throws {
+        let old = try JSONDecoder().decode(TabLayout.self, from: Data(#"{"root":{"type":"pane","id":1},"focused":1}"#.utf8))
+        XCTAssertNil(old.pinned)
+        XCTAssertFalse(String(decoding: try JSONEncoder().encode(old), as: UTF8.self).contains("pinned"))
+        var tab = old
+        tab.pinned = true
+        let json = String(decoding: try JSONEncoder().encode(tab), as: UTF8.self)
+        XCTAssertTrue(json.contains(#""pinned":true"#))
+        XCTAssertEqual(try JSONDecoder().decode(TabLayout.self, from: Data(json.utf8)), tab)
+    }
+
+    func testPinnedTabsComeFirstInTabOrder() {
+        let split = TabSidebarViewController.pinnedFirst(["a", "B", "c", "D"]) { $0.uppercased() == $0 }
+        XCTAssertEqual(split.pinned, ["B", "D"])
+        XCTAssertEqual(split.rest, ["a", "c"])
+    }
+
+    func testActiveOnlyKeepsEveryPinnedTab() {
+        let idle = SidebarTab(controller: nil, title: "idle", selected: false)
+        var busy = idle
+        busy.active = true
+        var selected = idle
+        selected.selected = true
+        let pinned = SidebarGroup(name: "Pinned", key: TabSidebarViewController.pinnedKey)
+        pinned.tabs = [idle, busy]
+        let other = SidebarGroup(name: "Terminals")
+        other.tabs = [idle, busy, selected]
+        TabSidebarViewController.keepingActive([pinned, other])
+        XCTAssertEqual(pinned.tabs, [idle, busy])
+        XCTAssertEqual(other.tabs, [busy, selected])
+    }
 }
 
 final class CommandHoldTests: XCTestCase {
