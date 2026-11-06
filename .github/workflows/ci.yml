@@ -261,7 +261,7 @@ jobs:
     timeout-minutes: 20
     container:
       # Pinned to the tag's digest: a moved tag must not change what runs here.
-      image: mcr.microsoft.com/playwright:v1.64.1-resolute@sha256:f76885029244e5a384243a930ff283cef67d90653978ee27a77dd4cff8882fb4
+      image: mcr.microsoft.com/playwright:v1.65.0-resolute@sha256:4d70b558dbaff71611b2f3e7a32aa2b4d42cfc892078ad368cb7ea229c2ffd1f
       options: --ipc=host
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
