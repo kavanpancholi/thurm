@@ -262,3 +262,65 @@ final class CommandHoldTests: XCTestCase {
         XCTAssertEqual(row.shownShortcut, "")
     }
 }
+
+final class AgentsPanelCollapseTests: XCTestCase {
+    private let suite = "AgentsPanelCollapseTests"
+
+    override func setUp() {
+        super.setUp()
+        UserDefaults().removePersistentDomain(forName: suite)
+        AgentsPanel.defaults = UserDefaults(suiteName: suite)!
+    }
+
+    override func tearDown() {
+        UserDefaults().removePersistentDomain(forName: suite)
+        AgentsPanel.defaults = .standard
+        super.tearDown()
+    }
+
+    func testCollapsedIsOffByDefault() {
+        XCTAssertFalse(AgentsPanel.collapsed)
+    }
+
+    func testToggleIsKeptAndAnnounced() {
+        let announced = expectation(forNotification: AgentsPanel.collapsedChanged, object: nil)
+        AgentsPanel.collapsed.toggle()
+        wait(for: [announced], timeout: 1)
+        XCTAssertTrue(AgentsPanel.collapsed)
+        XCTAssertTrue(UserDefaults(suiteName: suite)!.bool(forKey: "SidebarAgentsCollapsed"))
+        AgentsPanel.collapsed.toggle()
+        XCTAssertFalse(AgentsPanel.collapsed)
+    }
+
+    func testCollapsedKeepsOnlyTheHeader() {
+        XCTAssertEqual(AgentsPanel.height(rows: 13, list: 200, collapsed: true), AgentsPanel.headerHeight)
+        XCTAssertEqual(AgentsPanel.height(rows: 1, list: 40, collapsed: true), AgentsPanel.headerHeight)
+        XCTAssertEqual(AgentsPanel.height(rows: 13, list: 200, collapsed: false), AgentsPanel.headerHeight + 200)
+    }
+
+    func testNoAgentsHidesThePanelEitherWay() {
+        XCTAssertEqual(AgentsPanel.height(rows: 0, list: 0, collapsed: true), 0)
+        XCTAssertEqual(AgentsPanel.height(rows: 0, list: 0, collapsed: false), 0)
+    }
+
+    func testSummaryCountsWaitingAndWorkingEitherWay() {
+        let statuses: [AgentStatus] = [.needsInput, .working, .working, .idle]
+        XCTAssertEqual(AgentsPanel.summary(statuses, collapsed: false), "1 waiting · 2 working")
+        XCTAssertEqual(AgentsPanel.summary(statuses, collapsed: true), "1 waiting · 2 working")
+    }
+
+    func testCollapsedSummaryKeepsFailedAndDoneAgentsInSight() {
+        let statuses: [AgentStatus] = [.done, .working, .error, .needsInput, .idle, .working]
+        XCTAssertEqual(AgentsPanel.summary(statuses, collapsed: true), "1 waiting · 1 failed · 2 working · 1 done")
+        XCTAssertEqual(AgentsPanel.summary(statuses, collapsed: false), "1 waiting · 2 working")
+        XCTAssertEqual(AgentsPanel.summary([.idle, .error], collapsed: true), "1 failed")
+        XCTAssertEqual(AgentsPanel.summary([.done], collapsed: true), "1 done")
+    }
+
+    func testCollapsedSummaryCountsIdleAgents() {
+        XCTAssertEqual(AgentsPanel.summary([.idle, .idle, .idle], collapsed: true), "3 agents")
+        XCTAssertEqual(AgentsPanel.summary([.idle], collapsed: true), "1 agent")
+        XCTAssertEqual(AgentsPanel.summary([.idle, .done], collapsed: false), "")
+        XCTAssertEqual(AgentsPanel.summary([], collapsed: true), "")
+    }
+}
