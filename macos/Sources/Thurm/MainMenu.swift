@@ -350,6 +350,7 @@ enum MainMenu {
 
     private static func viewMenu() -> NSMenu {
         let menu = NSMenu(title: "View")
+        menu.delegate = FloatTabMenu.shared
         menu.addItem(item("Increase Font Size", #selector(AppDelegate.increaseFontSize(_:)), "=",
                           name: "increase_font_size"))
         let plus = item("Increase Font Size", #selector(AppDelegate.increaseFontSize(_:)), "+",
@@ -482,17 +483,20 @@ final class FloatTabMenu: NSObject, NSMenuDelegate {
     static let shared = FloatTabMenu()
 
     func menuNeedsUpdate(_ menu: NSMenu) {
-        menu.removeAllItems()
         let manager = SessionManager.shared
+        let sources = manager.currentRegularController.map { manager.floatSources(into: $0) } ?? []
+        guard menu.title == "Float Tab Here" else {
+            menu.items.first { $0.submenu?.delegate === self }?.isHidden = sources.isEmpty
+            return
+        }
+        menu.removeAllItems()
         guard let c = manager.currentRegularController else { return }
-        let sources = manager.floatSources(into: c)
         for src in sources {
             menu.addItem(BlockMenuItem(src.window?.title ?? "Tab") { [weak src, weak c] in
                 guard let src, let c else { return }
                 manager.floatTab(src, into: c)
             })
         }
-        if sources.isEmpty { menu.addItem(withTitle: "No Tabs to Float", action: nil, keyEquivalent: "") }
     }
 }
 

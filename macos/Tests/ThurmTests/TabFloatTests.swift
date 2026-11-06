@@ -127,6 +127,29 @@ final class TabFloatTests: XCTestCase {
         XCTAssertEqual(manager.group(of: first).count, 2, "a pane of the splits stays put")
     }
 
+    func testFloatTabHereIsHiddenWhenTheTabCannotFloat() throws {
+        _ = NSApplication.shared
+        let shown = tab(.leaf(pane(1)))
+        let sidebar = TabSidebarViewController()
+        sidebar.controller = shown
+        let row = NSMenuItem()
+        XCTAssertFalse(sidebar.validateFloatItem(row, for: shown))
+        XCTAssertTrue(row.isHidden, "the shown tab's own row")
+        XCTAssertFalse(sidebar.validateFloatItem(row, for: nil))
+        XCTAssertTrue(row.isHidden)
+
+        let view = try XCTUnwrap(MainMenu.build().items.compactMap(\.submenu).first { $0.title == "View" })
+        let floatTab = try XCTUnwrap(view.items.first { $0.title == "Float Tab Here" })
+        FloatTabMenu.shared.menuNeedsUpdate(view)
+        XCTAssertTrue(floatTab.isHidden, "nothing else to float")
+
+        let other = tab(.leaf(pane(2)), after: shown)
+        XCTAssertTrue(sidebar.validateFloatItem(row, for: other))
+        XCTAssertFalse(row.isHidden)
+        FloatTabMenu.shared.menuNeedsUpdate(view)
+        XCTAssertFalse(floatTab.isHidden)
+    }
+
     func testDroppedCardsCenterOnThePointInsideTheArea() {
         let area = CGRect(x: 0, y: 0, width: 1000, height: 500)
         let d = FloatingGeometry.defaultFraction(index: 0)

@@ -886,11 +886,14 @@ enum SidebarDrop {
 extension TabSidebarViewController: NSMenuItemValidation {
     /// The row menu acts on a window's tab: not on a header or a hidden workspace's tab.
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
-        guard let src = clickedTab() else { return false }
-        if menuItem.action == #selector(floatClicked(_:)) {
-            return controller.map { SessionManager.shared.canFloat(src, into: $0) } ?? false
-        }
-        return true
+        if menuItem.action == #selector(floatClicked(_:)) { return validateFloatItem(menuItem, for: clickedTab()) }
+        return clickedTab() != nil
+    }
+
+    func validateFloatItem(_ item: NSMenuItem, for src: TerminalWindowController?) -> Bool {
+        let can = src.flatMap { src in controller.map { SessionManager.shared.canFloat(src, into: $0) } } ?? false
+        item.isHidden = !can
+        return can
     }
 }
 
