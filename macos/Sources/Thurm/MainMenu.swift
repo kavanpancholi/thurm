@@ -450,6 +450,8 @@ enum MainMenu {
                           name: "previous_tab"))
         menu.addItem(item("Show Next Tab", #selector(NSWindow.selectNextTab(_:)), "]", [.command, .shift],
                           name: "next_tab"))
+        menu.addItem(item("Back", #selector(AppDelegate.tabBack(_:)), "[", name: "tab_back"))
+        menu.addItem(item("Forward", #selector(AppDelegate.tabForward(_:)), "]", name: "tab_forward"))
         for n in 1...9 {
             let title = n == 9 ? "Select Last Tab" : "Select Tab \(n)"
             menu.addItem(item(title, #selector(TerminalWindowController.selectTabByNumber(_:)), "\(n)", [.command],

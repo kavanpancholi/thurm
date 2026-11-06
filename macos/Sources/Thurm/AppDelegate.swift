@@ -271,6 +271,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         SessionManager.shared.showWorkspaceSwitcher()
     }
 
+    @objc func tabBack(_ sender: Any?) {
+        SessionManager.shared.goBackInTabHistory()
+    }
+
+    @objc func tabForward(_ sender: Any?) {
+        SessionManager.shared.goForwardInTabHistory()
+    }
+
     @objc func switchAgent(_ sender: Any?) {
         SessionManager.shared.showAgentPicker()
     }

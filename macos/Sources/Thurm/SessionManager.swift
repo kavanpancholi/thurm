@@ -28,6 +28,7 @@ final class SessionManager: NSObject, CoreDelegate {
     private(set) var controllers: [TerminalWindowController] = []
     /// Every workspace (see Workspaces.swift).
     var workspaces: [Workspace] = []
+    var tabHistory = TabHistory()
     /// Every pane of every connected daemon (a disconnected host's keep their last state).
     var panes: [PaneKey: PaneInfo] = [:]
     /// Panes waiting for input that the user has looked at since they started waiting; they
@@ -832,6 +833,7 @@ final class SessionManager: NSObject, CoreDelegate {
         lastKeyController = c
         if !c.isQuick { lastRegularKeyController = c }
         workspace(c.workspaceID)?.lastActive = Date()
+        recordTabVisit(c)
         focusChanged()
         scheduleLayoutSave()
         // A tab dragged out into its own window: after AppKit is done with the drag.
