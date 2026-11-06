@@ -1603,8 +1603,9 @@ final class TabContentView: NSView {
                     FloatingGeometry.fraction(of: rect, in: area), in: area, minSize: self.minCardSize(self.floating[i])),
                                                                    in: area)
                 let windowPoint = self.convert(p, to: nil)
-                tabGap = sidebar?.cardDropGap(at: windowPoint)
-                sidebar?.showCardDrop(tabGap)
+                let drop = sidebar?.cardDrop(at: windowPoint, for: pane)
+                tabGap = drop?.gap
+                sidebar?.showCardDrop(drop?.line)
                 target = tabGap == nil && e.modifierFlags.contains(.command)
                     ? self.dockTarget(at: p, excluding: pane) : nil
                 self.dockIndicator.show(target?.rect)

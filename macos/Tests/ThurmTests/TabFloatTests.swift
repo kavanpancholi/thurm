@@ -139,16 +139,44 @@ final class TabFloatTests: XCTestCase {
         XCTAssertEqual(corner.minY, 0)
     }
 
+    private let sidebarRows = [CGRect(x: 0, y: 0, width: 200, height: 40), CGRect(x: 0, y: 40, width: 200, height: 40),
+                               CGRect(x: 0, y: 104, width: 200, height: 40)]
+
     func testSidebarGapIsBeforeOrAfterTheNearestRow() throws {
-        let rows = [CGRect(x: 0, y: 0, width: 200, height: 40), CGRect(x: 0, y: 40, width: 200, height: 40),
-                    CGRect(x: 0, y: 104, width: 200, height: 40)]
-        XCTAssertNil(SidebarDrop.gap(rows: [], at: 10))
-        XCTAssertEqual(try XCTUnwrap(SidebarDrop.gap(rows: rows, at: 10)).index, 0)
-        XCTAssertFalse(try XCTUnwrap(SidebarDrop.gap(rows: rows, at: 10)).after)
-        XCTAssertTrue(try XCTUnwrap(SidebarDrop.gap(rows: rows, at: 70)).after)
-        XCTAssertEqual(try XCTUnwrap(SidebarDrop.gap(rows: rows, at: 100)).index, 2, "a group header goes to the row after it")
-        let below = try XCTUnwrap(SidebarDrop.gap(rows: rows, at: 400))
+        let rows = sidebarRows, keys: [String?] = ["", "", ""]
+        XCTAssertNil(SidebarDrop.gap(rows: [], keys: [], key: "", at: 10))
+        let top = try XCTUnwrap(SidebarDrop.gap(rows: rows, keys: keys, key: "", at: 10))
+        XCTAssertEqual(top.index, 0)
+        XCTAssertFalse(top.after)
+        XCTAssertTrue(try XCTUnwrap(SidebarDrop.gap(rows: rows, keys: keys, key: "", at: 70)).after)
+        XCTAssertEqual(try XCTUnwrap(SidebarDrop.gap(rows: rows, keys: keys, key: "", at: 100)).index, 2,
+                       "a group header goes to the row after it")
+        let below = try XCTUnwrap(SidebarDrop.gap(rows: rows, keys: keys, key: "", at: 400))
         XCTAssertEqual(below.index, 2)
         XCTAssertTrue(below.after)
+    }
+
+    func testSidebarGapStaysInTheCardsRepositoryGroup() throws {
+        let rows = sidebarRows, keys: [String?] = ["/a", "/a", nil]
+        let overOtherRepo = try XCTUnwrap(SidebarDrop.gap(rows: rows, keys: keys, key: nil, at: 10))
+        XCTAssertEqual(overOtherRepo.index, 2)
+        XCTAssertFalse(overOtherRepo.after)
+        let overOwnRepo = try XCTUnwrap(SidebarDrop.gap(rows: rows, keys: keys, key: "/a", at: 130))
+        XCTAssertEqual(overOwnRepo.index, 1)
+        XCTAssertTrue(overOwnRepo.after)
+        XCTAssertNil(SidebarDrop.gap(rows: rows, keys: keys, key: "/b", at: 10), "no row of its group")
+    }
+
+    func testANewGroupShowsAfterTheRepositoryGroupsOrAtTheEnd() throws {
+        XCTAssertNil(SidebarDrop.newGroupEdge(keys: [], key: "/b"))
+        let repo = try XCTUnwrap(SidebarDrop.newGroupEdge(keys: ["/a", "/a", nil], key: "/b"))
+        XCTAssertEqual(repo.index, 1)
+        XCTAssertTrue(repo.after)
+        let first = try XCTUnwrap(SidebarDrop.newGroupEdge(keys: [nil, nil], key: "/b"))
+        XCTAssertEqual(first.index, 0)
+        XCTAssertFalse(first.after)
+        let terminals = try XCTUnwrap(SidebarDrop.newGroupEdge(keys: ["/a"], key: nil))
+        XCTAssertEqual(terminals.index, 0)
+        XCTAssertTrue(terminals.after)
     }
 }

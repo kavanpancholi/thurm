@@ -503,9 +503,13 @@ final class TabSidebarViewController: NSViewController, NSOutlineViewDataSource,
         if let h = c.handoffID.flatMap({ Remotes.shared.handoffs[$0] }) {
             return (h.repo, (h.repo as NSString).lastPathComponent)
         }
-        guard let root = SessionManager.shared.panes[c.focusedPane]?.git?.root else { return nil }
+        return group(for: c.focusedPane)
+    }
+
+    static func group(for pane: PaneKey) -> (key: String, name: String)? {
+        guard let root = SessionManager.shared.panes[pane]?.git?.root else { return nil }
         let name = (root as NSString).lastPathComponent
-        return c.host == localHost ? (root, name) : ("\(c.host):\(root)", "\(c.host) · \(name)")
+        return pane.host == localHost ? (root, name) : ("\(pane.host):\(root)", "\(pane.host) · \(name)")
     }
 
     func reload() {
@@ -813,23 +817,34 @@ final class TabSidebarViewController: NSViewController, NSOutlineViewDataSource,
         SessionManager.shared.floatTab(src, into: controller)
     }
 
-    func cardDropGap(at windowPoint: NSPoint) -> TabGap? {
+    func cardDrop(at windowPoint: NSPoint, for pane: PaneKey) -> (gap: TabGap, line: CGRect)? {
         guard !view.isHiddenOrHasHiddenAncestor, view.window != nil else { return nil }
         let p = outline.convert(windowPoint, from: nil)
         guard outline.visibleRect.contains(p), !overOtherTabs(outline.row(at: p)) else { return nil }
         let rows = cardDropRows()
-        guard let gap = SidebarDrop.gap(rows: rows.map(\.rect), at: p.y) else { return nil }
-        return (rows[gap.index].tab, gap.after)
+        let grouped = Self.groupsByRepo(SessionManager.shared.config)
+        let keys = rows.map { grouped ? Self.group(for: $0.tab)?.key : "" }
+        let key = grouped ? Self.group(for: pane)?.key : ""
+        if let gap = SidebarDrop.gap(rows: rows.map(\.rect), keys: keys, key: key, at: p.y) {
+            return ((rows[gap.index].tab, gap.after), Self.dropLine(rows[gap.index].rect, after: gap.after))
+        }
+        guard let edge = SidebarDrop.newGroupEdge(keys: keys, key: key),
+              let last = controller?.window?.tabGroup?.windows.last?.windowController as? TerminalWindowController
+        else { return nil }
+        return ((last, true), Self.dropLine(rows[edge.index].rect, after: edge.after))
     }
 
-    func showCardDrop(_ gap: TabGap?) {
-        guard let gap, let row = cardDropRows().first(where: { $0.tab === gap.tab }) else {
+    private static func dropLine(_ row: CGRect, after: Bool) -> CGRect {
+        CGRect(x: row.minX + 8, y: (after ? row.maxY : row.minY) - 1, width: max(0, row.width - 16), height: 2)
+    }
+
+    func showCardDrop(_ line: CGRect?) {
+        guard let line else {
             dropLine.isHidden = true
             return
         }
         if dropLine.superview !== outline { outline.addSubview(dropLine) }
-        let y = gap.after ? row.rect.maxY : row.rect.minY
-        dropLine.frame = CGRect(x: row.rect.minX + 8, y: y - 1, width: max(0, row.rect.width - 16), height: 2)
+        dropLine.frame = line
         dropLine.layer?.backgroundColor = SessionManager.shared.config.chrome.accent.cgColor
         dropLine.isHidden = false
     }
@@ -852,9 +867,15 @@ final class TabSidebarViewController: NSViewController, NSOutlineViewDataSource,
 }
 
 enum SidebarDrop {
-    static func gap(rows: [CGRect], at y: CGFloat) -> (index: Int, after: Bool)? {
-        let nearest = rows.indices.min { distance(y, rows[$0]) < distance(y, rows[$1]) }
+    static func gap(rows: [CGRect], keys: [String?], key: String?, at y: CGFloat) -> (index: Int, after: Bool)? {
+        let nearest = rows.indices.filter { keys[$0] == key }.min { distance(y, rows[$0]) < distance(y, rows[$1]) }
         return nearest.map { ($0, y >= rows[$0].midY) }
+    }
+
+    static func newGroupEdge(keys: [String?], key: String?) -> (index: Int, after: Bool)? {
+        guard !keys.isEmpty else { return nil }
+        guard key != nil else { return (keys.count - 1, true) }
+        return keys.lastIndex { $0 != nil }.map { ($0, true) } ?? (0, false)
     }
 
     private static func distance(_ y: CGFloat, _ rect: CGRect) -> CGFloat {
