@@ -149,6 +149,8 @@ private final class WorkspaceBlock: NSView {
         detail.textColor = fg.withAlphaComponent(0.5)
     }
 
+    override var mouseDownCanMoveWindow: Bool { false }
+
     override func mouseDown(with event: NSEvent) {
         SessionManager.shared.fillWorkspaceMenu(workspaceMenu)
         workspaceMenu.popUp(positioning: nil, at: NSPoint(x: 0, y: bounds.maxY + 6), in: self)
