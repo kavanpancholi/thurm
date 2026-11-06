@@ -13,6 +13,8 @@
 #                               across rebuilds, so privacy grants (e.g. access to other
 #                               apps' data, which 1Password's CLI needs) persist. Also read
 #                               from macos/.sign-identity (not committed).
+#   THURM_SIGN_IDENTITY=- ./macos/build.sh
+#                               force an ad-hoc local build, without hardened runtime
 #   ./macos/build.sh --distribution
 #                               Developer ID signature with hardened runtime and secure
 #                               timestamps, ready for notarization (macos/release/).
@@ -228,7 +230,9 @@ cp "$ROOT/LICENSE" "$ROOT/THIRD_PARTY_LICENSES" "$APP/Contents/Resources/"
 # ---------------------------------------------------------------------------------------
 # Resource access the hardened runtime otherwise denies to programs in the shells.
 ENTITLEMENTS="$HERE/Resources/Thurm.entitlements"
-if [[ -n "$IDENTITY" ]]; then
+# An ad-hoc signature has no team identity for hardened runtime's library validation.
+# Treat an explicit `-` like the unsigned-identity default so Sparkle can load locally.
+if [[ -n "$IDENTITY" && "$IDENTITY" != - ]]; then
     log "codesign ($IDENTITY)"
     SIGN_FLAGS=(--timestamp=none --options runtime)
     if [[ "$DISTRIBUTION" == 1 ]]; then
