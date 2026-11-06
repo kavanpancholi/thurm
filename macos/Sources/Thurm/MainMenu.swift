@@ -463,6 +463,7 @@ enum MainMenu {
         let moveToItem = item("Move Tab to Workspace", nil)
         moveToItem.submenu = moveTo
         menu.addItem(moveToItem)
+        menu.addItem(item("Pin Tab", #selector(TerminalWindowController.togglePinTab(_:)), name: "toggle_pin_tab"))
         menu.addItem(.separator())
         menu.addItem(item("Quick Terminal", #selector(AppDelegate.toggleQuickTerminal(_:)), name: "quick_terminal"))
         menu.addItem(.separator())

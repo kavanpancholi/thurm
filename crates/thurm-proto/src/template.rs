@@ -185,6 +185,7 @@ mod tests {
             wall: None,
             floating: Vec::new(),
             floating_hidden: false,
+            pinned: false,
         };
         assert_eq!(validate_tab(&tab).unwrap(), vec![7]);
         tab.focused = 8;
@@ -217,6 +218,7 @@ mod tests {
             wall: None,
             floating: vec![card(8, [0.1, 0.1, 0.5, 0.5])],
             floating_hidden: false,
+            pinned: false,
         };
         assert_eq!(validate_tab(&tab).unwrap(), vec![7, 8]);
         // Only a pane of the splits can be zoomed.

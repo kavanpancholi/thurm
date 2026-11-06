@@ -427,9 +427,10 @@ struct TabLayout: Codable, Equatable {
     var floating: [FloatingPane]? = nil
     /// The floating panes are hidden (their programs keep running); nil when shown.
     var floatingHidden: Bool? = nil
+    var pinned: Bool? = nil
 
     private enum CodingKeys: String, CodingKey {
-        case title, root, focused, zoomed, handoff, wall, floating
+        case title, root, focused, zoomed, handoff, wall, floating, pinned
         case floatingHidden = "floating_hidden"
     }
 

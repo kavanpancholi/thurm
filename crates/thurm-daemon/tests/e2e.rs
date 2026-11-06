@@ -342,6 +342,7 @@ fn panes_frames_persistence_and_restore() {
                 wall: None,
                 floating: Vec::new(),
                 floating_hidden: false,
+                pinned: false,
             }],
             selected_tab: 0,
             fullscreen: false,

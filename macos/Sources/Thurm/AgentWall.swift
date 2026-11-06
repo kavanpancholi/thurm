@@ -227,6 +227,7 @@ extension SessionManager {
             let t = makeController(root: r.root, focused: pane, zoomed: zoomed, title: tab.title, frame: nil,
                                    floating: r.floating, floatingHidden: tab.floatingHidden)
             t.workspaceID = wall.workspaceID
+            t.pinned = tab.pinned ?? false
             // Back after the tab it followed.
             let at = AgentWall.position(after: r.origin.after, index: r.origin.index,
                                         in: tabs.map(\.content.paneIds))

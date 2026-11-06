@@ -177,8 +177,7 @@ extension SessionManager {
             let t = makeController(root: SplitNode(layout: tab.root), focused: tab.focusedKey, zoomed: tab.zoomedKey,
                                    title: tab.title, frame: nil, floating: tab.floating,
                                    floatingHidden: tab.floatingHidden)
-            t.handoffID = tab.handoff
-            t.wall = tab.wall
+            t.adopt(tab)
             add(t)
         }
         if created.isEmpty {
@@ -217,6 +216,23 @@ extension SessionManager {
         } else {
             openWorkspaceInNewWindow(ws)
         }
+    }
+
+    func togglePin(_ c: TerminalWindowController) {
+        c.pinned.toggle()
+        scheduleLayoutSave()
+    }
+
+    func isPinned(_ tab: HiddenTab) -> Bool {
+        guard let ws = workspace(tab.workspace), tab.index < ws.hiddenTabs.count else { return false }
+        return ws.hiddenTabs[tab.index].pinned == true
+    }
+
+    func togglePin(_ tab: HiddenTab) {
+        guard let ws = workspace(tab.workspace), tab.index < ws.hiddenTabs.count else { return }
+        ws.hiddenTabs[tab.index].pinned = isPinned(tab) ? nil : true
+        refreshSidebars()
+        scheduleLayoutSave()
     }
 
     /// Adds `pane` as a tab of `ws` (not shown). With `reveal`, `c`'s window switches to `ws` on
@@ -338,8 +354,7 @@ extension SessionManager {
                                    title: tab.title, frame: frame, floating: tab.floating,
                                    floatingHidden: tab.floatingHidden)
             c.workspaceID = ws.id
-            c.handoffID = tab.handoff
-            c.wall = tab.wall
+            c.adopt(tab)
             if let prev = previous { attachAsTab(c, to: prev) } else { showAsNewWindow(c, frame: frame) }
             previous = c
             created.append(c)

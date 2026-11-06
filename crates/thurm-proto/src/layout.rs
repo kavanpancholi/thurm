@@ -84,6 +84,8 @@ pub struct TabLayout {
     /// The floating panes are hidden (their programs keep running) until shown again.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub floating_hidden: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pinned: bool,
 }
 
 /// A pane lifted out of a tab's splits, shown as a card above them.
@@ -324,6 +326,7 @@ mod tests {
                         wall: None,
                         floating: Vec::new(),
                         floating_hidden: false,
+                        pinned: false,
                     },
                     TabLayout {
                         title: Some("logs".into()),
@@ -334,6 +337,7 @@ mod tests {
                         wall: None,
                         floating: Vec::new(),
                         floating_hidden: false,
+                        pinned: false,
                     },
                 ],
                 selected_tab: 1,
@@ -359,6 +363,7 @@ mod tests {
                         wall: None,
                         floating: Vec::new(),
                         floating_hidden: false,
+                        pinned: false,
                     }],
                     selected_tab: 0,
                     host: None,
@@ -373,6 +378,7 @@ mod tests {
                 wall: None,
                 floating: Vec::new(),
                 floating_hidden: false,
+                pinned: false,
             }),
         }
     }
@@ -447,6 +453,7 @@ mod tests {
             wall: None,
             floating: Vec::new(),
             floating_hidden: false,
+            pinned: false,
         });
         l.workspaces[0].host = Some("devbox".into());
         let json = serde_json::to_string(&l).unwrap();
@@ -480,6 +487,7 @@ mod tests {
             wall: None,
             floating: Vec::new(),
             floating_hidden: false,
+            pinned: false,
         };
         let split = |a, b| LayoutNode::Split {
             dir: SplitDir::Down,
@@ -569,6 +577,23 @@ mod tests {
         l.retain_panes(&|id| id != 7);
         assert!(!l.windows[0].tabs[1].floating_hidden);
         assert!(!serde_json::to_string(&l).unwrap().contains("floating"));
+    }
+
+    #[test]
+    fn a_pin_stays_with_its_tab() {
+        let mut l = sample();
+        assert!(!serde_json::to_string(&l).unwrap().contains("pinned"));
+        l.windows[0].tabs[0].pinned = true;
+        l.workspaces[1].tabs[0].pinned = true;
+        let json = serde_json::to_string(&l).unwrap();
+        assert_eq!(json.matches(r#""pinned":true"#).count(), 2);
+        assert_eq!(serde_json::from_str::<Layout>(&json).unwrap(), l);
+        l.retain_panes(&|id| id != 2);
+        assert!(l.windows[0].tabs[0].pinned && l.workspaces[1].tabs[0].pinned);
+        assert!(!l.windows[0].tabs[1].pinned);
+        let old: TabLayout =
+            serde_json::from_str(r#"{"root":{"type":"pane","id":1},"focused":1}"#).unwrap();
+        assert!(!old.pinned);
     }
 
     #[test]

@@ -547,8 +547,7 @@ final class SessionManager: NSObject, CoreDelegate {
                                    title: tab.title, frame: frame, floating: tab.floating,
                                    floatingHidden: tab.floatingHidden)
             c.workspaceID = ws?.id ?? 0
-            c.handoffID = tab.handoff
-            c.wall = tab.wall
+            c.adopt(tab)
             if let prev = created.last {
                 attachAsTab(c, to: prev)
             } else {
@@ -732,8 +731,7 @@ final class SessionManager: NSObject, CoreDelegate {
                 for tab in ws.hiddenTabs {
                     let t = makeController(root: SplitNode(layout: tab.root), focused: tab.focusedKey,
                                            zoomed: tab.zoomedKey, title: tab.title, frame: nil, floating: tab.floating)
-                    t.handoffID = tab.handoff
-                    t.wall = tab.wall
+                    t.adopt(tab)
                     attachAsTab(t, to: c)
                 }
                 ws.hiddenTabs = []
