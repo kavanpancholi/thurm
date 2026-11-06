@@ -241,7 +241,9 @@ indirect enum SplitNode {
 final class TabContentView: NSView {
     weak var controller: TerminalWindowController?
 
-    private(set) var root: SplitNode
+    private(set) var root: SplitNode {
+        didSet { panesChanged(from: oldValue.panes + floating.map(\.pane)) }
+    }
     private(set) var views: [PaneKey: TerminalView] = [:]
     private var headers: [PaneKey: PaneHeader] = [:]
     private let backdrop = SplitBackdrop()
@@ -252,7 +254,9 @@ final class TabContentView: NSView {
     private(set) var focusedPane: PaneKey
     private(set) var zoomedPane: PaneKey?
     /// Panes floating above the splits, back to front (see FloatingPanes.swift).
-    private(set) var floating: [FloatingCard] = []
+    private(set) var floating: [FloatingCard] = [] {
+        didSet { panesChanged(from: root.panes + oldValue.map(\.pane)) }
+    }
     /// The cards are hidden (their programs keep running) until shown again.
     private(set) var floatingHidden = false
     /// The cards on screen: none while hidden.
@@ -476,6 +480,11 @@ final class TabContentView: NSView {
 
     /// The tab's panes: those of the splits, then the floating ones.
     var paneIds: [PaneKey] { root.panes + floating.map(\.pane) }
+
+    private func panesChanged(from old: [PaneKey]) {
+        let now = paneIds
+        if Set(old) != Set(now) { SessionManager.shared.tabHistory.tabChanged(from: old, to: now) }
+    }
     var isEmpty: Bool { views.isEmpty }
     var focusedView: TerminalView? { views[focusedPane] }
 

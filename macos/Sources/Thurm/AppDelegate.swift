@@ -326,6 +326,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         if menuItem.action == #selector(toggleSecureInput(_:)) {
             menuItem.state = SecureInput.shared.globalEnabled ? .on : .off
         }
+        if menuItem.action == #selector(tabBack(_:)) {
+            return SessionManager.shared.canGoBackInTabHistory
+        }
+        if menuItem.action == #selector(tabForward(_:)) {
+            return SessionManager.shared.canGoForwardInTabHistory
+        }
         if menuItem.action == #selector(renameWorkspace(_:)) || menuItem.action == #selector(closeWorkspace(_:)) {
             return SessionManager.shared.currentWorkspace != nil
         }

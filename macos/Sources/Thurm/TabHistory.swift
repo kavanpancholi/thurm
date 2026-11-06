@@ -22,9 +22,18 @@ struct TabHistory {
         cursor = entries.count - 1
     }
 
-    mutating func back(isOpen: ([PaneKey]) -> Bool) -> [PaneKey]? {
+    mutating func tabChanged(from old: [PaneKey], to new: [PaneKey]) {
+        guard !new.isEmpty else { return }
+        let kept = old.filter(new.contains)
+        let anchor = kept.isEmpty ? old : kept
+        for i in entries.indices where Self.sameTab(entries[i], anchor) {
+            entries[i] = new
+        }
+    }
+
+    mutating func back(fromCurrent: Bool = true, isOpen: ([PaneKey]) -> Bool) -> [PaneKey]? {
         let currentOpen = prune(isOpen)
-        return move(to: currentOpen ? cursor - 1 : cursor)
+        return move(to: currentOpen && fromCurrent ? cursor - 1 : cursor)
     }
 
     mutating func forward(isOpen: ([PaneKey]) -> Bool) -> [PaneKey]? {
@@ -80,22 +89,40 @@ extension SessionManager {
 
     func tabTarget(_ panes: [PaneKey]) -> TabTarget? {
         for pane in panes {
-            if let c = controller(for: pane) { return isHistoryTab(c) ? .shown(c) : nil }
+            if let c = controller(for: pane), isHistoryTab(c) { return .shown(c) }
         }
         for ws in workspaces {
-            if let i = ws.hiddenTabs.firstIndex(where: { TabHistory.sameTab($0.panes, panes) }) {
-                return ws.hiddenTabs[i].wall == nil ? .hidden(HiddenTab(workspace: ws.id, index: i)) : nil
+            if let i = ws.hiddenTabs.firstIndex(where: { $0.wall == nil && TabHistory.sameTab($0.panes, panes) }) {
+                return .hidden(HiddenTab(workspace: ws.id, index: i))
             }
         }
         return nil
     }
 
+    private var isOnHistoryTab: Bool {
+        currentController.map(isHistoryTab) ?? false
+    }
+
+    private func isOpen(_ panes: [PaneKey]) -> Bool {
+        tabTarget(panes) != nil
+    }
+
+    var canGoBackInTabHistory: Bool {
+        var h = tabHistory
+        return h.back(fromCurrent: isOnHistoryTab, isOpen: isOpen) != nil
+    }
+
+    var canGoForwardInTabHistory: Bool {
+        var h = tabHistory
+        return h.forward(isOpen: isOpen) != nil
+    }
+
     func goBackInTabHistory() {
-        show(tabHistory.back { tabTarget($0) != nil })
+        show(tabHistory.back(fromCurrent: isOnHistoryTab, isOpen: isOpen))
     }
 
     func goForwardInTabHistory() {
-        show(tabHistory.forward { tabTarget($0) != nil })
+        show(tabHistory.forward(isOpen: isOpen))
     }
 
     private func show(_ panes: [PaneKey]?) {
