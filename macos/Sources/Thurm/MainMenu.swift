@@ -395,6 +395,13 @@ enum MainMenu {
         menu.addItem(item("New Floating Pane", #selector(TerminalWindowController.newFloatingPane(_:)),
                           name: "new_floating_pane"))
         menu.addItem(item("Float Pane", #selector(TerminalWindowController.toggleFloat(_:)), name: "float_pane"))
+        menu.addItem(item("Move Floating Pane to New Tab",
+                          #selector(TerminalWindowController.moveFloatingPaneToNewTab(_:)), name: "float_pane_to_tab"))
+        let floatTab = NSMenu(title: "Float Tab Here")
+        floatTab.delegate = FloatTabMenu.shared
+        let floatTabItem = item("Float Tab Here", nil)
+        floatTabItem.submenu = floatTab
+        menu.addItem(floatTabItem)
         menu.addItem(item("Equalize Splits", #selector(TerminalWindowController.equalizeSplits(_:)), "=",
                           [.command, .control], name: "equalize_splits"))
         menu.addItem(.separator())
@@ -468,6 +475,24 @@ enum MainMenu {
         let menu = NSMenu(title: "Help")
         menu.addItem(item("Open Configuration File", #selector(AppDelegate.openConfig(_:)), name: "open_config_file"))
         return menu
+    }
+}
+
+final class FloatTabMenu: NSObject, NSMenuDelegate {
+    static let shared = FloatTabMenu()
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        menu.removeAllItems()
+        let manager = SessionManager.shared
+        guard let c = manager.currentRegularController else { return }
+        let sources = manager.floatSources(into: c)
+        for src in sources {
+            menu.addItem(BlockMenuItem(src.window?.title ?? "Tab") { [weak src, weak c] in
+                guard let src, let c else { return }
+                manager.floatTab(src, into: c)
+            })
+        }
+        if sources.isEmpty { menu.addItem(withTitle: "No Tabs to Float", action: nil, keyEquivalent: "") }
     }
 }
 

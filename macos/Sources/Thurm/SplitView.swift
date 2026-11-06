@@ -463,6 +463,7 @@ final class TabContentView: NSView {
         addSubview(chrome)
         addSubview(focusRing)
         addSubview(dockIndicator)
+        registerForDraggedTypes([TabSidebarViewController.dragType])
         syncViews()
         setNotices(Notices.shared.current)
     }
@@ -1575,6 +1576,8 @@ final class TabContentView: NSView {
         var moved = false
         var cancelled = false
         var target: (pane: PaneKey, side: SplitDirName, rect: CGRect)?
+        var tabGap: TabGap?
+        let sidebar = self.sidebar
         window.trackEvents(matching: [.leftMouseDragged, .leftMouseUp, .keyDown, .flagsChanged],
                            timeout: NSEvent.foreverDuration, mode: .eventTracking) { [weak self] e, stop in
             guard let self, let e, let i = self.floating.firstIndex(where: { $0.pane == pane }) else {
@@ -1599,20 +1602,69 @@ final class TabContentView: NSView {
                 self.floating[i].frame = FloatingGeometry.fraction(of: FloatingGeometry.rect(
                     FloatingGeometry.fraction(of: rect, in: area), in: area, minSize: self.minCardSize(self.floating[i])),
                                                                    in: area)
-                target = e.modifierFlags.contains(.command) ? self.dockTarget(at: p, excluding: pane) : nil
+                let windowPoint = self.convert(p, to: nil)
+                tabGap = sidebar?.cardDropGap(at: windowPoint)
+                sidebar?.showCardDrop(tabGap)
+                target = tabGap == nil && e.modifierFlags.contains(.command)
+                    ? self.dockTarget(at: p, excluding: pane) : nil
                 self.dockIndicator.show(target?.rect)
                 self.needsLayout = true
             }
         }
         dockIndicator.show(nil)
+        sidebar?.showCardDrop(nil)
         if let target, !cancelled {
             dock(pane, nextTo: target.pane, direction: target.side, share: nil)
             focus(pane)
             return
         }
+        if let tabGap, !cancelled, let controller {
+            SessionManager.shared.moveCardToNewTab(pane, from: controller, next: tabGap)
+            return
+        }
         needsLayout = true
         window.invalidateCursorRects(for: self)
         if moved && !cancelled { SessionManager.shared.scheduleLayoutSave() }
+    }
+
+    private var sidebar: TabSidebarViewController? {
+        controller.flatMap { SessionManager.shared.canMoveCards($0) ? $0.sidebar : nil }
+    }
+
+    func centeredCardFrame(at point: CGPoint) -> CGRect {
+        FloatingGeometry.centered(at: point, in: floatArea, index: floating.count)
+    }
+
+    private func floatSource(_ info: NSDraggingInfo) -> TerminalWindowController? {
+        guard let controller,
+              let src = TabSidebarViewController.draggedWindow(info)?.windowController as? TerminalWindowController
+        else { return nil }
+        return SessionManager.shared.canFloat(src, into: controller) ? src : nil
+    }
+
+    private func showTabDrop(_ info: NSDraggingInfo) -> NSDragOperation {
+        guard floatSource(info) != nil else {
+            dockIndicator.show(nil)
+            return []
+        }
+        let p = convert(info.draggingLocation, from: nil)
+        dockIndicator.show(FloatingGeometry.rect(centeredCardFrame(at: p), in: floatArea))
+        return .move
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation { showTabDrop(sender) }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation { showTabDrop(sender) }
+
+    override func draggingExited(_ sender: NSDraggingInfo?) { dockIndicator.show(nil) }
+
+    override func draggingEnded(_ sender: NSDraggingInfo) { dockIndicator.show(nil) }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        dockIndicator.show(nil)
+        guard let controller, let src = floatSource(sender) else { return false }
+        SessionManager.shared.floatTab(src, into: controller, at: convert(sender.draggingLocation, from: nil))
+        return true
     }
 
     func equalize() {
