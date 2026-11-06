@@ -375,8 +375,25 @@ final class TabSidebarViewController: NSViewController, NSOutlineViewDataSource,
     /// it, so they can change when a tab closes or moves to another repository.
     static func displayOrder(_ windows: [NSWindow]) -> [NSWindow] {
         let live = windows.filter { ($0.windowController as? TerminalWindowController)?.isClosed == false }
-        guard groupsByRepo(SessionManager.shared.config) else { return live }
-        return listingOrder(live) { group(for: $0.windowController as! TerminalWindowController)?.key }
+        let (pinned, rest) = pinnedFirst(live) { ($0.windowController as! TerminalWindowController).pinned }
+        guard groupsByRepo(SessionManager.shared.config) else { return pinned + rest }
+        return pinned + listingOrder(rest) { group(for: $0.windowController as! TerminalWindowController)?.key }
+    }
+
+    static func pinnedFirst<T>(_ items: [T], isPinned: (T) -> Bool) -> (pinned: [T], rest: [T]) {
+        (items.filter(isPinned), items.filter { !isPinned($0) })
+    }
+
+    static let pinnedKey = "pinned"
+
+    static func keepingActive(_ groups: [SidebarGroup]) {
+        for g in groups where g.key != pinnedKey { g.tabs.removeAll { !$0.selected && !$0.active } }
+    }
+
+    private static func pinnedElsewhere(_ tab: SidebarTab, of ws: Workspace) -> SidebarTab {
+        var tab = tab
+        tab.subtitle = [tab.subtitle, heading(ws)].compactMap { $0 }.joined(separator: " · ")
+        return tab
     }
 
     /// Whether the window's tabs are listed under their repository: every workspace's tabs are
@@ -521,6 +538,7 @@ final class TabSidebarViewController: NSViewController, NSOutlineViewDataSource,
         let byRepo = Self.groupsByRepo(config)
         var byRoot: [String: SidebarGroup] = [:]
         var order: [SidebarGroup] = []
+        let pinned = SidebarGroup(name: "Pinned", key: Self.pinnedKey, elsewhere: true)
         // Every workspace listed: this window's tabs under its workspace.
         let other = config.sidebarAllWorkspaces
             ? SidebarGroup(name: shownWorkspace.map(Self.heading) ?? "Tabs", key: shownWorkspace.map(Self.collapseKey))
@@ -529,7 +547,9 @@ final class TabSidebarViewController: NSViewController, NSOutlineViewDataSource,
             guard let c = w.windowController as? TerminalWindowController, !c.isClosed else { continue }
             let tab = Self.row(c, shortcut: tabShortcut(index: index, count: windows.count), selected: w === window,
                                info: panes, config: config)
-            if byRepo, let (key, name) = Self.group(for: c) {
+            if c.pinned {
+                pinned.tabs.append(tab)
+            } else if byRepo, let (key, name) = Self.group(for: c) {
                 let group = byRoot[key] ?? {
                     let n = SidebarGroup(name: name)
                     byRoot[key] = n
@@ -539,6 +559,18 @@ final class TabSidebarViewController: NSViewController, NSOutlineViewDataSource,
                 group.tabs.append(tab)
             } else {
                 other.tabs.append(tab)
+            }
+        }
+        for ws in sm.workspaces where ws.id != shownWorkspace?.id {
+            if let shownIn = sm.controllerShowing(ws) {
+                pinned.tabs += sm.group(of: shownIn).filter(\.pinned).map {
+                    Self.pinnedElsewhere(Self.row($0, shortcut: nil, selected: false, info: panes, config: config), of: ws)
+                }
+            } else {
+                pinned.tabs += ws.hiddenTabs.enumerated().filter { $0.element.pinned == true }.map {
+                    Self.pinnedElsewhere(Self.hiddenRow($0.element, index: $0.offset, of: ws, info: panes, config: config),
+                                         of: ws)
+                }
             }
         }
         if config.sidebarAllWorkspaces {
@@ -551,11 +583,11 @@ final class TabSidebarViewController: NSViewController, NSOutlineViewDataSource,
                 }
                 let g = SidebarGroup(name: Self.heading(ws), key: Self.collapseKey(ws), elsewhere: true)
                 if let shownIn = sm.controllerShowing(ws) {
-                    g.tabs = sm.group(of: shownIn).map {
+                    g.tabs = sm.group(of: shownIn).filter { !$0.pinned }.map {
                         Self.row($0, shortcut: nil, selected: false, info: panes, config: config)
                     }
                 } else {
-                    g.tabs = ws.hiddenTabs.enumerated().map {
+                    g.tabs = ws.hiddenTabs.enumerated().filter { $0.element.pinned != true }.map {
                         Self.hiddenRow($0.element, index: $0.offset, of: ws, info: panes, config: config)
                     }
                 }
@@ -564,9 +596,8 @@ final class TabSidebarViewController: NSViewController, NSOutlineViewDataSource,
         } else if !other.tabs.isEmpty {
             order.append(other)
         }
-        if config.sidebarActiveOnly {
-            for g in order { g.tabs.removeAll { !$0.selected && !$0.active } }
-        }
+        order.insert(pinned, at: 0)
+        if config.sidebarActiveOnly { Self.keepingActive(order) }
         order.removeAll { $0.tabs.isEmpty }
         let names = order.map { [$0.key, $0.name] }, tabs = order.map(\.tabs)
         let theme = SessionManager.shared.config.theme
@@ -596,7 +627,7 @@ final class TabSidebarViewController: NSViewController, NSOutlineViewDataSource,
             for g in order { g.boxes = g.tabs.map(TabBox.init) }
             groups = order
             // Every workspace listed: each under its name, also when the others have no tabs to show.
-            showHeaders = config.sidebarAllWorkspaces || groups.count > 1
+            showHeaders = config.sidebarAllWorkspaces || groups.count > 1 || groups.first?.key == Self.pinnedKey
             outline.reloadData()
             let collapsed = Self.collapsed
             for g in groups where !collapsed.contains(g.key) { outline.expandItem(g) }
@@ -777,13 +808,35 @@ final class TabSidebarViewController: NSViewController, NSOutlineViewDataSource,
         let move = NSMenuItem(title: "Move Tab to New Workspace", action: #selector(moveClicked(_:)), keyEquivalent: "")
         move.target = self
         menu.addItem(move)
+        let pin = NSMenuItem(title: "Pin Tab", action: #selector(pinClicked(_:)), keyEquivalent: "")
+        pin.target = self
+        menu.addItem(pin)
         return menu
     }
 
-    private func clickedTab() -> TerminalWindowController? {
+    private func clickedRow() -> SidebarTab? {
         let row = outline.clickedRow
         guard row >= 0, let box = outline.item(atRow: row) as? TabBox else { return nil }
-        return box.tab.controller
+        return box.tab
+    }
+
+    private func clickedTab() -> TerminalWindowController? {
+        clickedRow()?.controller
+    }
+
+    private func clickedRowPinned() -> Bool? {
+        guard let tab = clickedRow() else { return nil }
+        if let c = tab.controller { return c.pinned }
+        return tab.hidden.map(SessionManager.shared.isPinned)
+    }
+
+    @objc private func pinClicked(_ sender: Any?) {
+        guard let tab = clickedRow() else { return }
+        if let c = tab.controller {
+            SessionManager.shared.togglePin(c)
+        } else if let hidden = tab.hidden {
+            SessionManager.shared.togglePin(hidden)
+        }
     }
 
     @objc private func closeClicked(_ sender: Any?) {
@@ -797,9 +850,11 @@ final class TabSidebarViewController: NSViewController, NSOutlineViewDataSource,
 }
 
 extension TabSidebarViewController: NSMenuItemValidation {
-    /// The row menu acts on a window's tab: not on a header or a hidden workspace's tab.
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
-        clickedTab() != nil
+        guard menuItem.action == #selector(pinClicked(_:)) else { return clickedTab() != nil }
+        guard let pinned = clickedRowPinned() else { return false }
+        menuItem.title = pinned ? "Unpin Tab" : "Pin Tab"
+        return clickedTab()?.isQuick != true
     }
 }
 

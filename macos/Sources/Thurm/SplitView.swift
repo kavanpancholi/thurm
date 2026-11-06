@@ -1696,7 +1696,7 @@ final class TabContentView: NSView {
         TabLayout(title: title, root: root.layoutNode, focused: focusedPane.id, zoomed: zoomedPane?.id,
                   handoff: controller?.handoffID, wall: controller?.wall,
                   floating: floating.isEmpty ? nil : floating.map(\.saved),
-                  floatingHidden: floatingHidden ? true : nil)
+                  floatingHidden: floatingHidden ? true : nil, pinned: controller?.pinned == true ? true : nil)
     }
 
     /// The host of this tab's panes.

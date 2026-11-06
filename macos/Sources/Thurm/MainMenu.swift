@@ -450,6 +450,7 @@ enum MainMenu {
         menu.addItem(.separator())
         menu.addItem(item("Move Tab to New Workspace", #selector(NSWindow.moveTabToNewWindow(_:)),
                           name: "move_tab_to_new_workspace"))
+        menu.addItem(item("Pin Tab", #selector(TerminalWindowController.togglePinTab(_:)), name: "toggle_pin_tab"))
         menu.addItem(.separator())
         menu.addItem(item("Quick Terminal", #selector(AppDelegate.toggleQuickTerminal(_:)), name: "quick_terminal"))
         menu.addItem(.separator())

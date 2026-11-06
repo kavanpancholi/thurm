@@ -93,6 +93,9 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
     var wall: [WallOrigin]? {
         didSet { SessionManager.shared.refreshSidebars() }
     }
+    var pinned = false {
+        didSet { SessionManager.shared.refreshSidebars() }
+    }
     /// The daemon of this tab's panes.
     var host: HostId { content.host }
     /// Set once the window closed; the controller is about to be released.
@@ -100,6 +103,12 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
     /// The quick terminal (see QuickTerminal.swift): one tab in a borderless panel, outside
     /// the tab groups, workspaces and saved windows.
     let isQuick: Bool
+
+    func adopt(_ tab: TabLayout) {
+        handoffID = tab.handoff
+        wall = tab.wall
+        pinned = tab.pinned ?? false
+    }
 
     init(root: SplitNode, focused: PaneKey, zoomed: PaneKey?, floating: [FloatingPane] = [],
          floatingHidden: Bool = false, title: String?, contentSize: NSSize, quick: Bool = false) {
@@ -536,6 +545,10 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
+    @objc func togglePinTab(_ sender: Any?) {
+        SessionManager.shared.togglePin(self)
+    }
+
     /// The "+" button of the native tab bar.
     @objc override func newWindowForTab(_ sender: Any?) {
         SessionManager.shared.newTab(from: self)
@@ -557,6 +570,9 @@ extension TerminalWindowController: NSMenuItemValidation {
             return !isQuick
         case #selector(newFloatingPane(_:)):
             return !isQuick
+        case #selector(togglePinTab(_:)):
+            menuItem.title = pinned ? "Unpin Tab" : "Pin Tab"
+            return !isQuick && SessionManager.shared.config.sidebarTabs
         default:
             return true
         }
