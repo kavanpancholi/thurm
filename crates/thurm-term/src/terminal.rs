@@ -1872,12 +1872,16 @@ impl Terminal {
         let bytes = self.enc.key(&self.vt, ev, self.cfg.kitty_keyboard);
         if !bytes.is_empty() {
             self.scroll_to_bottom();
+            if keys::types_input(ev) {
+                self.clear_selection();
+            }
         }
         bytes
     }
 
     pub fn paste(&mut self, text: &str) -> Vec<u8> {
         self.scroll_to_bottom();
+        self.clear_selection();
         keys::paste(text, self.mode().contains(TermMode::BRACKETED_PASTE))
     }
 
@@ -1918,6 +1922,9 @@ impl Terminal {
     pub fn mouse(&mut self, ev: &MouseEvent) -> (MouseOutcome, Vec<u8>) {
         let mode = self.mode();
         if mode.intersects(TermMode::MOUSE_MODE) && ev.mods & mods::SHIFT == 0 {
+            if (ev.kind, ev.button) == (MouseKind::Press, MouseButton::Left) {
+                self.clear_selection();
+            }
             return match self.enc.mouse(&self.vt, ev, self.grid()) {
                 Some(b) => (MouseOutcome::Reported, b),
                 None => (MouseOutcome::None, Vec::new()),
@@ -2190,12 +2197,25 @@ impl Terminal {
                 }
             }
             SelectionOp::Clear => {
-                self.vt.set_selection(None);
-                self.selecting = None;
+                self.clear_selection();
             }
             SelectionOp::SelectAll => self.vt.select_all(),
         }
         self.generation += 1;
+    }
+
+    pub fn has_selection(&self) -> bool {
+        self.vt.selection().is_some()
+    }
+
+    pub fn clear_selection(&mut self) -> bool {
+        self.selecting = None;
+        if !self.has_selection() {
+            return false;
+        }
+        self.vt.set_selection(None);
+        self.generation += 1;
+        true
     }
 
     pub fn selection_text(&self) -> String {
