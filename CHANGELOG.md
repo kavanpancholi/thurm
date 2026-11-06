@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.19.0 - 2026-11-07
+
+This release adds tab history and a fold for the Agents panel. It also fixes how a pane clears its selection.
+
+### New features
+
+- Back (`Cmd+[`) and Forward (`Cmd+]`) move through the tabs you visited. The mouse back and forward buttons do the same, unless `window.mouse_navigation_buttons` is `false`.
+- Click the Agents header to fold the panel and give the tab list more space. Use View > Collapse Agents to do the same from the menu.
+- A client can claim panes, so that they keep its size. This helps the iOS app keep every pane on screen at its own size.
+
+### Fixes
+
+- A selection clears when you type, paste, or press Esc in a pane. The selection also clears in a pane where the program uses the mouse.
+
 ## v0.18.0 - 2026-11-06
 
 Thurm now lets you pin tabs, move tabs between workspaces, and drag tabs into cards. It also fixes Neovim pickers, titlebar zoom, and pane borders in light themes.
