@@ -55,6 +55,14 @@
         "ubuntu"
       ],
       "allowedVersions": "/^24\\.04$/"
+    },
+    {
+      "description": "The end-to-end job's Playwright container must carry the browsers of the @playwright/test version in web/package.json: bump both in one PR.",
+      "matchPackageNames": [
+        "@playwright/test",
+        "mcr.microsoft.com/playwright"
+      ],
+      "groupName": "Playwright"
     }
   ]
 }
