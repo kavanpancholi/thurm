@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.18.0 - 2026-11-06
+
+Thurm now lets you pin tabs, move tabs between workspaces, and drag tabs into cards. It also fixes Neovim pickers, titlebar zoom, and pane borders in light themes.
+
+### New features
+
+- The sidebar menu has `Pin Tab` and `Unpin Tab`. Pinned tabs stay at the top of the sidebar in every workspace, even after a restart.
+- `Move Tab to Workspace` sends a tab to another workspace on the same host. The tab keeps its splits, its cards, and its programs.
+- Drag a tab from the sidebar onto the terminal area to make it a card. Drag a card header onto the sidebar to make it a tab again.
+- The View menu and the command palette also offer these actions.
+- The workspace button now opens a compact picker. Type a name or remote host to filter the list, or use the keyboard to choose.
+
+### Fixes
+
+- Neovim pickers no longer flash in the editor pane. A picker now appears in its card only after it is drawn.
+- Double-click on the titlebar now zooms the window. The action follows the setting in System Settings > Desktop & Dock.
+- Inactive pane borders stay visible in light themes. The border now shows on all four sides of the pane.
+
 ## v0.17.0 - 2026-11-02
 
 This release gives you floating panes that open at an exact place and size. It also adds `thurm-nvim`, which runs Neovim in Thurm panes, and fixes macOS sidebar and resize problems.
