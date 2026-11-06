@@ -451,17 +451,19 @@ pub enum Request {
     PaneModes {
         pane: PaneId,
     },
-    /// Claim `panes` for this client ([`CAP_PANE_OWNER`]): they take its size, and keep it
-    /// against other clients' `Resize` until it lets go ([`Request::DisownPanes`], leaving the
-    /// pane or the host) or another client really uses them (input, focus). Panes that are gone
-    /// or have a terminal attached are skipped. Answers Ok.
+    /// Claim `panes` for this client ([`CAP_PANE_OWNER`]): they take its size (a pane it has
+    /// not sized yet, with its first `Resize`), and keep it against other clients' `Resize`
+    /// until it lets go ([`Request::DisownPanes`], leaving the pane or the host) or another
+    /// client really uses them (input, focus). Panes that are gone or have a terminal attached
+    /// are skipped, and a pane named twice counts once. At most 1024 panes. Answers Ok.
     OwnPanes {
         panes: Vec<PaneId>,
         #[serde(default)]
         mode: OwnMode,
     },
-    /// Let go of `panes` (all the panes this client holds when empty): each one this client
-    /// sized goes to the size of the client that used it last. Answers Ok.
+    /// Let go of `panes` (all the panes this client holds when empty): each one it holds goes to
+    /// the client that asked for it ([`OwnMode::Request`]), or else to the one that used it
+    /// last. Stops asking for the others. At most 1024 panes. Answers Ok.
     DisownPanes {
         #[serde(default)]
         panes: Vec<PaneId>,
@@ -474,8 +476,8 @@ pub enum OwnMode {
     /// Take it from the other client.
     #[default]
     Take,
-    /// Leave it to the other client; when that one lets go, the client that used the pane last
-    /// gets it.
+    /// Leave it to the other client; when that one lets go, the pane goes to the first client
+    /// still connected that asked for it.
     Request,
 }
 

@@ -1190,7 +1190,7 @@ fn a_claimed_pane_keeps_its_size_against_a_mac_relayout() {
 }
 
 /// Asking for a pane the phone holds leaves it with the phone; once the phone lets go, the
-/// client that used the pane last gets it.
+/// client that asked claims it, and the Mac laying out again waits.
 #[test]
 fn requesting_a_held_pane_waits_for_the_holder() {
     let env = Env::new("own-request");
@@ -1220,8 +1220,16 @@ fn requesting_a_held_pane_waits_for_the_holder() {
 
     disown(&phone, &[]);
     assert_eq!(pane_size(&mac, pane), (70, 30));
+    mac.request(Request::Resize {
+        pane,
+        size: size(100, 40),
+    })
+    .unwrap();
+    assert_eq!(pane_size(&mac, pane), (70, 30));
 
     // The same when the phone leaves.
+    disown(&ipad, &[pane]);
+    assert_eq!(pane_size(&mac, pane), (100, 40));
     phone
         .request(Request::Resize {
             pane,
@@ -1236,6 +1244,66 @@ fn requesting_a_held_pane_waits_for_the_holder() {
     while pane_size(&mac, pane) != (70, 30) {
         assert!(Instant::now() < deadline, "the iPad did not get the pane");
         std::thread::sleep(Duration::from_millis(20));
+    }
+    mac.request(Request::Resize {
+        pane,
+        size: size(90, 40),
+    })
+    .unwrap();
+    assert_eq!(pane_size(&mac, pane), (70, 30));
+}
+
+/// The iPad asks for panes the phone holds before it has sized them: once the phone lets go
+/// (of one by disowning it, of the other by leaving), the iPad holds them, its first resize
+/// applies, and the Mac's waits.
+#[test]
+fn a_request_before_resizing_claims_the_pane_when_the_holder_lets_go() {
+    let env = Env::new("own-request-unsized");
+    let _daemon = env.start();
+    let (mac, _) = env.connect();
+    let (phone, _) = mobile(&env);
+    let (ipad, _) = ipad(&env);
+    let disowned = create(&mac, &env.dir);
+    let left = create(&mac, &env.dir);
+    for pane in [disowned, left] {
+        mac.request(Request::Resize {
+            pane,
+            size: size(120, 40),
+        })
+        .unwrap();
+        phone
+            .request(Request::Resize {
+                pane,
+                size: size(50, 30),
+            })
+            .unwrap();
+    }
+    own(&ipad, &[disowned, left], OwnMode::Request);
+    assert_eq!(pane_size(&mac, disowned), (50, 30));
+    assert_eq!(pane_size(&mac, left), (50, 30));
+
+    disown(&phone, &[disowned]);
+    assert_eq!(pane_size(&mac, disowned), (120, 40));
+    drop(phone);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while pane_size(&mac, left) != (120, 40) {
+        assert!(Instant::now() < deadline, "the phone's size stayed");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    for pane in [disowned, left] {
+        ipad.request(Request::Resize {
+            pane,
+            size: size(70, 30),
+        })
+        .unwrap();
+        assert_eq!(pane_size(&mac, pane), (70, 30));
+        mac.request(Request::Resize {
+            pane,
+            size: size(100, 40),
+        })
+        .unwrap();
+        assert_eq!(pane_size(&mac, pane), (70, 30));
     }
 }
 
@@ -1370,4 +1438,114 @@ fn size_owner_reaches_only_capable_subscribers() {
             .any(|ev| matches!(ev, Event::SizeOwner { .. })),
         "{old_events:?}"
     );
+}
+
+/// A claim made before the iPad has sized the pane holds it, but the pane keeps the Mac's size,
+/// so the Mac still owns it until the iPad's first resize.
+#[test]
+fn a_claim_before_resizing_changes_the_owner_with_the_first_resize() {
+    let env = Env::new("own-unsized-events");
+    let _daemon = env.start();
+    let (mac, mac_events) = env.connect();
+    let (ipad, ipad_events) = ipad(&env);
+    let pane = create(&mac, &env.dir);
+    mac.request(Request::Resize {
+        pane,
+        size: size(120, 40),
+    })
+    .unwrap();
+    mac.request(Request::Subscribe { pane }).unwrap();
+    ipad.request(Request::Subscribe { pane }).unwrap();
+    assert_eq!(owner_events(&mac, &mac_events, pane), [true]);
+    assert_eq!(owner_events(&ipad, &ipad_events, pane), [false]);
+
+    own(&ipad, &[pane], OwnMode::Take);
+    assert!(owner_events(&mac, &mac_events, pane).is_empty());
+    assert!(owner_events(&ipad, &ipad_events, pane).is_empty());
+    assert_eq!(pane_size(&mac, pane), (120, 40));
+
+    ipad.request(Request::Resize {
+        pane,
+        size: size(50, 30),
+    })
+    .unwrap();
+    assert_eq!(owner_events(&ipad, &ipad_events, pane), [true]);
+    assert_eq!(owner_events(&mac, &mac_events, pane), [false]);
+    assert_eq!(pane_size(&mac, pane), (50, 30));
+}
+
+/// Disowning a pane it sized but does not hold (a Mac's ordinary resize) changes nothing.
+#[test]
+fn disowning_a_pane_it_does_not_hold_changes_nothing() {
+    let env = Env::new("disown-unheld");
+    let _daemon = env.start();
+    let (mac, _) = env.connect();
+    let (ipad, _) = ipad(&env);
+    let pane = create(&mac, &env.dir);
+    mac.request(Request::Resize {
+        pane,
+        size: size(120, 40),
+    })
+    .unwrap();
+    ipad.request(Request::Resize {
+        pane,
+        size: size(50, 30),
+    })
+    .unwrap();
+    mac.request(Request::Resize {
+        pane,
+        size: size(100, 40),
+    })
+    .unwrap();
+    assert_eq!(pane_size(&mac, pane), (100, 40));
+
+    disown(&mac, &[pane]);
+    assert_eq!(pane_size(&mac, pane), (100, 40));
+    disown(&mac, &[]);
+    assert_eq!(pane_size(&mac, pane), (100, 40));
+}
+
+/// A claim list naming too many panes is refused, and the connection stays usable; a pane
+/// named several times is claimed as if named once.
+#[test]
+fn oversized_claim_lists_are_refused() {
+    let env = Env::new("own-bounds");
+    let _daemon = env.start();
+    let (mac, _) = env.connect();
+    let (ipad, _) = ipad(&env);
+    let pane = create(&mac, &env.dir);
+    let many = vec![pane; 1025];
+    let err = ipad
+        .request(Request::OwnPanes {
+            panes: many.clone(),
+            mode: OwnMode::Take,
+        })
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("too many panes"), "{err}");
+    let err = ipad
+        .request(Request::DisownPanes { panes: many })
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("too many panes"), "{err}");
+
+    mac.request(Request::Resize {
+        pane,
+        size: size(120, 40),
+    })
+    .unwrap();
+    ipad.request(Request::Resize {
+        pane,
+        size: size(50, 30),
+    })
+    .unwrap();
+    own(&ipad, &[pane; 1024], OwnMode::Take);
+    mac.request(Request::Resize {
+        pane,
+        size: size(100, 40),
+    })
+    .unwrap();
+    assert_eq!(pane_size(&mac, pane), (50, 30));
+    disown(&ipad, &[pane, pane, pane]);
+    assert_eq!(pane_size(&mac, pane), (100, 40));
 }

@@ -99,6 +99,10 @@ enum AiJob {
 /// in-place upgrade (see `PaneState::carry`).
 const MAX_CARRY: usize = 256 * 1024;
 
+/// The most panes one `OwnPanes` or `DisownPanes` may name: a tab has a handful, and each one
+/// costs a pane lock and a log line.
+const MAX_CLAIMED_PANES: usize = 1024;
+
 /// Stops every pane's reader between two reads, for an in-place upgrade: what the old image
 /// read is then parsed (and serialized) completely, and the rest stays in the kernel for the
 /// new image.
@@ -428,6 +432,9 @@ pub struct PaneState {
     pub size_held_by: Option<u64>,
     /// The holder claimed the pane with `OwnPanes`, rather than holding it as a phone.
     pub size_claimed_by: Option<u64>,
+    /// Clients that asked for the pane while another held it (`OwnMode::Request`), in the order
+    /// they asked: when the holder lets go, the first one still connected claims it.
+    pub size_requested_by: Vec<u64>,
     pub agent: AgentTracker,
     osc_cwd: Option<String>,
     command_started: Option<Instant>,
@@ -948,6 +955,7 @@ impl Daemon {
                 size_owner: None,
                 size_held_by: None,
                 size_claimed_by: None,
+                size_requested_by: Vec::new(),
                 agent: AgentTracker::default(),
                 osc_cwd: p.osc_cwd,
                 command_started: None,
@@ -2710,11 +2718,11 @@ impl Daemon {
                 Ok(Response::Ok)
             }
             Request::OwnPanes { panes, mode } => {
-                self.own_panes(client, &panes, mode);
+                self.own_panes(client, &claim_list(panes)?, mode);
                 Ok(Response::Ok)
             }
             Request::DisownPanes { panes } => {
-                self.disown_panes(client, &panes);
+                self.disown_panes(client, &claim_list(panes)?);
                 Ok(Response::Ok)
             }
             Request::Input { pane, data } => {
@@ -3631,6 +3639,18 @@ fn with_program_name(
     }
 }
 
+/// The panes of an `OwnPanes` or `DisownPanes`, each once, in the order first named.
+fn claim_list(panes: Vec<PaneId>) -> Result<Vec<PaneId>, String> {
+    if panes.len() > MAX_CLAIMED_PANES {
+        return Err(format!(
+            "too many panes: {} (at most {MAX_CLAIMED_PANES})",
+            panes.len()
+        ));
+    }
+    let mut seen = HashSet::new();
+    Ok(panes.into_iter().filter(|p| seen.insert(*p)).collect())
+}
+
 fn sanitize_size(mut s: PaneSize) -> PaneSize {
     s.cols = s.cols.clamp(2, 2000);
     s.rows = s.rows.clamp(1, 1000);
@@ -3734,6 +3754,14 @@ fn ensure_hooks(command: Option<&[String]>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn claim_lists_are_bounded_and_name_each_pane_once() {
+        assert_eq!(claim_list(vec![3, 4, 3, 3, 5, 4]).unwrap(), [3, 4, 5]);
+        assert_eq!(claim_list(vec![7; MAX_CLAIMED_PANES]).unwrap(), [7]);
+        let err = claim_list(vec![7; MAX_CLAIMED_PANES + 1]).unwrap_err();
+        assert!(err.contains("too many panes"), "{err}");
+    }
 
     fn agent(status: AgentStatus, permission: Option<u64>) -> AgentState {
         AgentState {
