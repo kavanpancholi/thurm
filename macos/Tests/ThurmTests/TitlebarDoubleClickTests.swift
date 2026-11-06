@@ -17,5 +17,6 @@ final class TitlebarDoubleClickTests: XCTestCase {
     func testLegacyMinimizeOnlyWhenActionUnset() {
         XCTAssertEqual(TitlebarDoubleClick(action: nil, legacyMinimize: true), .minimize)
         XCTAssertEqual(TitlebarDoubleClick(action: "Maximize", legacyMinimize: true), .zoom)
+        XCTAssertEqual(TitlebarDoubleClick(action: "Unknown", legacyMinimize: true), .zoom)
     }
 }

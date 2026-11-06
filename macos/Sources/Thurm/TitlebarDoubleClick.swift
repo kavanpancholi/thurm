@@ -9,7 +9,7 @@ enum TitlebarDoubleClick: Equatable {
         case "Fill": self = .fill
         case "Minimize": self = .minimize
         case "None": self = .ignore
-        default: self = legacyMinimize ? .minimize : .zoom
+        default: self = action == nil && legacyMinimize ? .minimize : .zoom
         }
     }
 
