@@ -183,6 +183,7 @@ the defaults alone.
 | `select_tab_8` | Window > Select Tab 8 |
 | `select_last_tab` | Window > Select Last Tab |
 | `move_tab_to_new_workspace` | Window > Move Tab to New Workspace |
+| `toggle_pin_tab` | Window > Pin Tab |
 | `quick_terminal` | Window > Quick Terminal |
 | `bring_all_to_front` | Window > Bring All to Front |
 | `open_config_file` | Help > Open Configuration File |

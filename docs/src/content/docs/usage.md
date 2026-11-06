@@ -68,6 +68,11 @@ The View menu changes what the sidebar lists, as do the settings below:
   the sidebar button in the titlebar). The sidebar lists only the tabs with an agent that isn't
   idle or a program reporting progress, plus the selected tab.
 
+To keep a tab in sight whatever workspace the sidebar shows, right-click it and choose
+**Pin Tab**, or use **Window > Pin Tab**. Pinned tabs show under **Pinned** at the top of the
+sidebar, in every workspace, and not again in their own group. Click one from another workspace
+to switch to it. **Only Active Tabs** never hides a pinned tab. Pins are kept across restarts.
+
 When the sidebar is hidden, the filter button beside its toggle becomes **+** (New Tab).
 Showing the sidebar restores the filter button, with its setting preserved.
 
