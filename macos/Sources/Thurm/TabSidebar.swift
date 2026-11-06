@@ -1216,10 +1216,13 @@ final class AgentsPanel: NSView, NSTableViewDataSource, NSTableViewDelegate {
     }
 
     static func summary(_ statuses: [AgentStatus], collapsed: Bool) -> String {
-        let waiting = statuses.filter { $0 == .needsInput }.count
-        let working = statuses.filter { $0 == .working }.count
-        let text = [waiting > 0 ? "\(waiting) waiting" : nil, working > 0 ? "\(working) working" : nil]
-            .compactMap { $0 }.joined(separator: " · ")
+        let counted: [(AgentStatus, String)] = collapsed
+            ? [(.needsInput, "waiting"), (.error, "failed"), (.working, "working"), (.done, "done")]
+            : [(.needsInput, "waiting"), (.working, "working")]
+        let text = counted.compactMap { status, label in
+            let n = statuses.filter { $0 == status }.count
+            return n > 0 ? "\(n) \(label)" : nil
+        }.joined(separator: " · ")
         guard text.isEmpty, collapsed, !statuses.isEmpty else { return text }
         return statuses.count == 1 ? "1 agent" : "\(statuses.count) agents"
     }

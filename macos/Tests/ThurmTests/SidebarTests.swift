@@ -309,8 +309,16 @@ final class AgentsPanelCollapseTests: XCTestCase {
         XCTAssertEqual(AgentsPanel.summary(statuses, collapsed: true), "1 waiting · 2 working")
     }
 
-    func testCollapsedSummaryCountsQuietAgents() {
-        XCTAssertEqual(AgentsPanel.summary([.idle, .done, .error], collapsed: true), "3 agents")
+    func testCollapsedSummaryKeepsFailedAndDoneAgentsInSight() {
+        let statuses: [AgentStatus] = [.done, .working, .error, .needsInput, .idle, .working]
+        XCTAssertEqual(AgentsPanel.summary(statuses, collapsed: true), "1 waiting · 1 failed · 2 working · 1 done")
+        XCTAssertEqual(AgentsPanel.summary(statuses, collapsed: false), "1 waiting · 2 working")
+        XCTAssertEqual(AgentsPanel.summary([.idle, .error], collapsed: true), "1 failed")
+        XCTAssertEqual(AgentsPanel.summary([.done], collapsed: true), "1 done")
+    }
+
+    func testCollapsedSummaryCountsIdleAgents() {
+        XCTAssertEqual(AgentsPanel.summary([.idle, .idle, .idle], collapsed: true), "3 agents")
         XCTAssertEqual(AgentsPanel.summary([.idle], collapsed: true), "1 agent")
         XCTAssertEqual(AgentsPanel.summary([.idle, .done], collapsed: false), "")
         XCTAssertEqual(AgentsPanel.summary([], collapsed: true), "")
