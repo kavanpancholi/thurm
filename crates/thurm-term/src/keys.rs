@@ -283,6 +283,25 @@ impl Encoders {
     }
 }
 
+pub fn types_input(ev: &KeyEvent) -> bool {
+    ev.action != KeyAction::Release
+        && !matches!(
+            ev.key,
+            Key::Named(
+                NamedKey::LeftShift
+                    | NamedKey::LeftControl
+                    | NamedKey::LeftAlt
+                    | NamedKey::LeftSuper
+                    | NamedKey::RightShift
+                    | NamedKey::RightControl
+                    | NamedKey::RightAlt
+                    | NamedKey::RightSuper
+                    | NamedKey::CapsLock
+                    | NamedKey::NumLock
+            )
+        )
+}
+
 /// Focus in / out report (for mode 1004, which the caller checks).
 pub fn focus(focused: bool) -> Vec<u8> {
     let ev = if focused {

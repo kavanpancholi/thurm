@@ -284,6 +284,7 @@ impl Session {
         }
         if let Some(p) = self.panes.get_mut(&pane) {
             p.term.scroll(ScrollCmd::Bottom);
+            p.term.clear_selection();
             self.frame_event(pane);
         }
         self.notify(Request::Input {
@@ -295,6 +296,7 @@ impl Session {
     pub fn paste(&mut self, pane: PaneId, text: &str) {
         if let Some(p) = self.panes.get_mut(&pane) {
             p.term.scroll(ScrollCmd::Bottom);
+            p.term.clear_selection();
             self.frame_event(pane);
         }
         self.notify(Request::Paste {
@@ -734,6 +736,23 @@ mod tests {
         s.mouse(1, 0, 0, 0, 2, 7, 0, false, 60, 8);
         s.mouse(1, 1, 0, 0, 2, 7, 0, false, 60, 8);
         assert_eq!(s.selection_text(1), "world");
+    }
+
+    #[test]
+    fn paste_and_text_clear_the_local_selection() {
+        let mut s = Session::new(true);
+        attach(&mut s, 1, b"hello world");
+        s.mouse(1, 0, 0, 0, 2, 7, 0, false, 60, 8);
+        s.mouse(1, 1, 0, 0, 2, 7, 0, false, 60, 8);
+        assert_eq!(s.selection_text(1), "world");
+        s.paste(1, "x");
+        assert_eq!(s.selection_text(1), "");
+
+        s.mouse(1, 0, 0, 0, 2, 7, 0, false, 60, 8);
+        s.mouse(1, 1, 0, 0, 2, 7, 0, false, 60, 8);
+        assert_eq!(s.selection_text(1), "world");
+        s.text(1, "é");
+        assert_eq!(s.selection_text(1), "");
     }
 
     #[test]

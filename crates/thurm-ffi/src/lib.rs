@@ -986,12 +986,26 @@ pub unsafe extern "C" fn thurm_input(
         return;
     }
     let data = unsafe { std::slice::from_raw_parts(data, len) }.to_vec();
+    clear_local_selection(client, pane);
     send(client, Request::Input { pane, data });
+}
+
+fn clear_local_selection(client: *mut thurm_client, pane: PaneId) {
+    let Some(c) = (unsafe { client_ref(client) }) else {
+        return;
+    };
+    let Some(local) = c.shared.local(pane) else {
+        return;
+    };
+    if local.lock().term.clear_selection() {
+        fire_frame(c.on_frame, c.ctx, pane);
+    }
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn thurm_paste(client: *mut thurm_client, pane: u64, text: *const c_char) {
     if let Some(t) = unsafe { opt_str(text) } {
+        clear_local_selection(client, pane);
         send(
             client,
             Request::Paste {
@@ -1128,7 +1142,15 @@ pub unsafe extern "C" fn thurm_key(
     };
     match c.shared.local(pane) {
         Some(local) => {
-            let bytes = local.lock().term.key(&key);
+            let (bytes, cleared) = {
+                let mut l = local.lock();
+                let had = l.term.has_selection();
+                let bytes = l.term.key(&key);
+                (bytes, had && !l.term.has_selection())
+            };
+            if cleared {
+                fire_frame(c.on_frame, c.ctx, pane);
+            }
             c.input(pane, bytes);
         }
         None => {
@@ -1179,10 +1201,12 @@ pub unsafe extern "C" fn thurm_mouse(
     };
     let (text, bytes) = {
         let mut l = local.lock();
+        let had = l.term.has_selection();
         let (outcome, bytes) = l.term.mouse(&event);
         let copy = outcome == MouseOutcome::SelectionDone
             && c.shared.engine.lock().cfg.terminal.copy_on_select;
-        if outcome != MouseOutcome::None && outcome != MouseOutcome::Reported {
+        let cleared = had && !l.term.has_selection();
+        if cleared || (outcome != MouseOutcome::None && outcome != MouseOutcome::Reported) {
             fire_frame(c.on_frame, c.ctx, pane);
         }
         (copy.then(|| l.term.selection_text()), bytes)

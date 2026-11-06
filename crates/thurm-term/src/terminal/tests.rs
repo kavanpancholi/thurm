@@ -301,6 +301,94 @@ fn mouse_selection_vs_reporting() {
     );
 }
 
+fn selected_all(text: &[u8]) -> Terminal {
+    let mut t = term(20, 3);
+    t.advance(text);
+    t.selection(SelectionOp::SelectAll);
+    assert!(t.has_selection());
+    t
+}
+
+fn char_key(c: char, mods: u8, action: KeyAction) -> KeyEvent {
+    KeyEvent {
+        key: Key::Char(c),
+        mods,
+        action,
+        text: c.to_string(),
+        shifted: None,
+        base_layout: None,
+    }
+}
+
+#[test]
+fn typing_clears_the_selection() {
+    let mut t = selected_all(b"hello world");
+    let generation = t.generation();
+    assert_eq!(t.key(&char_key('a', 0, KeyAction::Press)), b"a");
+    assert!(!t.has_selection());
+    assert!(t.generation() > generation);
+    assert_eq!(t.selection_text(), "");
+
+    let mut t = selected_all(b"hello world");
+    assert_eq!(t.key(&press(NamedKey::Escape)), b"\x1b");
+    assert!(!t.has_selection());
+}
+
+#[test]
+fn modifiers_and_releases_keep_the_selection() {
+    let mut t = selected_all(b"hello world");
+    t.advance(b"\x1b[>11u");
+    for key in [
+        NamedKey::LeftShift,
+        NamedKey::RightControl,
+        NamedKey::LeftAlt,
+        NamedKey::LeftSuper,
+        NamedKey::CapsLock,
+    ] {
+        assert!(!t.key(&press(key)).is_empty());
+        assert!(t.has_selection(), "{key:?} cleared the selection");
+    }
+    let release = t.key(&char_key('a', 0, KeyAction::Release));
+    assert!(!release.is_empty());
+    assert!(t.has_selection());
+}
+
+#[test]
+fn paste_clears_the_selection() {
+    let mut t = selected_all(b"hello world");
+    assert_eq!(t.paste("x"), b"x");
+    assert!(!t.has_selection());
+}
+
+#[test]
+fn mouse_reporting_click_clears_the_selection() {
+    let click = |mods| MouseEvent {
+        kind: MouseKind::Press,
+        button: MouseButton::Left,
+        col: 2,
+        row: 0,
+        right_half: false,
+        mods,
+        clicks: 1,
+        x: 0,
+        y: 0,
+    };
+    let mut t = selected_all(b"\x1b[?1000h\x1b[?1006hhello world");
+    assert_eq!(
+        t.mouse(&click(mods::SHIFT)).0,
+        MouseOutcome::SelectionChanged
+    );
+    assert!(t.has_selection());
+
+    let mut t = selected_all(b"\x1b[?1000h\x1b[?1006hhello world");
+    let generation = t.generation();
+    let (outcome, bytes) = t.mouse(&click(0));
+    assert_eq!(outcome, MouseOutcome::Reported);
+    assert_eq!(bytes, b"\x1b[<0;3;1M");
+    assert!(!t.has_selection());
+    assert!(t.generation() > generation);
+}
+
 #[test]
 fn keys_scroll_to_bottom_and_paste() {
     let mut t = term(10, 3);
