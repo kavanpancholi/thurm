@@ -14,6 +14,7 @@ of tabs.
 | Close pane / tab | Cmd+W / Cmd+Shift+W |
 | Select tab 1 through 8 / last tab | Cmd+1 through Cmd+8 / Cmd+9 |
 | Previous / next tab | Cmd+Shift+[ / Cmd+Shift+] |
+| Back / forward through the tabs visited | Cmd+[ / Cmd+] |
 | Split right / down | Cmd+D / Cmd+Shift+D |
 | Move focus between panes | Cmd+Option+Arrow |
 | Move a divider | Cmd+Control+Arrow |
@@ -43,6 +44,15 @@ a tab of the same window and host. **View › Float Tab Here** (or **Float Tab
 Here** in a sidebar row's menu) does the same. The other way, drag a card's header
 onto the sidebar and drop it between two rows to make it a tab of its own there,
 or use **View › Move Floating Pane to New Tab**. Esc cancels either drag.
+
+**Window › Back** returns to the tab you were on before, as in a browser, and
+**Window › Forward** goes forward again after a Back. The history spans every
+workspace: going back to a tab of a hidden workspace switches the window to that
+workspace. Picking a tab any other way after a Back drops the tabs ahead of it,
+and closed tabs are skipped. The quick terminal and the agent wall are not part
+of the history. The mouse's back and forward buttons do the same, also while a
+program uses the mouse; set `window.mouse_navigation_buttons = false` to send them
+to the program instead.
 
 Closing a pane stops its process. Quitting the app keeps processes running by
 default. See [Sessions](/sessions/).

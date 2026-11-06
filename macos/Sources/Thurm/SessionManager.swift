@@ -28,6 +28,7 @@ final class SessionManager: NSObject, CoreDelegate {
     private(set) var controllers: [TerminalWindowController] = []
     /// Every workspace (see Workspaces.swift).
     var workspaces: [Workspace] = []
+    var tabHistory = TabHistory()
     /// Every pane of every connected daemon (a disconnected host's keep their last state).
     var panes: [PaneKey: PaneInfo] = [:]
     /// Panes waiting for input that the user has looked at since they started waiting; they
@@ -832,6 +833,7 @@ final class SessionManager: NSObject, CoreDelegate {
         lastKeyController = c
         if !c.isQuick { lastRegularKeyController = c }
         workspace(c.workspaceID)?.lastActive = Date()
+        recordTabVisit(c)
         focusChanged()
         scheduleLayoutSave()
         // A tab dragged out into its own window: after AppKit is done with the drag.
@@ -1412,6 +1414,26 @@ final class SessionManager: NSObject, CoreDelegate {
     }
 
     /// Commands sent by the `thurm` CLI through a daemon (`host`'s: its pane ids).
+    func swapPanes(_ a: PaneKey, _ b: PaneKey) {
+        guard a != b, let ca = controller(for: a), let cb = controller(for: b) else { return }
+        if ca === cb {
+            ca.content.swap(a, b)
+        } else {
+            let history = tabHistory
+            ca.content.replace(a, with: b)
+            cb.content.replace(b, with: a)
+            tabHistory = history
+            tabHistory.swapPanes(a, b)
+            // Each pane's old view let go of it after its new one took it.
+            ca.content.views[b]?.resubscribe()
+            cb.content.views[a]?.resubscribe()
+            ca.updateTitle()
+            cb.updateTitle()
+            focusChanged()
+        }
+        scheduleLayoutSave()
+    }
+
     private func handleUi(_ payload: Any?, host daemon: HostId) {
         guard let v = JSON.variant(payload), let d = v.payload as? [String: Any] else { return }
         let key = { (field: String) in jsonUInt64(d[field]).map { PaneKey(daemon, $0) } }
@@ -1627,21 +1649,8 @@ final class SessionManager: NSObject, CoreDelegate {
                   let c = controller(for: pane), !c.isQuick else { return }
             c.content.placeFloating(pane, at: place)
         case "SwapPanes":
-            guard let a = key("a"), let b = key("b"), a != b,
-                  let ca = controller(for: a), let cb = controller(for: b) else { return }
-            if ca === cb {
-                ca.content.swap(a, b)
-            } else {
-                ca.content.replace(a, with: b)
-                cb.content.replace(b, with: a)
-                // Each pane's old view let go of it after its new one took it.
-                ca.content.views[b]?.resubscribe()
-                cb.content.views[a]?.resubscribe()
-                ca.updateTitle()
-                cb.updateTitle()
-                focusChanged()
-            }
-            scheduleLayoutSave()
+            guard let a = key("a"), let b = key("b") else { return }
+            swapPanes(a, b)
         default:
             tlog("unknown UI command \(v.name)")
         }

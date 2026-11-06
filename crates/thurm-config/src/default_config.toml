@@ -94,6 +94,9 @@ sidebar_agent_rows = 5
 sidebar_usage_claude = false
 # Codex: read from its latest session log.
 sidebar_usage_codex = false
+# The mouse's back and forward buttons go back and forward through the tabs visited, as
+# Window > Back / Forward do, even while a program uses the mouse. Off, the program gets them.
+mouse_navigation_buttons = true
 
 [cursor]
 # Cursor shape: "block", "beam" or "underline".

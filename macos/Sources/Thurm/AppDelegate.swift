@@ -275,6 +275,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         SessionManager.shared.showWorkspaceSwitcher()
     }
 
+    @objc func tabBack(_ sender: Any?) {
+        SessionManager.shared.goBackInTabHistory()
+    }
+
+    @objc func tabForward(_ sender: Any?) {
+        SessionManager.shared.goForwardInTabHistory()
+    }
+
     @objc func switchAgent(_ sender: Any?) {
         SessionManager.shared.showAgentPicker()
     }
@@ -321,6 +329,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         if menuItem.action == #selector(toggleSecureInput(_:)) {
             menuItem.state = SecureInput.shared.globalEnabled ? .on : .off
+        }
+        if menuItem.action == #selector(tabBack(_:)) {
+            return SessionManager.shared.canGoBackInTabHistory
+        }
+        if menuItem.action == #selector(tabForward(_:)) {
+            return SessionManager.shared.canGoForwardInTabHistory
         }
         if menuItem.action == #selector(renameWorkspace(_:)) || menuItem.action == #selector(closeWorkspace(_:)) {
             return SessionManager.shared.currentWorkspace != nil

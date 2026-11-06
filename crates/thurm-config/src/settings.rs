@@ -221,6 +221,11 @@ const OPTIONS: &[(&str, &str, Kind)] = &[
         "Codex usage limits in sidebar",
         Kind::Bool,
     ),
+    (
+        "window.mouse_navigation_buttons",
+        "Mouse back/forward buttons switch tabs",
+        Kind::Bool,
+    ),
     ("cursor.style", "Style", Kind::Enum(CURSOR_STYLE)),
     ("cursor.blink", "Blink", Kind::Bool),
     (

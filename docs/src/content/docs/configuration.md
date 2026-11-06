@@ -175,6 +175,8 @@ the defaults alone.
 | `maximize` | Window > Zoom |
 | `previous_tab` | Window > Show Previous Tab |
 | `next_tab` | Window > Show Next Tab |
+| `tab_back` | Window > Back |
+| `tab_forward` | Window > Forward |
 | `select_tab_1` | Window > Select Tab 1 |
 | `select_tab_2` | Window > Select Tab 2 |
 | `select_tab_3` | Window > Select Tab 3 |
