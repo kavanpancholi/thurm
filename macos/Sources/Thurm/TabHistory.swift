@@ -31,6 +31,10 @@ struct TabHistory {
         }
     }
 
+    mutating func swapPanes(_ a: PaneKey, _ b: PaneKey) {
+        entries = entries.map { $0.map { $0 == a ? b : $0 == b ? a : $0 } }
+    }
+
     mutating func back(fromCurrent: Bool = true, isOpen: ([PaneKey]) -> Bool) -> [PaneKey]? {
         let currentOpen = prune(isOpen)
         return move(to: currentOpen && fromCurrent ? cursor - 1 : cursor)

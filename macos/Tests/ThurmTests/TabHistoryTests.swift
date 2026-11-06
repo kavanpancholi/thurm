@@ -177,6 +177,22 @@ final class TabHistoryTests: XCTestCase {
         XCTAssertTrue(found === a)
     }
 
+    func testSwappingPanesBetweenTwoVisitedTabsKeepsBothInHistory() throws {
+        let a = manager.makeController(root: .leaf(pane(1)), focused: pane(1), zoomed: nil, title: nil, frame: nil)
+        let split = SplitNode.split(axis: .horizontal, ratio: 0.5, first: .leaf(pane(2)), second: .leaf(pane(3)))
+        let b = manager.makeController(root: split, focused: pane(2), zoomed: nil, title: nil, frame: nil)
+        manager.controllerBecameKey(a)
+        manager.controllerBecameKey(b)
+
+        manager.swapPanes(pane(1), pane(2))
+
+        XCTAssertEqual(manager.tabHistory.entries, [tab(2), tab(1, 3)])
+        guard case .shown(let back) = manager.tabTarget(manager.tabHistory.entries[0]) else { return XCTFail("tab A") }
+        XCTAssertTrue(back === a)
+        guard case .shown(let here) = manager.tabTarget(manager.tabHistory.entries[1]) else { return XCTFail("tab B") }
+        XCTAssertTrue(here === b)
+    }
+
     func testBackFromTheAgentWallReturnsToTheTabLeft() {
         let a = manager.makeController(root: .leaf(pane(1)), focused: pane(1), zoomed: nil, title: nil, frame: nil)
         let b = manager.makeController(root: .leaf(pane(2)), focused: pane(2), zoomed: nil, title: nil, frame: nil)
