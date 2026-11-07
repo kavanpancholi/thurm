@@ -814,7 +814,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1000,9 +1000,9 @@ dependencies = [
 
 [[package]]
 name = "ghostty-vt-rs-sys"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "41f6373e22c90ac1bcbadd158a8439117f4986887cd98e934c7f7350961955bb"
+checksum = "3d93c93b02bd497c40d510a3899e84aeeef97ee89f25ed9d298cb850d4c527d9"
 dependencies = [
  "sha2",
 ]
