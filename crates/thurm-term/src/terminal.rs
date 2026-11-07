@@ -211,15 +211,15 @@ impl Default for Pen {
 impl Pen {
     fn from_style(s: &vt::Style) -> Self {
         let mut attrs = 0;
-        for (on, a) in [
-            (s.bold, A_BOLD),
-            (s.italic, A_ITALIC),
-            (s.faint, A_DIM),
-            (s.inverse, A_INVERSE),
-            (s.invisible, A_HIDDEN),
-            (s.strikethrough, A_STRIKE),
+        for (flag, a) in [
+            (ghostty_vt_rs_sys::STYLE_FLAG_BOLD, A_BOLD),
+            (ghostty_vt_rs_sys::STYLE_FLAG_ITALIC, A_ITALIC),
+            (ghostty_vt_rs_sys::STYLE_FLAG_FAINT, A_DIM),
+            (ghostty_vt_rs_sys::STYLE_FLAG_INVERSE, A_INVERSE),
+            (ghostty_vt_rs_sys::STYLE_FLAG_INVISIBLE, A_HIDDEN),
+            (ghostty_vt_rs_sys::STYLE_FLAG_STRIKETHROUGH, A_STRIKE),
         ] {
-            if on {
+            if s.flags & flag != 0 {
                 attrs |= a;
             }
         }
@@ -232,7 +232,9 @@ impl Pen {
             bg: Color::from_style(&s.bg_color),
             ul_color,
             attrs,
-            underline: s.underline.clamp(0, 5) as u8,
+            underline: ((s.flags & ghostty_vt_rs_sys::STYLE_UNDERLINE_MASK)
+                >> ghostty_vt_rs_sys::STYLE_UNDERLINE_SHIFT)
+                .min(5) as u8,
         }
     }
 }
