@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.19.1 - 2026-11-07
+
+This release updates the terminal engine to libghostty-vt 1.0.0. Your terminal sessions behave as before.
+
+### Other changes
+
+- Thurm now builds against libghostty-vt 1.0.0, the first release with a stable C interface. Styles, underline colors, and scrollback history keep working as before.
+
 ## v0.19.0 - 2026-11-07
 
 This release adds tab history and a fold for the Agents panel. It also fixes how a pane clears its selection.
