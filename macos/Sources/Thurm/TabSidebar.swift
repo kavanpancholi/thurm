@@ -179,8 +179,7 @@ final class TabSplitViewController: NSSplitViewController {
         guard !togglingSidebar, let side = splitViewItems.first else { return }
         let collapse = !side.isCollapsed
         Self.collapsedByDefault = collapse
-        let panes = (host.view as? TabContentView)?.views.values.map { $0 } ?? []
-        panes.forEach { $0.holdGridSize = true }
+        let panes = (host.view as? TabContentView)?.holdGridsForSidebar() ?? []
         sidebar.holdReloads = true
         togglingSidebar = true
         NSObject.cancelPreviousPerformRequests(withTarget: self, selector: #selector(saveWidth), object: nil)

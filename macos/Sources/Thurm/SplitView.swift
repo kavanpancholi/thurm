@@ -893,6 +893,16 @@ final class TabContentView: NSView {
         }
     }
 
+    /// Holds every terminal's grid for a sidebar toggle and returns them, to release once the
+    /// slide ends. A pane move in progress settles first: settling it at the slide's first
+    /// width would release the hold, and each later width would reach the PTY.
+    func holdGridsForSidebar() -> [TerminalView] {
+        finishLayoutMove()
+        let held = Array(views.values)
+        held.forEach { $0.holdGridSize = true }
+        return held
+    }
+
     /// Settles the layout move in progress, if any: closed panes go, terminals take their size.
     private func finishLayoutMove() {
         moveGeneration += 1
