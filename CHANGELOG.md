@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.19.2 - 2026-11-08
+
+This release fixes the motion of the sidebar toggle. Panes keep their size during the slide and resize once it ends.
+
+### Fixes
+
+- The sidebar toggle uses the standard motion again. The Agents panel fold uses the same motion.
+- Panes no longer resize before the sidebar slide. Text no longer wraps and fades in the middle of the slide.
+- Full-screen programs no longer flash their old layout after a resize. The terminal holds the frame until the program redraws.
+
 ## v0.19.1 - 2026-11-07
 
 This release updates the terminal engine to libghostty-vt 1.0.0. Your terminal sessions behave as before.
