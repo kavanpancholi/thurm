@@ -1416,11 +1416,14 @@ impl Daemon {
             log::info!("pane {} ended with the daemon", pane.id);
             return;
         }
+        // Closed explicitly (`close_pane` hangs up the pty after telling clients): a PaneInfo or
+        // a notification now would bring the pane back to clients that already dropped it.
+        let closed = self.pane(pane.id).is_none();
         let (hold, info) = {
             let mut st = pane.state.lock();
             st.info.alive = false;
             st.info.exit_code = code;
-            if st.term.program_exited() {
+            if st.term.program_exited() && !closed {
                 let records = st.term.program_status();
                 let events = self.sync_programs(pane.id, &mut st, records);
                 self.broadcast(Event::PaneInfo(st.info.clone()), false);
@@ -3828,6 +3831,54 @@ mod tests {
         daemon.parse_output(&pane, b"\x1b]7501;state=working:app=x\x1b\\", Some(job));
         assert_eq!(pane.state.lock().programs_pgrp, Some(job));
         daemon.close_pane(id);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Closing a pane hangs up its pty, and its reader then sees the program end. Clients have
+    /// dropped the pane by then: a PaneInfo would bring it back to them, with its agent still
+    /// counted on the Dock badge.
+    #[test]
+    fn a_closed_pane_is_not_heard_of_again() {
+        let dir = std::env::temp_dir().join(format!("thurm-closed-quiet-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let daemon = Daemon::new(
+            Config::default(),
+            dir.join("s.sock"),
+            dir.join("state"),
+            Arc::new(AtomicBool::new(false)),
+        );
+        let id = daemon
+            .create_pane(
+                CreatePane {
+                    command: Some(vec!["sleep".into(), "30".into()]),
+                    size: PaneSize {
+                        cols: 80,
+                        rows: 24,
+                        cell_width: 8,
+                        cell_height: 16,
+                    },
+                    ..Default::default()
+                },
+                None,
+            )
+            .unwrap();
+        let pane = daemon.pane(id).unwrap();
+        daemon.parse_output(&pane, b"\x1b]7501;state=working:app=x\x1b\\", None);
+        let (client, rx) = daemon.add_client();
+        client.ui.store(true, Ordering::Relaxed);
+        daemon.close_pane(id);
+        let mut closed = false;
+        let mut after = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline {
+            match rx.recv_timeout(Duration::from_millis(50)) {
+                Ok(ServerMessage::Event(Event::PaneClosed { pane })) if pane == id => closed = true,
+                Ok(ServerMessage::Event(ev)) if closed => after.push(ev),
+                _ => {}
+            }
+        }
+        assert!(closed);
+        assert!(after.is_empty(), "heard after PaneClosed: {after:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
