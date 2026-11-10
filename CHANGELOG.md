@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.19.3 - 2026-11-10
+
+This release fixes notifications that stayed in Notification Center after you read their pane.
+
+### Fixes
+
+- Notifications now leave Notification Center after you read their pane. Before, program notifications, finished commands and failed commands could stay. The daemon now marks these as unread. The macOS app also removes notifications of panes on screen when focus changes.
+
 ## v0.19.2 - 2026-11-08
 
 This release fixes the motion of the sidebar toggle. Panes keep their size during the slide and resize once it ends.
