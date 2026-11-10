@@ -157,15 +157,32 @@ final class Notifications: NSObject, UNUserNotificationCenterDelegate {
 
     /// The pane was read (here, or on a phone): none of its notifications is news any more.
     func withdraw(pane: PaneKey) {
-        guard isAvailable else { return }
-        waitingForAuthorization?.removeAll { Notifications.pane(of: $0.content.userInfo) == pane }
+        withdraw(panes: [pane])
+    }
+
+    /// These panes were read: their notifications come down, delivered or still waiting for
+    /// the authorization prompt.
+    func withdraw(panes: Set<PaneKey>) {
+        guard isAvailable, !panes.isEmpty else { return }
+        waitingForAuthorization?.removeAll {
+            Notifications.pane(of: $0.content.userInfo).map(panes.contains) ?? false
+        }
         let center = UNUserNotificationCenter.current()
         center.getDeliveredNotifications { delivered in
-            let ids = delivered.map(\.request)
-                .filter { Notifications.pane(of: $0.content.userInfo) == pane }
-                .map(\.identifier)
-            center.removeDeliveredNotifications(withIdentifiers: ids)
+            let ids = Notifications.identifiers(
+                of: delivered.map { (identifier: $0.request.identifier, userInfo: $0.request.content.userInfo) },
+                for: panes)
+            if !ids.isEmpty { center.removeDeliveredNotifications(withIdentifiers: ids) }
         }
+    }
+
+    /// The identifiers of the notifications that belong to one of `panes`. Thurm's own (an
+    /// update, a remote host) belong to no pane and stay.
+    static func identifiers(of notifications: [(identifier: String, userInfo: [AnyHashable: Any])],
+                            for panes: Set<PaneKey>) -> [String] {
+        notifications
+            .filter { pane(of: $0.userInfo).map(panes.contains) ?? false }
+            .map(\.identifier)
     }
 
     private static func pane(of info: [AnyHashable: Any]) -> PaneKey? {
