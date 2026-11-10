@@ -1258,6 +1258,7 @@ final class TabContentView: NSView {
         if floatingHidden && isFloating(pane) { setFloatingHidden(false, focusing: false) }
         if let z = zoomedPane, z != pane, root.contains(pane) {
             transitionZoom { zoomedPane = nil }
+            SessionManager.shared.withdrawNotificationsOnScreen()
         }
         setFocusedPane(pane)
         window?.makeFirstResponder(view)
@@ -1376,6 +1377,7 @@ final class TabContentView: NSView {
             transitionZoom { zoomedPane = nil }
         }
         window?.invalidateCursorRects(for: self)
+        SessionManager.shared.withdrawNotificationsOnScreen()
         SessionManager.shared.scheduleLayoutSave()
     }
 
@@ -1388,6 +1390,7 @@ final class TabContentView: NSView {
         transitionZoom { zoomedPane = zoomedPane == nil ? focusedPane : nil }
         window?.invalidateCursorRects(for: self)
         if let view = views[focusedPane] { window?.makeFirstResponder(view) }
+        SessionManager.shared.withdrawNotificationsOnScreen()
         SessionManager.shared.scheduleLayoutSave()
     }
 

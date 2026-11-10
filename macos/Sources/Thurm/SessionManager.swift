@@ -871,8 +871,9 @@ final class SessionManager: NSObject, CoreDelegate {
     /// On screen in the active window's tab counts as read, as for the Dock badge: those
     /// panes' notifications leave Notification Center. Here and not in `updateDockBadge`,
     /// which runs on every pane update: a notification of a pane that is on screen without
-    /// the keyboard focus stays until the user next moves the focus.
-    private func withdrawNotificationsOnScreen() {
+    /// the keyboard focus stays until the user next moves the focus. Also runs when a zoom
+    /// changes which panes are on screen.
+    func withdrawNotificationsOnScreen() {
         guard NSApp.isActive, let c = NSApp.keyWindow?.windowController as? TerminalWindowController else {
             return
         }
