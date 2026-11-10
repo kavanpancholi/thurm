@@ -688,8 +688,8 @@ pub enum Event {
     ConfigReloaded,
     /// The saved layout changed. Read GetLayout for current state.
     LayoutChanged,
-    /// The user read the pane, on some device (focused it or typed in it), after an agent
-    /// notice: its notifications are no longer news anywhere.
+    /// The user read the pane, on some device (focused it or typed in it), after a
+    /// notification: its notifications are no longer news anywhere.
     PaneRead {
         pane: PaneId,
     },

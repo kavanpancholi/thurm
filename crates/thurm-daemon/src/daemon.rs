@@ -518,7 +518,7 @@ pub struct Daemon {
     push: crate::push::Pusher,
     /// Serving over Tailscale.
     pub tailnet: Arc<crate::tailnet::Tailnet>,
-    /// Panes with an agent notice nobody has read yet (see `pane_read`).
+    /// Panes with a notification nobody has read yet (see `pane_read`).
     unread: Mutex<HashSet<PaneId>>,
     ai_rx: Receiver<AiJob>,
     store: Option<Store>,
@@ -624,24 +624,27 @@ impl Daemon {
                 .collect()
         };
         match &event {
-            // Agent notices only, which carry their state's sound (`[notifications.<state>]`): a
-            // program's own (OSC 9 / 99 / 777) and a finished command stay on the desktop.
+            // Every notification is unread until its pane is read (`pane_read`). Agent notices
+            // only, which carry their state's sound (`[notifications.<state>]`), go to phones:
+            // a program's own (OSC 9 / 99 / 777) and a finished command stay on the desktop.
             Event::Notify {
                 pane,
                 title,
                 permission,
-                sound: Some(_),
+                sound,
                 ..
             } => {
                 self.unread.lock().insert(*pane);
-                self.push.notify(
-                    crate::push::Notice {
-                        pane: *pane,
-                        title: title.clone(),
-                        permission: *permission,
-                    },
-                    &open(),
-                );
+                if sound.is_some() {
+                    self.push.notify(
+                        crate::push::Notice {
+                            pane: *pane,
+                            title: title.clone(),
+                            permission: *permission,
+                        },
+                        &open(),
+                    );
+                }
             }
             Event::PaneInfo(info) => self.push.agent_changed(
                 info.id,
@@ -675,8 +678,8 @@ impl Daemon {
         }
     }
 
-    /// The user read `pane` on some device (focused it, typed in it, answered its prompt): an
-    /// agent notice still standing for it comes down everywhere, the desktops' and the phones'.
+    /// The user read `pane` on some device (focused it, typed in it, answered its prompt): a
+    /// notification still standing for it comes down everywhere, the desktops' and the phones'.
     /// Only the first read after a notice says so.
     fn pane_read(&self, pane: PaneId) {
         if self.unread.lock().remove(&pane) {
@@ -4263,6 +4266,39 @@ mod tests {
             posts.recv_timeout(Duration::from_millis(500)).is_err(),
             "a program notification was pushed"
         );
+        // Both are unread all the same: reading the pane takes either down on the desktops.
+        assert!(
+            daemon.unread.lock().contains(&1),
+            "a program notification is not unread"
+        );
+        assert!(daemon.unread.lock().contains(&2));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A program's notification is unread until its pane is read, once.
+    #[test]
+    fn a_program_notification_is_unread_until_read() {
+        let dir = std::env::temp_dir().join(format!("thurm-unread-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let daemon = Daemon::new(
+            Config::default(),
+            dir.join("s.sock"),
+            dir.join("state"),
+            Arc::new(AtomicBool::new(false)),
+        );
+        daemon.broadcast(
+            Event::Notify {
+                pane: 1,
+                title: "make finished".into(),
+                body: "after 20s".into(),
+                permission: None,
+                sound: None,
+            },
+            true,
+        );
+        assert!(daemon.unread.lock().contains(&1));
+        daemon.pane_read(1);
+        assert!(!daemon.unread.lock().contains(&1));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
