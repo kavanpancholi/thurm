@@ -422,6 +422,9 @@ pub struct PaneState {
     pub info: PaneInfo,
     pub command: Option<Vec<String>>,
     pub hold: bool,
+    /// `close_pane` took the pane away and told clients so: its exit says nothing more. Set
+    /// under this lock, where `pane_exited` decides, so no PaneInfo can follow PaneClosed.
+    pub closed: bool,
     pub subscribers: HashMap<u64, Subscriber>,
     pub terminal_attachment: Option<(u64, PaneSize)>,
     /// Per client, the size it shows the pane at (see `active_size`).
@@ -952,6 +955,7 @@ impl Daemon {
                 info: p.info,
                 command: p.command,
                 hold: p.hold,
+                closed: false,
                 subscribers: HashMap::new(),
                 terminal_attachment: None,
                 wanted: HashMap::new(),
@@ -1416,14 +1420,13 @@ impl Daemon {
             log::info!("pane {} ended with the daemon", pane.id);
             return;
         }
-        // Closed explicitly (`close_pane` hangs up the pty after telling clients): a PaneInfo or
-        // a notification now would bring the pane back to clients that already dropped it.
-        let closed = self.pane(pane.id).is_none();
-        let (hold, info) = {
+        let (hold, info, closed) = {
             let mut st = pane.state.lock();
             st.info.alive = false;
             st.info.exit_code = code;
-            if st.term.program_exited() && !closed {
+            // Closed explicitly: a PaneInfo or a notification now would bring the pane back to
+            // clients that already dropped it.
+            if st.term.program_exited() && !st.closed {
                 let records = st.term.program_status();
                 let events = self.sync_programs(pane.id, &mut st, records);
                 self.broadcast(Event::PaneInfo(st.info.clone()), false);
@@ -1438,9 +1441,10 @@ impl Daemon {
                 };
                 st.term.print(&msg);
             }
-            (st.hold, st.info.clone())
+            (st.hold, st.info.clone(), st.closed)
         };
-        if self.pane(pane.id).is_none() {
+        // A close that took the pane out of the map may not have taken its lock yet.
+        if closed || self.pane(pane.id).is_none() {
             // Closed explicitly; ClosePane already notified clients.
             return;
         }
@@ -1491,8 +1495,12 @@ impl Daemon {
             return false;
         };
         self.just_exited.lock().retain(|(p, _)| p.id != id);
-        pane.state.lock().pty.hangup();
         self.session_dirty.store(true, Ordering::Relaxed);
+        // Under the pane's lock, as `pane_exited` broadcasts: its exit's PaneInfo comes before
+        // PaneClosed or not at all.
+        let mut st = pane.state.lock();
+        st.closed = true;
+        st.pty.hangup();
         self.broadcast(Event::PaneClosed { pane: id }, false);
         true
     }
@@ -3874,6 +3882,58 @@ mod tests {
             match rx.recv_timeout(Duration::from_millis(50)) {
                 Ok(ServerMessage::Event(Event::PaneClosed { pane })) if pane == id => closed = true,
                 Ok(ServerMessage::Event(ev)) if closed => after.push(ev),
+                _ => {}
+            }
+        }
+        assert!(closed);
+        assert!(after.is_empty(), "heard after PaneClosed: {after:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The exit can have looked at the pane before a close took it away: whether it speaks is
+    /// decided under the pane's lock, where the close marks it, not by the pane map.
+    #[test]
+    fn an_exit_that_saw_the_pane_before_its_close_stays_quiet() {
+        let dir = std::env::temp_dir().join(format!("thurm-closed-race-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let daemon = Daemon::new(
+            Config::default(),
+            dir.join("s.sock"),
+            dir.join("state"),
+            Arc::new(AtomicBool::new(false)),
+        );
+        let id = daemon
+            .create_pane(
+                CreatePane {
+                    command: Some(vec!["sleep".into(), "30".into()]),
+                    size: PaneSize {
+                        cols: 80,
+                        rows: 24,
+                        cell_width: 8,
+                        cell_height: 16,
+                    },
+                    ..Default::default()
+                },
+                None,
+            )
+            .unwrap();
+        let pane = daemon.pane(id).unwrap();
+        daemon.parse_output(&pane, b"\x1b]7501;state=working:app=x\x1b\\", None);
+        let (client, rx) = daemon.add_client();
+        client.ui.store(true, Ordering::Relaxed);
+        daemon.close_pane(id);
+        // The map as the exit saw it before the close.
+        daemon.panes.lock().insert(id, pane.clone());
+        daemon.pane_exited(&pane);
+        daemon.panes.lock().remove(&id);
+        let mut closed = false;
+        let mut after = Vec::new();
+        while let Ok(msg) = rx.recv_timeout(Duration::from_millis(200)) {
+            match msg {
+                ServerMessage::Event(Event::PaneClosed { pane }) if pane == id && !closed => {
+                    closed = true
+                }
+                ServerMessage::Event(ev) if closed => after.push(ev),
                 _ => {}
             }
         }
