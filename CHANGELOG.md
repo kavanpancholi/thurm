@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.19.4 - 2026-11-10
+
+Thurm now clears the Dock badge for a pane that you close. This release fixes a bug that kept a finished agent in the badge count.
+
+### Fixes
+
+- The Dock badge clears when you close a pane that ran an agent. Before this fix, a closed pane could come back and keep its finished agent in the badge count until you restarted the app.
+
 ## v0.19.3 - 2026-11-10
 
 This release fixes notifications that stayed in Notification Center after you read their pane.
