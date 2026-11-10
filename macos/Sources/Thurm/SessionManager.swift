@@ -1380,6 +1380,9 @@ final class SessionManager: NSObject, CoreDelegate {
     func paneInfoUpdated(_ info: PaneInfo) {
         let key = info.key
         let old = panes[key]
+        // A dead pane we no longer know: an older daemon's last word after PaneClosed. Kept,
+        // its agent would hold the Dock badge with no tab to read it in.
+        if old == nil && !info.alive { return }
         panes[key] = info
         if let c = controller(for: key) {
             c.updateTitle()
