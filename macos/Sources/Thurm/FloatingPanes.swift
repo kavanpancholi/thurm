@@ -160,21 +160,20 @@ enum FloatingGeometry {
                         minSize: CGSize = FloatingGeometry.minSize) -> CGRect {
         var (minX, minY, maxX, maxY) = (rect.minX, rect.minY, rect.maxX, rect.maxY)
         let minW = min(minSize.width, area.width), minH = min(minSize.height, area.height)
-        if edges.contains(.left) { minX = min(max(area.minX, minX + delta.dx), maxX - minW) }
-        if edges.contains(.right) { maxX = max(min(area.maxX, maxX + delta.dx), minX + minW) }
-        if edges.contains(.top) { minY = min(max(area.minY, minY + delta.dy), maxY - minH) }
-        if edges.contains(.bottom) { maxY = max(min(area.maxY, maxY + delta.dy), minY + minH) }
+        if edges.contains(.left) { minX = min(max(area.minX, minX + delta.dx), maxX - min(minW, maxX - area.minX)) }
+        if edges.contains(.right) { maxX = max(min(area.maxX, maxX + delta.dx), minX + min(minW, area.maxX - minX)) }
+        if edges.contains(.top) { minY = min(max(area.minY, minY + delta.dy), maxY - min(minH, maxY - area.minY)) }
+        if edges.contains(.bottom) { maxY = max(min(area.maxY, maxY + delta.dy), minY + min(minH, area.maxY - minY)) }
         return CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
     }
 
-    /// The side of `rect` a pane dropped at `point` docks on: the one whose triangle (between
-    /// the rectangle's diagonals) holds the point.
     static let snapReach: CGFloat = 32
     static let snapCorner: CGFloat = 0.2
     static let snapGap: CGFloat = 8
 
     /// `area` is flipped: its minY is the top.
     static func snap(at point: CGPoint, in area: CGRect) -> FloatingSnap? {
+        guard area.contains(point) else { return nil }
         let left = point.x <= area.minX + snapReach, right = point.x >= area.maxX - snapReach
         let top = point.y <= area.minY + snapReach, bottom = point.y >= area.maxY - snapReach
         let upper = point.y < area.minY + area.height * snapCorner
@@ -206,6 +205,8 @@ enum FloatingGeometry {
         }
     }
 
+    /// The side of `rect` a pane dropped at `point` docks on: the one whose triangle (between
+    /// the rectangle's diagonals) holds the point.
     static func dockSide(_ point: CGPoint, in rect: CGRect) -> SplitDirName {
         let dx = (point.x - rect.midX) / max(1, rect.width)
         let dy = (point.y - rect.midY) / max(1, rect.height)

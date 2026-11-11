@@ -23,6 +23,25 @@ final class SnapCardTests: XCTestCase {
         XCTAssertNil(FloatingGeometry.snap(at: CGPoint(x: 500, y: 3), in: area), "the middle of the top edge")
         XCTAssertNil(FloatingGeometry.snap(at: CGPoint(x: 500, y: 300), in: area))
         XCTAssertNil(FloatingGeometry.snap(at: CGPoint(x: 100, y: 300), in: area))
+        for outside in [CGPoint(x: -40, y: 300), CGPoint(x: 1040, y: 300), CGPoint(x: 120, y: -40),
+                        CGPoint(x: 880, y: 640), CGPoint(x: 1040, y: 40)] {
+            XCTAssertNil(FloatingGeometry.snap(at: outside, in: area), "\(outside) is outside the tab")
+        }
+    }
+
+    func testResizingANarrowSnappedQuarterStaysInsideTheTab() {
+        let narrow = CGRect(x: 0, y: 0, width: 400, height: 300)
+        let quarter = FloatingGeometry.rect(.bottomRight, in: narrow)
+        XCTAssertLessThan(quarter.width, FloatingGeometry.minSize.width)
+        let cases: [(FloatingEdges, CGVector)] = [(.right, CGVector(dx: 50, dy: 0)), (.right, CGVector(dx: -30, dy: 0)),
+                                                  (.bottom, CGVector(dx: 0, dy: 40)), ([.right, .bottom], CGVector(dx: 10, dy: 10))]
+        for (edges, delta) in cases {
+            let resized = FloatingGeometry.resized(quarter, edges: edges, by: delta, in: narrow)
+            XCTAssertTrue(narrow.contains(resized), "\(edges) by \(delta): \(resized)")
+        }
+        let left = FloatingGeometry.resized(FloatingGeometry.rect(.topLeft, in: narrow), edges: .left,
+                                            by: CGVector(dx: -60, dy: 0), in: narrow)
+        XCTAssertTrue(narrow.contains(left))
     }
 
     func testSnapRectsSplitTheAreaWithAGap() {
