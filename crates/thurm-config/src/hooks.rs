@@ -41,12 +41,29 @@ pub const AGENTS: &[HookAgent] = &[
         permission: no_permission,
         context_json: false,
     },
+    HookAgent {
+        kind: "command-code",
+        name: "Command Code",
+        events: COMMAND_CODE_EVENTS,
+        settings: command_code_settings,
+        permission: no_permission,
+        context_json: true,
+    },
 ];
 
 /// Codex only has these (no notification / tool events).
 pub const CODEX_EVENTS: &[(&str, &str)] = &[
     ("SessionStart", "session-start"),
     ("UserPromptSubmit", "prompt-submit"),
+    ("Stop", "stop"),
+];
+
+/// Command Code has no notification or prompt-submit event; its tool events show a working
+/// turn, and the screen the rest.
+pub const COMMAND_CODE_EVENTS: &[(&str, &str)] = &[
+    ("SessionStart", "session-start"),
+    ("PreToolUse", "tool-complete"),
+    ("PostToolUse", "tool-complete"),
     ("Stop", "stop"),
 ];
 
@@ -125,6 +142,10 @@ fn claude_settings() -> PathBuf {
 
 fn codex_settings() -> PathBuf {
     config_dir("CODEX_HOME", ".codex").join("hooks.json")
+}
+
+fn command_code_settings() -> PathBuf {
+    dirs_home().join(".commandcode").join("settings.json")
 }
 
 /// Claude Code signals a permission prompt as a notification with this type.
@@ -492,5 +513,28 @@ mod tests {
         assert!(reports_turns("claude"));
         assert!(reports_turns("codex"));
         assert!(reports_turns("pi"));
+    }
+
+    #[test]
+    fn command_code_reports_via_its_own_hooks() {
+        let cc = AGENTS.iter().find(|a| a.kind == "command-code").unwrap();
+        assert!(cc.context_json);
+        assert_eq!(cc.events, COMMAND_CODE_EVENTS);
+        assert_eq!(cc.normalize("SessionStart"), "session-start");
+        assert_eq!(cc.normalize("PreToolUse"), "tool-complete");
+        assert_eq!(cc.normalize("PostToolUse"), "tool-complete");
+        assert_eq!(cc.normalize("Stop"), "stop");
+        assert!(!cc.reports_turns());
+        assert!(!reports_turns("command-code"));
+        let out: Value = serde_json::from_str(&cc.session_output("in pane 7")).unwrap();
+        assert_eq!(
+            out.pointer("/hookSpecificOutput/additionalContext"),
+            Some(&json!("in pane 7"))
+        );
+        assert!(
+            cc.settings_path().ends_with(".commandcode/settings.json"),
+            "{:?}",
+            cc.settings_path()
+        );
     }
 }

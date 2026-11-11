@@ -86,6 +86,25 @@ pub fn builtin_agents() -> Vec<AgentDef> {
             fork_session: Some(s(&["codex", "fork", "{session}"])),
         },
         AgentDef {
+            kind: "command-code".into(),
+            name: "Command Code".into(),
+            processes: s(&["command-code"]),
+            argv: s(&["command-code"]),
+            working: s(&["esc to interrupt"]),
+            working_title: Vec::new(),
+            attention: s(&[
+                "Waiting for tool permission",
+                "Waiting for shell command permission",
+                "Waiting for file edit permission",
+                "Waiting for your answer",
+                "Waiting for authorization",
+            ]),
+            launch: Some(s(&["command-code"])),
+            resume: None,
+            resume_session: None,
+            fork_session: None,
+        },
+        AgentDef {
             kind: "pi".into(),
             name: "Pi".into(),
             processes: s(&["pi"]),
@@ -335,6 +354,18 @@ mod tests {
             "python3.12",
             &["python3.12".into(), "/usr/bin/aider".into()]
         ));
+        let cc = def("command-code");
+        assert!(cc.matches("command-code", &["command-code".into()]));
+        // `#!/usr/bin/env node` script: the resolved executable is node, argv[0] the script.
+        assert!(cc.matches("node", &["command-code".into()]));
+        assert!(cc.matches(
+            "node",
+            &[
+                "node".into(),
+                "/opt/homebrew/lib/node_modules/command-code/dist/index.mjs".into()
+            ]
+        ));
+        assert!(!cc.matches("node", &["node".into(), "server.js".into()]));
     }
 
     #[test]

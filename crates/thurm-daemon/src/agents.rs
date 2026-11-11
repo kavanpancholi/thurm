@@ -1062,6 +1062,69 @@ mod tests {
     }
 
     #[test]
+    fn the_screen_still_speaks_for_agents_whose_hooks_miss_turns() {
+        let defs = thurm_config::builtin_agents();
+        let mut t = AgentTracker::default();
+        let idle_after = Duration::from_millis(1500);
+        let quiet = Duration::from_secs(5);
+        let cc = proc("command-code");
+        t.update(&defs, Some(&cc), "> ", quiet, idle_after);
+        t.apply_hook(
+            Some(1),
+            "command-code",
+            "Command Code",
+            "session-start",
+            Some("s-1".into()),
+            None,
+        );
+        let s = t.refresh().unwrap().unwrap();
+        assert!(s.hooked);
+        assert_eq!(s.status, AgentStatus::Idle);
+
+        // A turn without tools: no hook says so, the screen does.
+        let s = t.update(
+            &defs,
+            Some(&cc),
+            "thinking  esc to interrupt",
+            quiet,
+            idle_after,
+        );
+        let s = s.unwrap().unwrap();
+        assert_eq!(s.status, AgentStatus::Working);
+        assert_eq!(s.session_id.as_deref(), Some("s-1"));
+
+        let ask = "Allow this command?\nWaiting for shell command permission...";
+        let s = t.update(&defs, Some(&cc), ask, quiet, idle_after);
+        assert_eq!(s.unwrap().unwrap().status, AgentStatus::NeedsInput);
+        // A hook event in between doesn't hide the question.
+        t.apply_hook(
+            Some(1),
+            "command-code",
+            "Command Code",
+            "tool-complete",
+            None,
+            None,
+        );
+        assert!(t.refresh().is_none());
+
+        // The turn ends with the question still on the screen: Done all the same.
+        t.apply_hook(Some(1), "command-code", "Command Code", "stop", None, None);
+        let s = t.refresh().unwrap().unwrap();
+        assert_eq!(s.status, AgentStatus::Done);
+        assert_eq!(s.turns, 1);
+        assert!(t.update(&defs, Some(&cc), ask, quiet, idle_after).is_none());
+        let below = format!("{ask}\n  12k tokens");
+        let s = t.update(&defs, Some(&cc), &below, quiet, idle_after);
+        assert!(s.is_none(), "{s:?}");
+        let s = t.update(&defs, Some(&cc), "> ", quiet, idle_after);
+        assert!(s.is_none(), "{s:?}");
+
+        // The next turn shows on the screen before any tool runs.
+        let s = t.update(&defs, Some(&cc), "esc to interrupt", quiet, idle_after);
+        assert_eq!(s.unwrap().unwrap().status, AgentStatus::Working);
+    }
+
+    #[test]
     fn hooks_override_screen_heuristics() {
         let defs = thurm_config::builtin_agents();
         let mut t = AgentTracker::default();
