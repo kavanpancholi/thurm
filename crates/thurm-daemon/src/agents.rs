@@ -1128,6 +1128,30 @@ mod tests {
         // The next turn shows on the screen before any tool runs.
         let s = t.update(&defs, Some(&cc), "esc to interrupt", quiet, idle_after);
         assert_eq!(s.unwrap().unwrap().status, AgentStatus::Working);
+
+        // A turn stops with its working text still showing; the next one shows the same text
+        // without a clean screen between. The user typing the prompt starts it.
+        t.apply_hook(Some(1), "command-code", "Command Code", "stop", None, None);
+        assert_eq!(t.refresh().unwrap().unwrap().status, AgentStatus::Done);
+        let s = t.update(&defs, Some(&cc), "esc to interrupt", quiet, idle_after);
+        assert!(s.is_none(), "{s:?}");
+        t.user_input();
+        let s = t.update(&defs, Some(&cc), "esc to interrupt ", quiet, idle_after);
+        assert_eq!(s.unwrap().unwrap().status, AgentStatus::Working);
+
+        // So does a tool hook.
+        t.apply_hook(Some(1), "command-code", "Command Code", "stop", None, None);
+        assert_eq!(t.refresh().unwrap().unwrap().status, AgentStatus::Done);
+        t.apply_hook(
+            Some(1),
+            "command-code",
+            "Command Code",
+            "tool-complete",
+            None,
+            None,
+        );
+        let s = t.update(&defs, Some(&cc), ask, quiet, idle_after);
+        assert_eq!(s.unwrap().unwrap().status, AgentStatus::NeedsInput);
     }
 
     #[test]
