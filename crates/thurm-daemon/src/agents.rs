@@ -59,8 +59,8 @@ pub struct AgentTracker {
     /// What the screen said for sure at the last `update` (see `with_hook`).
     screen_certain: Option<AgentStatus>,
     /// What the screen's patterns said at the last `update`, and what they said when a Stop
-    /// came: it is the finished turn's until it leaves the screen, the user types or another
-    /// hook event comes.
+    /// came: it is the finished turn's until it leaves the screen, the user sends a prompt or
+    /// another hook event comes.
     screen_seen: Option<AgentStatus>,
     stop_signal: Option<AgentStatus>,
 }
@@ -128,8 +128,6 @@ impl AgentTracker {
 
     pub fn user_input(&mut self) {
         self.attention_flag = false;
-        // A new turn starts here: the screen speaks for it again.
-        self.stop_signal = None;
         // Whatever the keys did (answered, moved off the default choice), the prompt the
         // notification names is not certain to be showing as it was.
         if let Some(h) = &mut self.hook {
@@ -143,8 +141,12 @@ impl AgentTracker {
     /// Moving through a menu with the arrow keys doesn't.
     pub fn user_answer(&mut self, bytes: &[u8]) {
         self.user_input();
-        let answers = bytes.iter().any(|b| matches!(b, b'\r' | b'\n'))
-            || matches!(bytes, [b'0'..=b'9' | b'y' | b'Y' | b'n' | b'N' | 0x1b]);
+        let submits = bytes.iter().any(|b| matches!(b, b'\r' | b'\n'));
+        if submits {
+            // A prompt sent: a new turn, the screen speaks for it again.
+            self.stop_signal = None;
+        }
+        let answers = submits || matches!(bytes, [b'0'..=b'9' | b'y' | b'Y' | b'n' | b'N' | 0x1b]);
         if let Some(h) = &mut self.hook
             && h.status == AgentStatus::NeedsInput
             && answers
