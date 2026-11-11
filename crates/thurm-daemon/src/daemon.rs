@@ -544,6 +544,7 @@ pub struct Daemon {
     last_activity: Mutex<Instant>,
     /// The panes UIs focused (`thurm focused`).
     focus: Mutex<focus::FocusLog>,
+    usage: crate::usage::Sampler,
 }
 
 impl Daemon {
@@ -599,6 +600,7 @@ impl Daemon {
             stopped_at: std::sync::OnceLock::new(),
             last_activity: Mutex::new(Instant::now()),
             focus: Mutex::new(focus::FocusLog::default()),
+            usage: crate::usage::Sampler::default(),
         })
     }
 
@@ -2417,6 +2419,7 @@ impl Daemon {
             // including the desktop client's reply. Responses carry their request ID.
             slow @ (Request::Complete { .. }
             | Request::Processes { .. }
+            | Request::Usage { .. }
             | Request::ApplyLayout { .. }) => {
                 let daemon = self.clone();
                 let client = client.clone();
@@ -2715,6 +2718,30 @@ impl Daemon {
                         })
                         .collect(),
                 ))
+            }
+            Request::Usage { pane } => {
+                if let Some(id) = pane
+                    && self.pane(id).is_none()
+                {
+                    return Err(format!("no such pane: {id}"));
+                }
+                let roots: Vec<crate::usage::PaneRoot> = self
+                    .all_panes()
+                    .iter()
+                    .filter_map(|p| {
+                        let st = p.state.lock();
+                        Some(crate::usage::PaneRoot {
+                            pane: p.id,
+                            pid: st.info.pid?,
+                            agent: st
+                                .info
+                                .agent
+                                .as_ref()
+                                .map(|a| (a.kind.clone(), a.name.clone())),
+                        })
+                    })
+                    .collect();
+                self.usage.usage(&roots, pane).map(Response::Usage)
             }
             Request::ListPanes => {
                 let panes = self

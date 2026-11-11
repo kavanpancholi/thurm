@@ -18,6 +18,7 @@ mod shell;
 mod tailnet;
 mod transcript;
 mod upgrade;
+mod usage;
 mod user_exec;
 
 use std::io::Write;
