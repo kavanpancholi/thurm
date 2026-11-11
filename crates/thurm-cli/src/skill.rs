@@ -250,7 +250,7 @@ pub fn run(cmd: SkillCmd, json: bool) -> crate::R {
 /// An installed agent lacks some of Thurm's hooks.
 fn hooks_missing() -> bool {
     hooks::AGENTS.iter().any(|a| {
-        let path = hooks::settings_path(a);
+        let path = a.settings_path();
         path.parent().is_some_and(Path::is_dir)
             && hooks::installed(a, &std::fs::read_to_string(&path).unwrap_or_default())
                 < a.events.len()

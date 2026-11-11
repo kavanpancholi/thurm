@@ -591,13 +591,23 @@ fn agent_hook(agent: Option<String>, event: Option<String>) {
     }
     let payload: serde_json::Value = serde_json::from_str(&input).unwrap_or_default();
     let field = |k: &str| payload.get(k).and_then(|v| v.as_str()).map(str::to_owned);
-    let event = hooks::hook_event(&event, &payload);
+    let def = hooks::AGENTS.iter().find(|a| a.kind == agent);
+    let event = def.map_or_else(
+        || event.to_ascii_lowercase(),
+        |a| a.hook_event(&event, &payload),
+    );
     if event == "session-start" {
-        // Claude Code and Codex add a SessionStart hook's output to the session's context.
-        print!(
-            "{}",
-            skill::session_context(pane, skill::cli_off_path().as_deref())
-        );
+        // Claude Code and Codex add a SessionStart hook's output to the session's context;
+        // Command Code expects it as JSON additionalContext.
+        let context = skill::session_context(pane, skill::cli_off_path().as_deref());
+        if def.is_some_and(|a| a.context_json) {
+            print!(
+                "{}",
+                serde_json::json!({ "hookSpecificOutput": { "additionalContext": context } })
+            );
+        } else {
+            print!("{context}");
+        }
         let _ = std::io::stdout().flush();
     }
     let Ok(c) = connect(false) else { return };
@@ -619,13 +629,18 @@ fn hooks_cmd(action: &str, only: Option<&str>, json: bool) -> R {
         None => hooks::AGENTS.iter().collect(),
     };
     if agents.is_empty() {
-        return Err(format!("unknown agent {:?} (claude, codex)", only.unwrap_or("")).into());
+        let known = hooks::AGENTS
+            .iter()
+            .map(|a| a.kind)
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(format!("unknown agent {:?} ({known})", only.unwrap_or("")).into());
     }
     let mut ok = true;
     let mut report = Vec::new();
     let mut seen = 0;
     for agent in agents {
-        let path = hooks::settings_path(agent);
+        let path = agent.settings_path();
         let present = path.parent().is_some_and(|d| d.is_dir());
         // Without --agent, skip agents that aren't installed (no config directory).
         if only.is_none() && !present && !(json && action == "status") {
