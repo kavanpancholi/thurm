@@ -14,7 +14,7 @@ thurm --json list
 
 Commands that target the current pane use `THURM_PANE_ID`, which Thurm sets in
 pane processes. Outside Thurm, use an explicit pane ID from `thurm list`.
-`procs` can list all panes; use `--pane` to restrict it.
+`procs` and `top` can list all panes; use `--pane` to restrict them.
 
 ## Open a pane and read its output
 
@@ -66,7 +66,8 @@ Use `thurm COMMAND --help` for the full argument list.
 | `clear` | Clear scrollback; `--pane ID` |
 | `complete` | Show completion choices for prompt input; `--pane ID` |
 | `completion SHELL` | Print the shell completion script for `thurm` itself: `bash`, `elvish`, `fish`, `powershell` or `zsh`, e.g. `thurm completion fish \| source`. The Nix package installs the bash, fish and zsh scripts; on macOS, the Home Manager module sets up fish for the app's CLI |
-| `procs` | List processes and ports; `--pane ID`, `--ports` |
+| `procs` | List processes and ports, with CPU, memory and a total per pane on macOS; `--pane ID`, `--ports` |
+| `top` | Panes by CPU or memory use (whole process tree), per agent, and system CPU, memory pressure, swap and disk; `--pane ID`, `--sort cpu\|mem`. macOS only |
 | `notify TITLE [BODY...]` | Send a desktop notification through the current terminal |
 | `presets` | List agent launch presets |
 | `launch PRESET` | Launch a preset; `--split DIRECTION`, `--cwd PATH` |

@@ -22,8 +22,9 @@ use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use thurm_client::{Client, ClientError, ConnectOptions, find_daemon};
 use thurm_config::hooks;
 use thurm_proto::{
-    CaptureOpts, CreatePane, ENV_PANE_ID, FloatPlace, PaneId, PaneInfo, PaneSize, Request,
-    Response, ScrollCmd, SplitDir, UiCommand, WaitCondition, WaitOutcome,
+    CAP_USAGE, CaptureOpts, CreatePane, ENV_PANE_ID, FloatPlace, MemoryPressure, PaneId, PaneInfo,
+    PaneSize, PaneUsage, Request, Response, ScrollCmd, SplitDir, SystemUsage, UiCommand,
+    WaitCondition, WaitOutcome,
 };
 
 #[derive(Parser)]
@@ -124,6 +125,12 @@ enum RemoteCmd {
         #[arg(long, short = 'y', requires = "fix")]
         yes: bool,
     },
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum TopSort {
+    Cpu,
+    Mem,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -324,6 +331,13 @@ enum Cmd {
         /// Only processes with listening ports.
         #[arg(long)]
         ports: bool,
+    },
+    /// Panes by CPU or memory use (their whole process tree), per agent, and system totals.
+    Top {
+        #[arg(short, long)]
+        pane: Option<PaneId>,
+        #[arg(long, value_enum, default_value = "cpu")]
+        sort: TopSort,
     },
     /// Launch a coding agent preset (see `thurm presets`) in a new tab or split.
     Launch {
@@ -1734,33 +1748,135 @@ fn run_connected(c: &Client, cmd: Cmd, json: bool) -> R {
             let Response::Processes(list) = c.request(Request::Processes { pane })? else {
                 return Err("unexpected response".into());
             };
+            let usage =
+                match has_capability(c, CAP_USAGE).then(|| c.request(Request::Usage { pane })) {
+                    Some(Ok(Response::Usage(u))) => Some(u),
+                    _ => None,
+                };
+            let pane_usage = |id: PaneId| usage.as_ref()?.panes.iter().find(|u| u.pane == id);
+            let proc_usage =
+                |id: PaneId, pid: u32| pane_usage(id)?.processes.iter().find(|p| p.pid == pid);
             if json {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&serde_json::json!(list
+                let panes: Vec<serde_json::Value> = list
                     .iter()
-                    .map(|p| serde_json::json!({
-                        "pane": p.pane,
-                        "processes": p.processes.iter().map(|e| serde_json::json!({
-                            "pid": e.pid, "ppid": e.ppid, "command": e.command, "ports": e.ports,
-                        })).collect::<Vec<_>>(),
-                    }))
-                    .collect::<Vec<_>>()))?
+                    .map(|p| {
+                        let processes: Vec<serde_json::Value> = p
+                            .processes
+                            .iter()
+                            .map(|e| {
+                                let mut proc = serde_json::json!({
+                                    "pid": e.pid, "ppid": e.ppid, "command": e.command,
+                                    "ports": e.ports,
+                                });
+                                if let Some(u) = proc_usage(p.pane, e.pid) {
+                                    proc["cpu"] = u.cpu.into();
+                                    proc["memory"] = u.memory.into();
+                                }
+                                proc
+                            })
+                            .collect();
+                        let mut pane = serde_json::json!({
+                            "pane": p.pane,
+                            "processes": processes,
+                        });
+                        if let Some(u) = pane_usage(p.pane) {
+                            pane["cpu"] = u.cpu.into();
+                            pane["memory"] = u.memory.into();
+                        }
+                        pane
+                    })
+                    .collect();
+                println!("{}", serde_json::to_string_pretty(&panes)?);
+            } else if usage.is_some() {
+                println!(
+                    "{:<5} {:<7} {:>6} {:>7} {:<14} COMMAND",
+                    "PANE", "PID", "CPU%", "MEM", "PORTS"
                 );
+                for p in &list {
+                    for e in p.processes.iter().filter(|e| !ports || !e.ports.is_empty()) {
+                        let (cpu, mem) = proc_usage(p.pane, e.pid)
+                            .map_or(("-".into(), "-".into()), |u| {
+                                (format!("{:.1}", u.cpu), human_bytes(u.memory))
+                            });
+                        println!(
+                            "{:<5} {:<7} {cpu:>6} {mem:>7} {:<14} {}",
+                            p.pane,
+                            e.pid,
+                            join_ports(&e.ports),
+                            truncate_command(&e.command)
+                        );
+                    }
+                    if !ports && let Some(u) = pane_usage(p.pane) {
+                        println!(
+                            "{:<5} {:<7} {:>6.1} {:>7}",
+                            p.pane,
+                            "total",
+                            u.cpu,
+                            human_bytes(u.memory)
+                        );
+                    }
+                }
             } else {
                 println!("{:<5} {:<7} {:<14} COMMAND", "PANE", "PID", "PORTS");
                 for p in &list {
                     for e in p.processes.iter().filter(|e| !ports || !e.ports.is_empty()) {
-                        let ps = e
-                            .ports
-                            .iter()
-                            .map(u16::to_string)
-                            .collect::<Vec<_>>()
-                            .join(",");
-                        let cmd: String = e.command.chars().take(100).collect();
-                        println!("{:<5} {:<7} {:<14} {cmd}", p.pane, e.pid, ps);
+                        println!(
+                            "{:<5} {:<7} {:<14} {}",
+                            p.pane,
+                            e.pid,
+                            join_ports(&e.ports),
+                            truncate_command(&e.command)
+                        );
                     }
                 }
+            }
+        }
+        Cmd::Top { pane, sort } => {
+            if !has_capability(c, CAP_USAGE) {
+                return Err("the daemon is too old for resource usage; upgrade it".into());
+            }
+            let Response::Usage(mut usage) = c.request(Request::Usage { pane })? else {
+                return Err("unexpected response".into());
+            };
+            sort_panes(&mut usage.panes, sort);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&usage)?);
+            } else {
+                let titles: std::collections::HashMap<PaneId, String> =
+                    list(c)?.into_iter().map(|p| (p.id, p.title)).collect();
+                println!(
+                    "{:<5} {:>6} {:>7} {:>5} {:<10} TITLE",
+                    "PANE", "CPU%", "MEM", "PROCS", "AGENT"
+                );
+                for p in &usage.panes {
+                    let title: String = titles
+                        .get(&p.pane)
+                        .map(|t| t.chars().take(60).collect())
+                        .unwrap_or_default();
+                    println!(
+                        "{:<5} {:>6.1} {:>7} {:>5} {:<10} {title}",
+                        p.pane,
+                        p.cpu,
+                        human_bytes(p.memory),
+                        p.processes.len(),
+                        p.agent.as_deref().unwrap_or("-"),
+                    );
+                }
+                if !usage.agents.is_empty() {
+                    println!();
+                    for a in &usage.agents {
+                        println!(
+                            "{:<16} {:>6.1}% {:>7}  {} pane{}",
+                            a.name,
+                            a.cpu,
+                            human_bytes(a.memory),
+                            a.panes.len(),
+                            if a.panes.len() == 1 { "" } else { "s" }
+                        );
+                    }
+                }
+                println!();
+                println!("{}", system_line(&usage.system));
             }
         }
         Cmd::Fork { pane, split } => {
@@ -2243,6 +2359,67 @@ fn print_pane(pane: PaneId, json: bool) {
     }
 }
 
+fn has_capability(c: &Client, cap: &str) -> bool {
+    matches!(
+        &*c.hello.lock(),
+        Some(Response::Hello { capabilities, .. }) if capabilities.iter().any(|x| x == cap)
+    )
+}
+
+fn join_ports(ports: &[u16]) -> String {
+    ports
+        .iter()
+        .map(u16::to_string)
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn truncate_command(command: &str) -> String {
+    command.chars().take(100).collect()
+}
+
+fn sort_panes(panes: &mut [PaneUsage], sort: TopSort) {
+    match sort {
+        TopSort::Cpu => panes.sort_by(|a, b| b.cpu.total_cmp(&a.cpu)),
+        TopSort::Mem => panes.sort_by_key(|p| std::cmp::Reverse(p.memory)),
+    }
+}
+
+fn human_bytes(n: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "K", "M", "G", "T"];
+    let mut v = n as f64;
+    let mut unit = 0;
+    while v >= 1024.0 && unit < UNITS.len() - 1 {
+        v /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{n}B")
+    } else {
+        format!("{v:.1}{}", UNITS[unit])
+    }
+}
+
+fn system_line(s: &SystemUsage) -> String {
+    format!(
+        "system: CPU {:.1}% of {} cores, memory {} of {} ({} pressure), swap {} of {}, disk {} free of {}",
+        s.cpu,
+        s.cpus,
+        human_bytes(s.memory_used),
+        human_bytes(s.memory_total),
+        match s.pressure {
+            MemoryPressure::Normal => "normal",
+            MemoryPressure::Warning => "warning",
+            MemoryPressure::Critical => "critical",
+            MemoryPressure::Unknown => "unknown",
+        },
+        human_bytes(s.swap_used),
+        human_bytes(s.swap_total),
+        human_bytes(s.disk_free),
+        human_bytes(s.disk_total),
+    )
+}
+
 fn list(c: &Client) -> Result<Vec<PaneInfo>, ClientError> {
     match c.request(Request::ListPanes)? {
         Response::Panes(p) => Ok(p),
@@ -2344,6 +2521,29 @@ fn key_bytes(k: &str) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn human_bytes_units() {
+        assert_eq!(human_bytes(0), "0B");
+        assert_eq!(human_bytes(1023), "1023B");
+        assert_eq!(human_bytes(1536), "1.5K");
+        assert_eq!(human_bytes(3_650_722_201), "3.4G");
+    }
+
+    #[test]
+    fn top_sorts_by_cpu_or_memory() {
+        let pane = |pane, cpu, memory| PaneUsage {
+            pane,
+            cpu,
+            memory,
+            ..Default::default()
+        };
+        let mut panes = vec![pane(1, 5.0, 900), pane(2, 180.0, 100), pane(3, 40.0, 5_000)];
+        sort_panes(&mut panes, TopSort::Cpu);
+        assert_eq!(panes.iter().map(|p| p.pane).collect::<Vec<_>>(), [2, 3, 1]);
+        sort_panes(&mut panes, TopSort::Mem);
+        assert_eq!(panes.iter().map(|p| p.pane).collect::<Vec<_>>(), [3, 1, 2]);
+    }
 
     #[test]
     fn systemd_unit_quotes_paths() {
