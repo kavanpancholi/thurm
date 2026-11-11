@@ -218,8 +218,9 @@ fn agent_totals(panes: &[PaneUsage], name: impl Fn(&str) -> Option<String>) -> V
     out
 }
 
-/// Nanoseconds in `ticks` of the mach clock (`ri_user_time` and `ri_system_time` count in it:
-/// 1 ns per tick on Intel, 125/3 ns on Apple silicon).
+/// Nanoseconds in `ticks` of the mach clock: 1 ns per tick on Intel, 125/3 ns on Apple silicon.
+/// `ri_user_time` and `ri_system_time` count in it: XNU's `fill_task_rusage` copies them from
+/// `task_power_info`, which `task_power_info_locked` fills from `rm_time_mach`.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn ticks_to_ns(ticks: u64, numer: u32, denom: u32) -> u64 {
     if denom == 0 {
@@ -548,18 +549,27 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn busy_child_uses_at_most_one_core() {
-        let mut child = std::process::Command::new("/bin/sh")
-            .args(["-c", "while :; do :; done"])
-            .spawn()
-            .expect("spawn busy loop");
+        struct Busy(std::process::Child);
+        impl Drop for Busy {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let child = Busy(
+            std::process::Command::new("/bin/sh")
+                .args(["-c", "while :; do :; done"])
+                .spawn()
+                .expect("spawn busy loop"),
+        );
+        let pid = child.0.id();
         std::thread::sleep(Duration::from_millis(100));
-        let a = os::proc_sample(child.id()).expect("child rusage");
+        let a = os::proc_sample(pid).expect("child rusage");
         let t = Instant::now();
         std::thread::sleep(Duration::from_millis(400));
-        let b = os::proc_sample(child.id()).expect("child rusage");
+        let b = os::proc_sample(pid).expect("child rusage");
         let wall_ns = t.elapsed().as_nanos() as u64;
-        let _ = child.kill();
-        let _ = child.wait();
+        drop(child);
         let used = b.cpu_ns - a.cpu_ns;
         assert!(
             used <= wall_ns + wall_ns / 20,
