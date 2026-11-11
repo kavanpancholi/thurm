@@ -58,10 +58,10 @@ pub struct AgentTracker {
     plain: Option<AgentState>,
     /// What the screen said for sure at the last `update` (see `with_hook`).
     screen_certain: Option<AgentStatus>,
-    /// Hash of the screen at the last `update`, and of the one a Stop came on: until the
-    /// screen changes, its patterns are from the finished turn.
-    screen_seen: Option<u64>,
-    stop_screen: Option<u64>,
+    /// What the screen's patterns said at the last `update`, and what they said when a Stop
+    /// came: until that signal leaves the screen, it is the finished turn's.
+    screen_seen: Option<AgentStatus>,
+    stop_signal: Option<AgentStatus>,
 }
 
 /// What the on-device model said about the current agent session (`[ai]`).
@@ -366,7 +366,7 @@ impl AgentTracker {
                 h.permission = Some(next_prompt_id());
             }
             "stop" => {
-                self.stop_screen = self.screen_seen;
+                self.stop_signal = self.screen_seen;
                 self.screen_certain = None;
                 h.status = AgentStatus::Done;
                 h.message = None;
@@ -607,11 +607,8 @@ impl AgentTracker {
             } else {
                 AgentStatus::Idle
             };
-            let hash = screen_hash(screen_tail);
-            seen = Some(hash);
-            screen_certain = (attention || waiting || spinning || working)
-                .then_some(status)
-                .filter(|_| self.stop_screen != Some(hash));
+            seen = (attention || waiting || spinning || working).then_some(status);
+            screen_certain = seen.filter(|s| self.stop_signal != Some(*s));
             self.with_ai(self.with_hook(
                 AgentState {
                     name: d.name.clone(),
@@ -629,8 +626,8 @@ impl AgentTracker {
             ))
         });
         self.screen_certain = screen_certain;
-        if seen != self.stop_screen {
-            self.stop_screen = None;
+        if seen != self.stop_signal {
+            self.stop_signal = None;
         }
         self.screen_seen = seen;
         if next.is_none() {
