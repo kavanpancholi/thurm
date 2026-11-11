@@ -9,14 +9,12 @@ struct FloatingCard: Equatable {
     var zoomed = false
     /// Placed in cells: its terminal keeps this size, below the size of a card made by hand.
     var cells: CardCells?
-    var snap: FloatingSnap?
 
-    init(pane: PaneKey, frame: CGRect, zoomed: Bool = false, cells: CardCells? = nil, snap: FloatingSnap? = nil) {
+    init(pane: PaneKey, frame: CGRect, zoomed: Bool = false, cells: CardCells? = nil) {
         self.pane = pane
         self.frame = frame
         self.zoomed = zoomed
         self.cells = cells
-        self.snap = snap
     }
 
     var minSize: CGSize { cells == nil ? FloatingGeometry.minSize : FloatingGeometry.exactMinSize }
@@ -27,31 +25,13 @@ struct FloatingCard: Equatable {
             return [d.minX, d.minY, d.width, d.height]
         }()
         self.init(pane: saved.pane, frame: CGRect(x: f[0], y: f[1], width: f[2], height: f[3]), zoomed: saved.zoomed,
-                  cells: saved.cells, snap: saved.snap)
+                  cells: saved.cells)
     }
 
     var saved: FloatingPane {
         FloatingPane(pane: pane, frame: [frame.minX, frame.minY, frame.width, frame.height].map(Double.init),
-                     zoomed: zoomed, cells: cells, snap: snap)
+                     zoomed: zoomed, cells: cells)
     }
-}
-
-enum FloatingSnap: String, CaseIterable {
-    case left, right
-    case topLeft = "top_left", topRight = "top_right", bottomLeft = "bottom_left", bottomRight = "bottom_right"
-
-    var title: String {
-        switch self {
-        case .left: return "Left Half"
-        case .right: return "Right Half"
-        case .topLeft: return "Top Left"
-        case .topRight: return "Top Right"
-        case .bottomLeft: return "Bottom Left"
-        case .bottomRight: return "Bottom Right"
-        }
-    }
-
-    var bindingName: String { "snap_floating_pane_\(rawValue)" }
 }
 
 /// The edges of a card a drag resizes.
@@ -160,48 +140,34 @@ enum FloatingGeometry {
                         minSize: CGSize = FloatingGeometry.minSize) -> CGRect {
         var (minX, minY, maxX, maxY) = (rect.minX, rect.minY, rect.maxX, rect.maxY)
         let minW = min(minSize.width, area.width), minH = min(minSize.height, area.height)
-        if edges.contains(.left) { minX = min(max(area.minX, minX + delta.dx), maxX - min(minW, maxX - area.minX)) }
-        if edges.contains(.right) { maxX = max(min(area.maxX, maxX + delta.dx), minX + min(minW, area.maxX - minX)) }
-        if edges.contains(.top) { minY = min(max(area.minY, minY + delta.dy), maxY - min(minH, maxY - area.minY)) }
-        if edges.contains(.bottom) { maxY = max(min(area.maxY, maxY + delta.dy), minY + min(minH, area.maxY - minY)) }
+        if edges.contains(.left) { minX = min(max(area.minX, minX + delta.dx), maxX - minW) }
+        if edges.contains(.right) { maxX = max(min(area.maxX, maxX + delta.dx), minX + minW) }
+        if edges.contains(.top) { minY = min(max(area.minY, minY + delta.dy), maxY - minH) }
+        if edges.contains(.bottom) { maxY = max(min(area.maxY, maxY + delta.dy), minY + minH) }
         return CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
     }
 
-    static let snapReach: CGFloat = 32
-    static let snapCorner: CGFloat = 0.2
-    static let snapGap: CGFloat = 8
+    static let edgeReach: CGFloat = 32
 
-    /// `area` is flipped: its minY is the top.
-    static func snap(at point: CGPoint, in area: CGRect) -> FloatingSnap? {
+    /// The edge of the splits' `area` (flipped) a card dragged to `point` docks at: the nearest
+    /// one within `edgeReach`, and none outside the area.
+    static func edge(at point: CGPoint, in area: CGRect) -> SplitDirName? {
         guard area.contains(point) else { return nil }
-        let left = point.x <= area.minX + snapReach, right = point.x >= area.maxX - snapReach
-        let top = point.y <= area.minY + snapReach, bottom = point.y >= area.maxY - snapReach
-        let upper = point.y < area.minY + area.height * snapCorner
-        let lower = point.y > area.maxY - area.height * snapCorner
-        let leading = point.x < area.minX + area.width * snapCorner
-        let trailing = point.x > area.maxX - area.width * snapCorner
-        if left || right {
-            if upper || top { return left ? .topLeft : .topRight }
-            if lower || bottom { return left ? .bottomLeft : .bottomRight }
-            return left ? .left : .right
-        }
-        if top && leading { return .topLeft }
-        if top && trailing { return .topRight }
-        if bottom && leading { return .bottomLeft }
-        if bottom && trailing { return .bottomRight }
-        return nil
+        let distances: [(SplitDirName, CGFloat)] = [
+            (.left, point.x - area.minX), (.right, area.maxX - point.x),
+            (.up, point.y - area.minY), (.down, area.maxY - point.y),
+        ]
+        guard let nearest = distances.min(by: { $0.1 < $1.1 }), nearest.1 <= edgeReach else { return nil }
+        return nearest.0
     }
 
-    static func rect(_ snap: FloatingSnap, in area: CGRect) -> CGRect {
-        let w = max(0, (area.width - snapGap) / 2), h = max(0, (area.height - snapGap) / 2)
-        let right = area.maxX - w, bottom = area.maxY - h
-        switch snap {
-        case .left: return CGRect(x: area.minX, y: area.minY, width: w, height: area.height)
-        case .right: return CGRect(x: right, y: area.minY, width: w, height: area.height)
-        case .topLeft: return CGRect(x: area.minX, y: area.minY, width: w, height: h)
-        case .topRight: return CGRect(x: right, y: area.minY, width: w, height: h)
-        case .bottomLeft: return CGRect(x: area.minX, y: bottom, width: w, height: h)
-        case .bottomRight: return CGRect(x: right, y: bottom, width: w, height: h)
+    /// The half of `area` a card docked at `edge` takes.
+    static func edgeRect(_ edge: SplitDirName, in area: CGRect) -> CGRect {
+        switch edge {
+        case .left: return CGRect(x: area.minX, y: area.minY, width: area.width / 2, height: area.height)
+        case .right: return CGRect(x: area.midX, y: area.minY, width: area.width / 2, height: area.height)
+        case .up: return CGRect(x: area.minX, y: area.minY, width: area.width, height: area.height / 2)
+        case .down: return CGRect(x: area.minX, y: area.midY, width: area.width, height: area.height / 2)
         }
     }
 

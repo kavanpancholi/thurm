@@ -37,11 +37,10 @@ its edges to resize it, and double-click the header to zoom it. To put it in the
 splits, use **View › Dock Pane**, or hold Cmd while dragging its header over a pane
 and drop it on the side where it should go (Esc cancels the drag).
 
-Drag a card to the left or right edge of the tab to snap it to that half, or to a
-corner to snap it to that quarter; the tab shows where it will go before you let
-go. A snapped card stays in its half or quarter when the window resizes, until you
-drag or resize it again. **View › Snap Floating Pane** does the same from the
-keyboard.
+Drag a card's header, or a split's, to an edge of the tab to make it that half of the
+tab; the tab shows where it goes before you let go. Drop a split's header on another
+pane to split that pane on the side under the pointer. Esc cancels. **View › Move
+Pane to Edge** moves the current pane to an edge from the keyboard.
 
 Drag a tab's row from the sidebar onto the terminal area to float that tab as a
 card in the tab you're looking at; its programs keep running and its own floating

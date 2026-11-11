@@ -398,14 +398,14 @@ enum MainMenu {
         menu.addItem(item("New Floating Pane", #selector(TerminalWindowController.newFloatingPane(_:)),
                           name: "new_floating_pane"))
         menu.addItem(item("Float Pane", #selector(TerminalWindowController.toggleFloat(_:)), name: "float_pane"))
-        let snap = NSMenu(title: "Snap Floating Pane")
-        for (i, zone) in FloatingSnap.allCases.enumerated() {
-            snap.addItem(item(zone.title, #selector(TerminalWindowController.snapFloatingPane(_:)), tag: i,
-                              name: zone.bindingName))
+        let edgeMenu = NSMenu(title: "Move Pane to Edge")
+        for (i, d) in TerminalWindowController.edgeMoves.enumerated() {
+            edgeMenu.addItem(item(d.title, #selector(TerminalWindowController.movePaneToEdge(_:)), tag: i,
+                                  name: d.name))
         }
-        let snapItem = item("Snap Floating Pane", nil)
-        snapItem.submenu = snap
-        menu.addItem(snapItem)
+        let edgeItem = item("Move Pane to Edge", nil)
+        edgeItem.submenu = edgeMenu
+        menu.addItem(edgeItem)
         menu.addItem(item("Move Floating Pane to New Tab",
                           #selector(TerminalWindowController.moveFloatingPaneToNewTab(_:)), name: "float_pane_to_tab"))
         let floatTab = NSMenu(title: "Float Tab Here")

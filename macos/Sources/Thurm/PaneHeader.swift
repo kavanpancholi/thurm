@@ -148,7 +148,11 @@ final class PaneHeader: NSView {
             content.toggleZoom()
         } else {
             content.focus(pane)
-            if content.isFloating(pane) { content.trackCardDrag(pane, from: event) }
+            if content.isFloating(pane) {
+                content.trackCardDrag(pane, from: event)
+            } else if content.canMoveByHeader(pane) {
+                content.trackPaneDrag(pane, from: event)
+            }
         }
     }
 

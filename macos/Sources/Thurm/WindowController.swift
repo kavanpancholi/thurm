@@ -480,9 +480,16 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
-    @objc func snapFloatingPane(_ sender: Any?) {
-        guard let tag = (sender as? NSMenuItem)?.tag, FloatingSnap.allCases.indices.contains(tag) else { return }
-        content.snapCard(content.focusedPane, to: FloatingSnap.allCases[tag])
+    static let edgeMoves: [(edge: SplitDirName, title: String, name: String)] = [
+        (.left, "Left Edge", "move_pane_to_left_edge"), (.right, "Right Edge", "move_pane_to_right_edge"),
+        (.up, "Top Edge", "move_pane_to_top_edge"), (.down, "Bottom Edge", "move_pane_to_bottom_edge"),
+    ]
+
+    @objc func movePaneToEdge(_ sender: Any?) {
+        guard let tag = (sender as? NSMenuItem)?.tag, Self.edgeMoves.indices.contains(tag) else { return }
+        let pane = content.focusedPane
+        content.moveToEdge(pane, Self.edgeMoves[tag].edge)
+        content.focus(pane)
     }
 
     @objc func newFloatingPane(_ sender: Any?) {
@@ -582,8 +589,8 @@ extension TerminalWindowController: NSMenuItemValidation {
         case #selector(togglePinTab(_:)):
             menuItem.title = pinned ? "Unpin Tab" : "Pin Tab"
             return !isQuick && SessionManager.shared.config.sidebarTabs
-        case #selector(snapFloatingPane(_:)):
-            return content.isFloating(content.focusedPane)
+        case #selector(movePaneToEdge(_:)):
+            return content.isFloating(content.focusedPane) || content.canMoveByHeader(content.focusedPane)
         case #selector(moveFloatingPaneToNewTab(_:)):
             return SessionManager.shared.canMoveCards(self) && content.isFloating(content.focusedPane)
         default:
