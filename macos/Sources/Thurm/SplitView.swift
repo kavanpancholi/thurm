@@ -261,7 +261,7 @@ final class TabContentView: NSView {
     private(set) var floatingHidden = false
     /// The cards on screen: none while hidden, and never the minimized ones.
     private var shownCards: [FloatingCard] { floatingHidden ? [] : floating.filter { !$0.minimized } }
-    private let minimizedBar = MinimizedCardsBar()
+    let minimizedBar = MinimizedCardsBar()
     /// Each card's fill and outline, by pane.
     private var cardParts: [PaneKey: (back: FloatingCardBack, rim: FloatingCardRim)] = [:]
     /// The pane of the splits focused last: where they split while a card has the focus.
@@ -659,15 +659,19 @@ final class TabContentView: NSView {
             bar.frame = NSRect(x: full.maxX - width - 12, y: full.minY + 8, width: width,
                                height: max(size.height, 34))
         }
+        layoutBottomRight(in: full)
+        updateBackdrop()
+    }
+
+    private func layoutBottomRight(in full: NSRect) {
         var bottom = full.maxY - 10
         let chips = floatingHidden ? [] : floating.filter(\.minimized).map(\.pane)
         minimizedBar.panes = chips
         minimizedBar.isHidden = chips.isEmpty
         if !chips.isEmpty {
-            let size = minimizedBar.fittingSize
-            let width = min(size.width, max(0, full.width - 24))
-            minimizedBar.frame = NSRect(x: full.maxX - width - 12, y: bottom - size.height,
-                                        width: width, height: size.height)
+            let size = minimizedBar.fit(maxWidth: max(0, full.width - 24))
+            minimizedBar.frame = NSRect(x: full.maxX - size.width - 12, y: bottom - size.height,
+                                        width: size.width, height: size.height)
             bottom -= size.height + 6
         }
         for badge in noticeBadges {
@@ -677,7 +681,6 @@ final class TabContentView: NSView {
                                  width: width, height: size.height)
             bottom -= size.height + 6
         }
-        updateBackdrop()
     }
 
     /// A top pane at the window's leading edge (sidebar collapsed) keeps its header's icon and
@@ -1765,6 +1768,7 @@ final class TabContentView: NSView {
     func refreshHeaders() {
         for (id, header) in headers { header.update(focused: id == focusedPane) }
         minimizedBar.refresh()
+        if !minimizedBar.isHidden { layoutBottomRight(in: paneArea) }
         if showsHeaders { updateBackdrop() }
     }
 

@@ -288,24 +288,16 @@ final class DockIndicator: NSView {
 }
 
 final class MinimizedCardsBar: NSView {
+    static let spacing: CGFloat = 6
+
     var onRestore: ((PaneKey) -> Void)?
     var panes: [PaneKey] = [] {
         didSet { if panes != oldValue { rebuild() } }
     }
-    private let stack = NSStackView()
+    private(set) var chips: [MinimizedCardChip] = []
 
     override init(frame: NSRect) {
         super.init(frame: frame)
-        stack.orientation = .horizontal
-        stack.spacing = 6
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(stack)
-        NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: trailingAnchor),
-            stack.topAnchor.constraint(equalTo: topAnchor),
-            stack.bottomAnchor.constraint(equalTo: bottomAnchor),
-        ])
         isHidden = true
     }
 
@@ -316,20 +308,49 @@ final class MinimizedCardsBar: NSView {
     override var isFlipped: Bool { true }
 
     private func rebuild() {
-        stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        for pane in panes {
+        chips.forEach { $0.removeFromSuperview() }
+        chips = panes.map { pane in
             let chip = MinimizedCardChip(pane: pane)
             chip.onClick = { [weak self] in self?.onRestore?(pane) }
-            stack.addArrangedSubview(chip)
+            addSubview(chip)
+            return chip
         }
     }
 
     func refresh() {
-        for case let chip as MinimizedCardChip in stack.arrangedSubviews { chip.refresh() }
+        chips.forEach { $0.refresh() }
+    }
+
+    func fit(maxWidth: CGFloat) -> CGSize {
+        var rows: [[(chip: MinimizedCardChip, width: CGFloat)]] = []
+        var used: CGFloat = 0
+        for chip in chips {
+            let width = min(chip.fittingSize.width, maxWidth)
+            if rows.isEmpty || used + Self.spacing + width > maxWidth {
+                rows.append([])
+                used = width
+            } else {
+                used += Self.spacing + width
+            }
+            rows[rows.count - 1].append((chip, width))
+        }
+        let rowWidths = rows.map { row in row.map(\.width).reduce(0, +) + Self.spacing * CGFloat(row.count - 1) }
+        let width = rowWidths.max() ?? 0
+        let height = MinimizedCardChip.height
+        for (i, row) in rows.enumerated() {
+            var x = width - rowWidths[i]
+            let y = CGFloat(i) * (height + Self.spacing)
+            for (chip, w) in row {
+                chip.frame = NSRect(x: x, y: y, width: w, height: height)
+                x += w + Self.spacing
+            }
+        }
+        let count = CGFloat(rows.count)
+        return CGSize(width: width, height: count * height + max(0, count - 1) * Self.spacing)
     }
 }
 
-private final class MinimizedCardChip: NSView {
+final class MinimizedCardChip: NSView {
     static let height: CGFloat = 26
     static let maxTitleWidth: CGFloat = 180
 
@@ -339,6 +360,7 @@ private final class MinimizedCardChip: NSView {
     private let dot = NSView()
     private let title = NSTextField(labelWithString: "")
     private var iconKind: PaneIcon?
+    private var status: AgentStatus?
     private var hovering = false {
         didSet { if hovering != oldValue { refresh() } }
     }
@@ -399,10 +421,37 @@ private final class MinimizedCardChip: NSView {
         icon.contentTintColor = hovering ? chrome.contentPrimary : chrome.contentSecondary
         layer?.backgroundColor = chrome.surfaceRaised.cgColor
         layer?.borderColor = (hovering ? chrome.strokeStrong : chrome.stroke).cgColor
-        let status = info?.agent?.status
+        status = info?.agent?.status
         dot.isHidden = status == nil || status == .idle
         dot.layer?.backgroundColor = status?.color.cgColor
     }
+
+    override func isAccessibilityElement() -> Bool { true }
+    override func accessibilityRole() -> NSAccessibility.Role? { .button }
+    override func accessibilityLabel() -> String? { "Restore \(title.stringValue)" }
+    override func accessibilityValue() -> Any? { status?.rawValue }
+
+    override func accessibilityPerformPress() -> Bool {
+        onClick?()
+        return true
+    }
+
+    override var acceptsFirstResponder: Bool { true }
+    override var canBecomeKeyView: Bool { true }
+
+    override func keyDown(with event: NSEvent) {
+        if event.charactersIgnoringModifiers == " " || event.keyCode == 36 || event.keyCode == 76 {
+            onClick?()
+        } else {
+            super.keyDown(with: event)
+        }
+    }
+
+    override func drawFocusRingMask() {
+        NSBezierPath(roundedRect: bounds, xRadius: Self.height / 2, yRadius: Self.height / 2).fill()
+    }
+
+    override var focusRingMaskBounds: NSRect { bounds }
 
     override func mouseEntered(with event: NSEvent) { hovering = true }
     override func mouseExited(with event: NSEvent) { hovering = false }

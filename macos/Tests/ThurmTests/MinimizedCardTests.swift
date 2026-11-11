@@ -76,4 +76,68 @@ final class MinimizedCardTests: XCTestCase {
         XCTAssertTrue(content.isMinimized(key(3)))
         XCTAssertTrue(content.root.contains(content.focusedPane))
     }
+
+    private func minimizedTab(cards: Int, width: CGFloat) -> TabContentView {
+        let floating = (0..<cards).map { i in
+            FloatingPane(pane: key(UInt64(10 + i)), frame: [0.2, 0.2, 0.5, 0.5], minimized: true)
+        }
+        let content = TabContentView(root: .leaf(key(1)), focused: key(1), zoomed: nil, floating: floating)
+        content.frame = CGRect(x: 0, y: 0, width: width, height: 600)
+        content.layoutPanes()
+        return content
+    }
+
+    private func setTitle(_ title: String, of pane: PaneKey) {
+        SessionManager.shared.panes[pane] = PaneInfo(json: ["id": NSNumber(value: pane.id), "title": title, "alive": true])
+    }
+
+    func testChipsWrapToStayInsideANarrowTab() throws {
+        try requireMetal()
+        for i in 0..<6 { setTitle("a long running build \(i)", of: key(UInt64(10 + i))) }
+        defer { for i in 0..<6 { SessionManager.shared.panes[key(UInt64(10 + i))] = nil } }
+        let content = minimizedTab(cards: 6, width: 360)
+        defer { content.detachAll() }
+        let bar = content.minimizedBar
+        XCTAssertEqual(bar.chips.count, 6)
+        XCTAssertGreaterThanOrEqual(bar.frame.minX, 0)
+        XCTAssertLessThanOrEqual(bar.frame.maxX, 360)
+        XCTAssertGreaterThan(bar.frame.height, MinimizedCardChip.height, "the chips wrap into rows")
+        for chip in bar.chips {
+            XCTAssertTrue(bar.bounds.contains(chip.frame), "every chip stays on screen")
+            XCTAssertGreaterThan(chip.frame.width, 0)
+        }
+        let frames = bar.chips.map(\.frame)
+        for (i, a) in frames.enumerated() {
+            for b in frames[(i + 1)...] { XCTAssertFalse(a.intersects(b)) }
+        }
+    }
+
+    func testTheChipBarGrowsWithAMinimizedPanesTitle() throws {
+        try requireMetal()
+        setTitle("vim", of: key(10))
+        defer { SessionManager.shared.panes[key(10)] = nil }
+        let content = minimizedTab(cards: 1, width: 1000)
+        defer { content.detachAll() }
+        let before = content.minimizedBar.frame.width
+        setTitle("cargo test --workspace", of: key(10))
+        content.refreshHeaders()
+        XCTAssertGreaterThan(content.minimizedBar.frame.width, before)
+        XCTAssertEqual(content.minimizedBar.frame.maxX, content.paneArea.maxX - 12, accuracy: 0.5)
+    }
+
+    func testChipsAreButtonsThatRestoreTheirCard() throws {
+        try requireMetal()
+        setTitle("log tail", of: key(10))
+        defer { SessionManager.shared.panes[key(10)] = nil }
+        let content = minimizedTab(cards: 1, width: 1000)
+        defer { content.detachAll() }
+        let chip = try XCTUnwrap(content.minimizedBar.chips.first)
+        XCTAssertTrue(chip.isAccessibilityElement())
+        XCTAssertEqual(chip.accessibilityRole(), .button)
+        XCTAssertEqual(chip.accessibilityLabel(), "Restore log tail")
+        XCTAssertTrue(chip.canBecomeKeyView)
+        XCTAssertTrue(chip.accessibilityPerformPress())
+        XCTAssertFalse(content.isMinimized(key(10)))
+        XCTAssertEqual(content.focusedPane, key(10))
+    }
 }
