@@ -59,7 +59,8 @@ pub struct AgentTracker {
     /// What the screen said for sure at the last `update` (see `with_hook`).
     screen_certain: Option<AgentStatus>,
     /// What the screen's patterns said at the last `update`, and what they said when a Stop
-    /// came: until that signal leaves the screen, it is the finished turn's.
+    /// came: it is the finished turn's until it leaves the screen, the user types or another
+    /// hook event comes.
     screen_seen: Option<AgentStatus>,
     stop_signal: Option<AgentStatus>,
 }
@@ -127,6 +128,8 @@ impl AgentTracker {
 
     pub fn user_input(&mut self) {
         self.attention_flag = false;
+        // A new turn starts here: the screen speaks for it again.
+        self.stop_signal = None;
         // Whatever the keys did (answered, moved off the default choice), the prompt the
         // notification names is not certain to be showing as it was.
         if let Some(h) = &mut self.hook {
@@ -321,6 +324,9 @@ impl AgentTracker {
         };
         h.answered = false;
         h.permission = None;
+        if event != "stop" {
+            self.stop_signal = None;
+        }
         if pgrp.is_some() {
             h.pgrp = pgrp;
         }
