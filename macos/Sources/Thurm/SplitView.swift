@@ -259,8 +259,9 @@ final class TabContentView: NSView {
     }
     /// The cards are hidden (their programs keep running) until shown again.
     private(set) var floatingHidden = false
-    /// The cards on screen: none while hidden.
-    private var shownCards: [FloatingCard] { floatingHidden ? [] : floating }
+    /// The cards on screen: none while hidden, and never the minimized ones.
+    private var shownCards: [FloatingCard] { floatingHidden ? [] : floating.filter { !$0.minimized } }
+    private let minimizedBar = MinimizedCardsBar()
     /// Each card's fill and outline, by pane.
     private var cardParts: [PaneKey: (back: FloatingCardBack, rim: FloatingCardRim)] = [:]
     /// The pane of the splits focused last: where they split while a card has the focus.
@@ -431,8 +432,9 @@ final class TabContentView: NSView {
         var seen = Set(panes)
         self.floating = floating.filter { seen.insert($0.pane).inserted }.map(FloatingCard.init)
         self.floatingHidden = floatingHidden && !self.floating.isEmpty
-        // Hidden cards don't take the focus.
+        // Hidden and minimized cards don't take the focus.
         if self.floatingHidden { seen = Set(panes) }
+        for card in self.floating where card.minimized { seen.remove(card.pane) }
         self.focusedPane = seen.contains(focused) ? focused : (panes.first ?? focused)
         self.lastTiledFocus = panes.contains(focused) ? focused : panes.first
         if let z = zoomed, panes.contains(z) { self.zoomedPane = z } else { self.zoomedPane = nil }
@@ -442,6 +444,8 @@ final class TabContentView: NSView {
         addSubview(chrome)
         addSubview(focusRing)
         addSubview(dockIndicator)
+        addSubview(minimizedBar)
+        minimizedBar.onRestore = { [weak self] pane in self?.focus(pane) }
         registerForDraggedTypes([TabSidebarViewController.dragType])
         syncViews()
         setNotices(Notices.shared.current)
@@ -464,6 +468,8 @@ final class TabContentView: NSView {
     var focusedView: TerminalView? { views[focusedPane] }
 
     func isFloating(_ pane: PaneKey) -> Bool { floating.contains { $0.pane == pane } }
+    func isMinimized(_ pane: PaneKey) -> Bool { floating.contains { $0.pane == pane && $0.minimized } }
+    func isCardHidden(_ pane: PaneKey) -> Bool { isFloating(pane) && (floatingHidden || isMinimized(pane)) }
     func contains(_ pane: PaneKey) -> Bool { root.contains(pane) || isFloating(pane) }
     /// Whether `pane` can float: a pane of the splits, which keep another.
     func canFloat(_ pane: PaneKey) -> Bool { root.contains(pane) && root.panes.count > 1 }
@@ -536,6 +542,7 @@ final class TabContentView: NSView {
             set(headers[id] ?? leaving[id]?.header, base + 2)
             set(cardParts[id]?.rim, base + 3)
         }
+        set(minimizedBar, 40_000)
         set(dockIndicator, 50_000)
         withUnsafeMutablePointer(to: &rank) { ranks in
             sortSubviews({ a, b, context in
@@ -653,6 +660,16 @@ final class TabContentView: NSView {
                                height: max(size.height, 34))
         }
         var bottom = full.maxY - 10
+        let chips = floatingHidden ? [] : floating.filter(\.minimized).map(\.pane)
+        minimizedBar.panes = chips
+        minimizedBar.isHidden = chips.isEmpty
+        if !chips.isEmpty {
+            let size = minimizedBar.fittingSize
+            let width = min(size.width, max(0, full.width - 24))
+            minimizedBar.frame = NSRect(x: full.maxX - width - 12, y: bottom - size.height,
+                                        width: width, height: size.height)
+            bottom -= size.height + 6
+        }
         for badge in noticeBadges {
             let size = badge.fittingSize
             let width = min(size.width, max(0, full.width - 24))
@@ -1000,6 +1017,9 @@ final class TabContentView: NSView {
         if let bar = findBar, !bar.isHidden, bar.frame.contains(local) {
             return super.hitTest(point)
         }
+        if !minimizedBar.isHidden, minimizedBar.frame.contains(local) {
+            return super.hitTest(point)
+        }
         if cardEdges(at: local) != nil || dividerAt(local) != nil {
             return self
         }
@@ -1256,6 +1276,7 @@ final class TabContentView: NSView {
     func focus(_ pane: PaneKey) {
         guard let view = views[pane] else { return }
         if floatingHidden && isFloating(pane) { setFloatingHidden(false, focusing: false) }
+        if isMinimized(pane) { setMinimized(pane, false) }
         if let z = zoomedPane, z != pane, root.contains(pane) {
             transitionZoom { zoomedPane = nil }
             SessionManager.shared.withdrawNotificationsOnScreen()
@@ -1298,7 +1319,7 @@ final class TabContentView: NSView {
     /// The pane next to `pane` in `direction`, among the splits and, with `cards`, the cards.
     private func neighbor(of pane: PaneKey, _ direction: FocusDirection, cards: Bool = false) -> PaneKey? {
         guard let current = views[pane] else { return nil }
-        let candidates = views.filter { id, _ in id != pane && (root.contains(id) || (cards && !floatingHidden)) }
+        let candidates = views.filter { id, _ in id != pane && (root.contains(id) || (cards && !isCardHidden(id))) }
         return Self.neighbor(of: current.frame, among: candidates.map { ($0.key, $0.value.frame) }, direction)
     }
 
@@ -1468,6 +1489,7 @@ final class TabContentView: NSView {
             floating[i].frame = placed.frame
             floating[i].cells = placed.cells
             floating[i].zoomed = false
+            floating[i].minimized = false
             floatingHidden = false
         }
         window?.invalidateCursorRects(for: self)
@@ -1510,9 +1532,22 @@ final class TabContentView: NSView {
         window?.invalidateCursorRects(for: self)
         if refocus {
             focus(tiledFocus)
-        } else if !hidden && focusing, let front = floating.last {
+        } else if !hidden && focusing, let front = shownCards.last {
             focus(front.pane)
         }
+        SessionManager.shared.scheduleLayoutSave()
+    }
+
+    func setMinimized(_ pane: PaneKey, _ on: Bool) {
+        guard let i = floating.firstIndex(where: { $0.pane == pane }), floating[i].minimized != on else { return }
+        let refocus = on && pane == focusedPane
+        finishLayoutMove()
+        floating[i].minimized = on
+        if !on { floating.append(floating.remove(at: i)) }
+        restack()
+        layoutPanes()
+        window?.invalidateCursorRects(for: self)
+        if refocus { focus(shownCards.last?.pane ?? tiledFocus) }
         SessionManager.shared.scheduleLayoutSave()
     }
 
@@ -1729,12 +1764,14 @@ final class TabContentView: NSView {
     /// Re-reads titles and focus into the headers (pane info changed, focus moved, theme).
     func refreshHeaders() {
         for (id, header) in headers { header.update(focused: id == focusedPane) }
+        minimizedBar.refresh()
         if showsHeaders { updateBackdrop() }
     }
 
     /// After a config reload: headers turned on or off, or the theme changed.
     func applyConfig() {
         for badge in noticeBadges { badge.applyTheme() }
+        minimizedBar.refresh()
         findBar?.applyTheme()
         layoutPanes()
         window?.invalidateCursorRects(for: self)

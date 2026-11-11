@@ -398,6 +398,8 @@ enum MainMenu {
         menu.addItem(item("New Floating Pane", #selector(TerminalWindowController.newFloatingPane(_:)),
                           name: "new_floating_pane"))
         menu.addItem(item("Float Pane", #selector(TerminalWindowController.toggleFloat(_:)), name: "float_pane"))
+        menu.addItem(item("Minimize Floating Pane", #selector(TerminalWindowController.minimizeFloatingPane(_:)),
+                          name: "minimize_floating_pane"))
         menu.addItem(item("Move Floating Pane to New Tab",
                           #selector(TerminalWindowController.moveFloatingPaneToNewTab(_:)), name: "float_pane_to_tab"))
         let floatTab = NSMenu(title: "Float Tab Here")
