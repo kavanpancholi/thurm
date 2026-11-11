@@ -406,6 +406,7 @@ final class TabContentView: NSView {
     /// cells keeps its terminal's size in cells, whatever the tab's size.
     private func cardRect(_ card: FloatingCard) -> CGRect {
         if card.zoomed { return showsHeaders ? splitArea : paneArea }
+        if let snap = card.snap { return FloatingGeometry.rect(snap, in: floatArea) }
         if let cells = card.cells, let m = gridMetrics {
             return FloatingGeometry.rect(card.frame, cells: cells, cell: m.cell, padding: m.padding, in: floatArea)
         }
@@ -1031,6 +1032,7 @@ final class TabContentView: NSView {
                                                 by: CGVector(dx: p.x - r.from.x, dy: p.y - r.from.y), in: area,
                                                 minSize: minCardSize(floating[i]))
             floating[i].frame = FloatingGeometry.fraction(of: rect, in: area)
+            floating[i].snap = nil
             // A card placed in cells stays one, in whole cells of its new size.
             if floating[i].cells != nil, let m = gridMetrics,
                let cells = FloatingGeometry.cells(of: rect.size, cell: m.cell, padding: m.padding) {
@@ -1468,6 +1470,7 @@ final class TabContentView: NSView {
             floating[i].frame = placed.frame
             floating[i].cells = placed.cells
             floating[i].zoomed = false
+            floating[i].snap = nil
             floatingHidden = false
         }
         window?.invalidateCursorRects(for: self)
@@ -1513,6 +1516,19 @@ final class TabContentView: NSView {
         } else if !hidden && focusing, let front = floating.last {
             focus(front.pane)
         }
+        SessionManager.shared.scheduleLayoutSave()
+    }
+
+    func snapCard(_ pane: PaneKey, to snap: FloatingSnap) {
+        guard let i = floating.firstIndex(where: { $0.pane == pane }) else { return }
+        let area = floatArea
+        transitionLayout {
+            floating[i].snap = snap
+            floating[i].zoomed = false
+            floating[i].cells = nil
+            floating[i].frame = FloatingGeometry.fraction(of: FloatingGeometry.rect(snap, in: area), in: area)
+        }
+        window?.invalidateCursorRects(for: self)
         SessionManager.shared.scheduleLayoutSave()
     }
 
@@ -1574,6 +1590,7 @@ final class TabContentView: NSView {
         var cancelled = false
         var target: (pane: PaneKey, side: SplitDirName, rect: CGRect)?
         var tabGap: TabGap?
+        var zone: FloatingSnap?
         let sidebar = self.sidebar
         window.trackEvents(matching: [.leftMouseDragged, .leftMouseUp, .keyDown, .flagsChanged],
                            timeout: NSEvent.foreverDuration, mode: .eventTracking) { [weak self] e, stop in
@@ -1588,6 +1605,7 @@ final class TabContentView: NSView {
                 guard e.keyCode == 53 else { return }
                 cancelled = true
                 self.floating[i].frame = start.frame
+                self.floating[i].snap = start.snap
                 stop.pointee = true
             default:
                 let p = self.convert(e.type == .flagsChanged ? window.mouseLocationOutsideOfEventStream
@@ -1595,6 +1613,7 @@ final class TabContentView: NSView {
                 if !moved && hypot(p.x - origin.x, p.y - origin.y) < 3 { return }
                 moved = true
                 let area = self.floatArea
+                self.floating[i].snap = nil
                 let rect = startRect.offsetBy(dx: p.x - origin.x, dy: p.y - origin.y)
                 self.floating[i].frame = FloatingGeometry.fraction(of: FloatingGeometry.rect(
                     FloatingGeometry.fraction(of: rect, in: area), in: area, minSize: self.minCardSize(self.floating[i])),
@@ -1605,7 +1624,8 @@ final class TabContentView: NSView {
                 sidebar?.showCardDrop(drop?.line)
                 target = tabGap == nil && e.modifierFlags.contains(.command)
                     ? self.dockTarget(at: p, excluding: pane) : nil
-                self.dockIndicator.show(target?.rect)
+                zone = tabGap == nil && target == nil ? FloatingGeometry.snap(at: p, in: area) : nil
+                self.dockIndicator.show(target?.rect ?? zone.map { FloatingGeometry.rect($0, in: area) })
                 self.needsLayout = true
             }
         }
@@ -1618,6 +1638,10 @@ final class TabContentView: NSView {
         }
         if let tabGap, !cancelled, let controller {
             SessionManager.shared.moveCardToNewTab(pane, from: controller, next: tabGap)
+            return
+        }
+        if let zone, moved, !cancelled {
+            snapCard(pane, to: zone)
             return
         }
         needsLayout = true

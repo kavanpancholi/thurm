@@ -480,6 +480,11 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
+    @objc func snapFloatingPane(_ sender: Any?) {
+        guard let tag = (sender as? NSMenuItem)?.tag, FloatingSnap.allCases.indices.contains(tag) else { return }
+        content.snapCard(content.focusedPane, to: FloatingSnap.allCases[tag])
+    }
+
     @objc func newFloatingPane(_ sender: Any?) {
         SessionManager.shared.newFloatingPane(in: self)
     }
@@ -577,6 +582,8 @@ extension TerminalWindowController: NSMenuItemValidation {
         case #selector(togglePinTab(_:)):
             menuItem.title = pinned ? "Unpin Tab" : "Pin Tab"
             return !isQuick && SessionManager.shared.config.sidebarTabs
+        case #selector(snapFloatingPane(_:)):
+            return content.isFloating(content.focusedPane)
         case #selector(moveFloatingPaneToNewTab(_:)):
             return SessionManager.shared.canMoveCards(self) && content.isFloating(content.focusedPane)
         default:
