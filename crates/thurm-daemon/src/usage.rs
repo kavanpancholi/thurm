@@ -1,6 +1,8 @@
 //! CPU and memory of pane processes and of the system (`Request::Usage`).
 
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
@@ -17,10 +19,13 @@ struct ProcSample {
     memory: u64,
 }
 
+/// Raw `host_cpu_load_info` counters: 32 bits each, so they wrap on a long-running Mac.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct CpuTicks {
-    busy: u64,
-    total: u64,
+    user: u32,
+    system: u32,
+    idle: u32,
+    nice: u32,
 }
 
 struct Sample {
@@ -35,32 +40,71 @@ pub struct PaneRoot {
     pub agent: Option<(String, String)>,
 }
 
+pub const BUSY: &str = "the daemon is busy measuring usage; try again";
+const MAX_IN_FLIGHT: usize = 4;
+
 #[derive(Default)]
 pub struct Sampler {
     last: Mutex<Option<Sample>>,
+    in_flight: Arc<AtomicUsize>,
+}
+
+pub struct Permit(Arc<AtomicUsize>);
+
+impl Drop for Permit {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 impl Sampler {
+    pub fn permit(&self) -> Option<Permit> {
+        self.in_flight
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                (n < MAX_IN_FLIGHT).then_some(n + 1)
+            })
+            .ok()
+            .map(|_| Permit(self.in_flight.clone()))
+    }
+
     /// Usage of every pane in `roots`, then kept to `only` when given. Every pane is measured
     /// either way, so the sample kept for the next request covers them all.
     pub fn usage(&self, roots: &[PaneRoot], only: Option<PaneId>) -> Result<Usage, String> {
         os::supported()?;
-        let table = crate::procinfo::process_table();
-        let trees: Vec<(&PaneRoot, Vec<u32>)> = roots
+        let mut last = self.last.lock();
+        let prev = match last.take() {
+            Some(s) if s.at.elapsed() <= FRESH => s,
+            _ => take_sample(&pids(&trees(roots))),
+        };
+        let age = prev.at.elapsed();
+        if age < WINDOW {
+            std::thread::sleep(WINDOW - age);
+        }
+        let trees = trees(roots);
+        let now = take_sample(&pids(&trees));
+        let window = now.at.duration_since(prev.at);
+        let procs: HashMap<u32, ProcUsage> = now
+            .procs
             .iter()
-            .map(|r| {
-                let pids = crate::procinfo::descendants(&table, r.pid)
-                    .into_iter()
-                    .map(|p| p.0)
-                    .collect();
-                (r, pids)
+            .map(|(&pid, s)| {
+                let cpu = cpu_percent(prev.procs.get(&pid), s, window);
+                (
+                    pid,
+                    ProcUsage {
+                        pid,
+                        cpu,
+                        memory: s.memory,
+                    },
+                )
             })
             .collect();
-        let pids: Vec<u32> = trees.iter().flat_map(|(_, t)| t.iter().copied()).collect();
+        let cpu = prev.cpu.zip(now.cpu).map(|(a, b)| system_cpu_percent(a, b));
+        *last = Some(now);
+        drop(last);
 
-        let (window, procs, cpu) = self.measure(&pids);
-        let panes: Vec<PaneUsage> = trees
-            .into_iter()
+        let panes: Vec<PaneUsage> = roots
+            .iter()
+            .zip(trees)
             .filter(|(r, _)| only.is_none_or(|id| id == r.pane))
             .map(|(r, pids)| {
                 pane_usage(
@@ -87,38 +131,23 @@ impl Sampler {
             system,
         })
     }
+}
 
-    fn measure(&self, pids: &[u32]) -> (Duration, HashMap<u32, ProcUsage>, Option<f32>) {
-        let mut last = self.last.lock();
-        let prev = match last.take() {
-            Some(s) if s.at.elapsed() <= FRESH => s,
-            _ => take_sample(pids),
-        };
-        let age = prev.at.elapsed();
-        if age < WINDOW {
-            std::thread::sleep(WINDOW - age);
-        }
-        let now = take_sample(pids);
-        let window = now.at.duration_since(prev.at);
-        let procs = now
-            .procs
-            .iter()
-            .map(|(&pid, s)| {
-                let cpu = cpu_percent(prev.procs.get(&pid), s, window);
-                (
-                    pid,
-                    ProcUsage {
-                        pid,
-                        cpu,
-                        memory: s.memory,
-                    },
-                )
-            })
-            .collect();
-        let cpu = prev.cpu.zip(now.cpu).map(|(a, b)| system_cpu_percent(a, b));
-        *last = Some(now);
-        (window, procs, cpu)
-    }
+fn trees(roots: &[PaneRoot]) -> Vec<Vec<u32>> {
+    let table = crate::procinfo::process_table();
+    roots
+        .iter()
+        .map(|r| {
+            crate::procinfo::descendants(&table, r.pid)
+                .into_iter()
+                .map(|p| p.0)
+                .collect()
+        })
+        .collect()
+}
+
+fn pids(trees: &[Vec<u32>]) -> Vec<u32> {
+    trees.iter().flatten().copied().collect()
 }
 
 fn take_sample(pids: &[u32]) -> Sample {
@@ -146,11 +175,14 @@ fn cpu_percent(prev: Option<&ProcSample>, now: &ProcSample, window: Duration) ->
 }
 
 fn system_cpu_percent(prev: CpuTicks, now: CpuTicks) -> f32 {
-    let total = now.total.saturating_sub(prev.total);
+    let delta = |a: u32, b: u32| u64::from(b.wrapping_sub(a));
+    let busy =
+        delta(prev.user, now.user) + delta(prev.system, now.system) + delta(prev.nice, now.nice);
+    let total = busy + delta(prev.idle, now.idle);
     if total == 0 {
         return 0.0;
     }
-    (now.busy.saturating_sub(prev.busy) as f64 * 100.0 / total as f64) as f32
+    (busy as f64 * 100.0 / total as f64) as f32
 }
 
 fn pane_usage(pane: PaneId, agent: Option<String>, processes: Vec<ProcUsage>) -> PaneUsage {
@@ -260,13 +292,12 @@ mod os {
         if rc != libc::KERN_SUCCESS {
             return None;
         }
-        let t = info.cpu_ticks.map(u64::from);
-        let busy = t[libc::CPU_STATE_USER as usize]
-            + t[libc::CPU_STATE_SYSTEM as usize]
-            + t[libc::CPU_STATE_NICE as usize];
+        let t = info.cpu_ticks;
         Some(CpuTicks {
-            busy,
-            total: busy + t[libc::CPU_STATE_IDLE as usize],
+            user: t[libc::CPU_STATE_USER as usize],
+            system: t[libc::CPU_STATE_SYSTEM as usize],
+            idle: t[libc::CPU_STATE_IDLE as usize],
+            nice: t[libc::CPU_STATE_NICE as usize],
         })
     }
 
@@ -457,18 +488,40 @@ mod tests {
         assert_eq!(agents[1].panes, vec![3]);
     }
 
+    fn ticks(user: u32, system: u32, idle: u32, nice: u32) -> CpuTicks {
+        CpuTicks {
+            user,
+            system,
+            idle,
+            nice,
+        }
+    }
+
     #[test]
     fn system_cpu_from_ticks() {
-        let a = CpuTicks {
-            busy: 100,
-            total: 1_000,
-        };
-        let b = CpuTicks {
-            busy: 350,
-            total: 2_000,
-        };
+        let a = ticks(60, 30, 900, 10);
+        let b = ticks(260, 70, 1650, 20);
         assert_eq!(system_cpu_percent(a, b), 25.0);
         assert_eq!(system_cpu_percent(b, b), 0.0);
+    }
+
+    #[test]
+    fn system_cpu_across_counter_wrap() {
+        let a = ticks(u32::MAX - 99, 0, u32::MAX - 299, 0);
+        let b = ticks(100, 0, 300, 0);
+        assert_eq!(system_cpu_percent(a, b), 25.0);
+    }
+
+    #[test]
+    fn permits_are_bounded_and_released() {
+        let sampler = Sampler::default();
+        let held: Vec<Permit> = (0..MAX_IN_FLIGHT)
+            .filter_map(|_| sampler.permit())
+            .collect();
+        assert_eq!(held.len(), MAX_IN_FLIGHT);
+        assert!(sampler.permit().is_none());
+        drop(held);
+        assert!(sampler.permit().is_some());
     }
 
     #[cfg(target_os = "macos")]

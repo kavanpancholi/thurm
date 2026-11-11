@@ -2420,12 +2420,20 @@ impl Daemon {
             slow @ (Request::Complete { .. }
             | Request::Processes { .. }
             | Request::Usage { .. }
-            | Request::ApplyLayout { .. }) => {
+            | Request::ApplyLayout { .. }) => 'slow: {
+                let permit = match &slow {
+                    Request::Usage { .. } => match self.usage.permit() {
+                        Some(p) => Some(p),
+                        None => break 'slow Err(crate::usage::BUSY.into()),
+                    },
+                    _ => None,
+                };
                 let daemon = self.clone();
                 let client = client.clone();
                 let spawned = std::thread::Builder::new()
                     .name("request".into())
                     .spawn(move || {
+                        let _permit = permit;
                         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                             daemon.dispatch(&client, slow)
                         }))
@@ -2730,6 +2738,9 @@ impl Daemon {
                     .iter()
                     .filter_map(|p| {
                         let st = p.state.lock();
+                        if !st.info.alive {
+                            return None;
+                        }
                         Some(crate::usage::PaneRoot {
                             pane: p.id,
                             pid: st.info.pid?,
