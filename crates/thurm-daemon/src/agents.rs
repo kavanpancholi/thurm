@@ -1132,12 +1132,17 @@ mod tests {
         assert_eq!(s.unwrap().unwrap().status, AgentStatus::Working);
 
         // A turn stops with its working text still showing; the next one shows the same text
-        // without a clean screen between. The user typing the prompt starts it.
+        // without a clean screen between. Keys and an empty paste don't start it; a sent
+        // prompt does.
         t.apply_hook(Some(1), "command-code", "Command Code", "stop", None, None);
         assert_eq!(t.refresh().unwrap().unwrap().status, AgentStatus::Done);
         let s = t.update(&defs, Some(&cc), "esc to interrupt", quiet, idle_after);
         assert!(s.is_none(), "{s:?}");
+        t.user_answer(b"\x1b[A");
         t.user_input();
+        let s = t.update(&defs, Some(&cc), "esc to interrupt", quiet, idle_after);
+        assert_eq!(s.unwrap().unwrap().status, AgentStatus::Idle);
+        t.user_answer(b"\r");
         let s = t.update(&defs, Some(&cc), "esc to interrupt ", quiet, idle_after);
         assert_eq!(s.unwrap().unwrap().status, AgentStatus::Working);
 
