@@ -37,8 +37,8 @@ its edges to resize it, and double-click the header to zoom it. To put it in the
 splits, use **View › Dock Pane**, or hold Cmd while dragging its header over a pane
 and drop it on the side where it should go (Esc cancels the drag).
 
-Drag a card's header, or a split's, to an edge of the tab to make it that half of the
-tab; the tab shows where it goes before you let go. Drop a split's header on another
+Drag a card's header, or a split's icon and title, to an edge of the tab to make it that half of the
+tab; the tab shows where it goes before you let go. Drop a split's title on another
 pane to split that pane on the side under the pointer. Esc cancels. **View › Move
 Pane to Edge** moves the current pane to an edge from the keyboard.
 

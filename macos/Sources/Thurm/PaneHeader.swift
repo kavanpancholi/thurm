@@ -27,6 +27,7 @@ final class PaneHeader: NSView {
     private let dot = NSView()
     private let title = NSTextField(labelWithString: "")
     private let buttons = NSStackView()
+    private let handle = HeaderHandle()
     private var splitButtons: [NSButton] = []
     private var floatButton: NSButton?
     private var focused = false
@@ -72,7 +73,7 @@ final class PaneHeader: NSView {
             if action == #selector(splitRight) || action == #selector(splitDown) { splitButtons.append(b) }
             if action == #selector(toggleFloat) { floatButton = b }
         }
-        for v in [icon, dot, title, buttons] as [NSView] {
+        for v in [icon, dot, title, buttons, handle] as [NSView] {
             v.translatesAutoresizingMaskIntoConstraints = false
             addSubview(v)
         }
@@ -88,6 +89,10 @@ final class PaneHeader: NSView {
             title.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 7),
             title.centerYAnchor.constraint(equalTo: centerYAnchor),
             title.trailingAnchor.constraint(lessThanOrEqualTo: buttons.leadingAnchor, constant: -8),
+            handle.leadingAnchor.constraint(equalTo: icon.leadingAnchor, constant: -4),
+            handle.trailingAnchor.constraint(equalTo: title.trailingAnchor, constant: 4),
+            handle.topAnchor.constraint(equalTo: topAnchor),
+            handle.bottomAnchor.constraint(equalTo: bottomAnchor),
             buttons.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
             buttons.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
@@ -115,6 +120,7 @@ final class PaneHeader: NSView {
         if pane.isRemote { text = "\(pane.host) · \(text)" }
         if title.stringValue != text { title.stringValue = text }
         toolTip = [text, info?.cwd].compactMap { $0 }.joined(separator: "\n")
+        handle.toolTip = toolTip
 
         let fg = colorFromRGB(cfg.theme.foreground)
         title.textColor = focused ? cfg.chrome.contentPrimary : cfg.chrome.contentSecondary
@@ -168,6 +174,12 @@ final class PaneHeader: NSView {
     @objc private func toggleFloat() { act { $0.toggleFloat(nil) } }
     @objc private func zoom() { act { $0.toggleZoom(nil) } }
     @objc private func close() { act { $0.closePane(nil) } }
+}
+
+/// Over a header's icon and title: pressing there drags the pane rather than the window, where
+/// the header lies in the titlebar.
+private final class HeaderHandle: NSView {
+    override var mouseDownCanMoveWindow: Bool { false }
 }
 
 /// A pane header button: brightens and shows a rounded backdrop while the pointer is over it, so
