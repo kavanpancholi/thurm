@@ -20,7 +20,7 @@ pub struct HookAgent {
     /// Recognizes a permission prompt among a notification's payload fields.
     pub permission: fn(&Value) -> bool,
     /// Whether the SessionStart hook injects its context as JSON (`additionalContext`)
-    /// instead of plain text (Command Code does; Claude Code and Codex do not).
+    /// instead of plain text.
     pub context_json: bool,
 }
 
@@ -85,6 +85,30 @@ impl HookAgent {
     pub fn settings_path(&self) -> PathBuf {
         (self.settings)()
     }
+
+    /// What the SessionStart hook prints for the agent to add `context` to the session.
+    pub fn session_output(&self, context: &str) -> String {
+        if self.context_json {
+            json!({ "hookSpecificOutput": { "additionalContext": context } }).to_string()
+        } else {
+            context.to_owned()
+        }
+    }
+
+    /// Whether its hooks see a turn start (`prompt-submit`), and so can be trusted for the
+    /// whole status. Without one, the screen still tells when it works or asks.
+    pub fn reports_turns(&self) -> bool {
+        self.events.iter().any(|(_, ours)| *ours == "prompt-submit")
+    }
+}
+
+/// Whether the hooks of agent `kind` report its whole status (see [`HookAgent::reports_turns`]).
+/// Agents without managed hooks report through hooks of their own making: trusted.
+pub fn reports_turns(kind: &str) -> bool {
+    AGENTS
+        .iter()
+        .find(|a| a.kind == kind)
+        .is_none_or(HookAgent::reports_turns)
 }
 
 /// A config directory under an optional env-var override, else `~/<dir>`.
@@ -454,5 +478,19 @@ mod tests {
             agent.hook_event("Ask", &json!({ "kind": "note" })),
             "notification"
         );
+        assert!(!agent.reports_turns());
+        assert_eq!(agent.session_output("in pane 7"), "in pane 7");
+        let agent = HookAgent {
+            context_json: true,
+            ..agent
+        };
+        let out: Value = serde_json::from_str(&agent.session_output("in \"pane\" 7")).unwrap();
+        assert_eq!(
+            out.pointer("/hookSpecificOutput/additionalContext"),
+            Some(&json!("in \"pane\" 7"))
+        );
+        assert!(reports_turns("claude"));
+        assert!(reports_turns("codex"));
+        assert!(reports_turns("pi"));
     }
 }

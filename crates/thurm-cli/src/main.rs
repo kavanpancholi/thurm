@@ -597,17 +597,13 @@ fn agent_hook(agent: Option<String>, event: Option<String>) {
         |a| a.hook_event(&event, &payload),
     );
     if event == "session-start" {
-        // Claude Code and Codex add a SessionStart hook's output to the session's context;
-        // Command Code expects it as JSON additionalContext.
+        // The agent adds a SessionStart hook's output to the session's context.
         let context = skill::session_context(pane, skill::cli_off_path().as_deref());
-        if def.is_some_and(|a| a.context_json) {
-            print!(
-                "{}",
-                serde_json::json!({ "hookSpecificOutput": { "additionalContext": context } })
-            );
-        } else {
-            print!("{context}");
-        }
+        let output = match def {
+            Some(a) => a.session_output(&context),
+            None => context,
+        };
+        print!("{output}");
         let _ = std::io::stdout().flush();
     }
     let Ok(c) = connect(false) else { return };

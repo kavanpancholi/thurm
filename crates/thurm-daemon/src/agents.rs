@@ -56,6 +56,12 @@ pub struct AgentTracker {
     /// The current state before the program's report overrides it: what to fall back to once
     /// the report is gone.
     plain: Option<AgentState>,
+    /// What the screen said for sure at the last `update` (see `with_hook`).
+    screen_certain: Option<AgentStatus>,
+    /// Hash of the screen at the last `update`, and of the one a Stop came on: until the
+    /// screen changes, its patterns are from the finished turn.
+    screen_seen: Option<u64>,
+    stop_screen: Option<u64>,
 }
 
 /// What the on-device model said about the current agent session (`[ai]`).
@@ -230,7 +236,7 @@ impl AgentTracker {
             });
         }
         if status
-            && !state.hooked
+            && !(state.hooked && thurm_config::hooks::reports_turns(&state.kind))
             && self.program.is_none()
             && state.status == AgentStatus::Idle
             && !tail.is_empty()
@@ -360,6 +366,8 @@ impl AgentTracker {
                 h.permission = Some(next_prompt_id());
             }
             "stop" => {
+                self.stop_screen = self.screen_seen;
+                self.screen_certain = None;
                 h.status = AgentStatus::Done;
                 h.message = None;
                 h.turns += 1;
@@ -427,7 +435,7 @@ impl AgentTracker {
             // Re-derived by `with_ai`.
             base.message = None;
         }
-        let next = Some(self.with_ai(self.with_hook(base)));
+        let next = Some(self.with_ai(self.with_hook(base, self.screen_certain)));
         self.set(next)
     }
 
@@ -455,13 +463,19 @@ impl AgentTracker {
         })
     }
 
-    fn with_hook(&self, mut state: AgentState) -> AgentState {
+    /// `state` with the hooked agent's report laid over it. `screen` is what the screen says
+    /// for sure (a working or attention pattern), which wins for agents whose hooks don't see
+    /// a turn start or a question.
+    fn with_hook(&self, mut state: AgentState, screen: Option<AgentStatus>) -> AgentState {
         if let Some(h) = self
             .hook
             .as_ref()
             .filter(|h| h.kind == state.kind && h.pgrp == self.fg_pgrp)
         {
-            state.status = h.status;
+            state.status = match screen {
+                Some(s) if !thurm_config::hooks::reports_turns(&h.kind) => s,
+                _ => h.status,
+            };
             state.session_id = h.session_id.clone();
             state.message = h.message.clone();
             state.turn_ms = h.turn_ms;
@@ -545,7 +559,10 @@ impl AgentTracker {
             && fg.is_some_and(|p| !crate::procinfo::is_shell(&p.name));
         if unknown_hooked {
             self.from_program = false;
-            let next = self.hook_state().map(|s| self.with_ai(self.with_hook(s)));
+            self.screen_certain = None;
+            let next = self
+                .hook_state()
+                .map(|s| self.with_ai(self.with_hook(s, None)));
             return self.set(next);
         }
         if let Some(h) = &mut self.hook
@@ -569,6 +586,8 @@ impl AgentTracker {
         // Neither output (the user's typing echoed, a redrawn status line) nor working text
         // left on the screen says anything once the title does.
         let title_decides = agent.is_some() && self.title_spun == agent;
+        let mut screen_certain = None;
+        let mut seen = None;
         let next = def.map(|d| {
             let screen_tail = current_activity(&d.kind, screen_tail);
             let attention =
@@ -588,19 +607,32 @@ impl AgentTracker {
             } else {
                 AgentStatus::Idle
             };
-            self.with_ai(self.with_hook(AgentState {
-                name: d.name.clone(),
-                kind: d.kind.clone(),
-                status,
-                session_id: None,
-                message: None,
-                turn_ms: None,
-                turns: 0,
-                hooked: false,
-                topic: None,
-                permission: None,
-            }))
+            let hash = screen_hash(screen_tail);
+            seen = Some(hash);
+            screen_certain = (attention || waiting || spinning || working)
+                .then_some(status)
+                .filter(|_| self.stop_screen != Some(hash));
+            self.with_ai(self.with_hook(
+                AgentState {
+                    name: d.name.clone(),
+                    kind: d.kind.clone(),
+                    status,
+                    session_id: None,
+                    message: None,
+                    turn_ms: None,
+                    turns: 0,
+                    hooked: false,
+                    topic: None,
+                    permission: None,
+                },
+                screen_certain,
+            ))
         });
+        self.screen_certain = screen_certain;
+        if seen != self.stop_screen {
+            self.stop_screen = None;
+        }
+        self.screen_seen = seen;
         if next.is_none() {
             self.attention_flag = false;
             self.title_spun = None;
