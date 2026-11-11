@@ -96,6 +96,10 @@ final class PaneHeader: NSView {
             buttons.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
             buttons.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
+        handle.movesPane = { [weak self] in
+            guard let self, let content = self.content else { return false }
+            return content.isFloating(self.pane) || content.canMoveByHeader(self.pane)
+        }
         update(focused: false)
     }
 
@@ -177,9 +181,41 @@ final class PaneHeader: NSView {
 }
 
 /// Over a header's icon and title: pressing there drags the pane rather than the window, where
-/// the header lies in the titlebar.
+/// the header lies in the titlebar. The window server starts titlebar drags itself, so the
+/// window stays put while the pointer is here.
 private final class HeaderHandle: NSView {
-    override var mouseDownCanMoveWindow: Bool { false }
+    private weak var pinned: NSWindow?
+    var movesPane: () -> Bool = { false }
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+                                       owner: self))
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is not supported")
+    }
+
+    override var mouseDownCanMoveWindow: Bool { !movesPane() }
+
+    override func mouseEntered(with event: NSEvent) {
+        guard let window, window.isMovable, movesPane() else { return }
+        window.isMovable = false
+        pinned = window
+    }
+
+    override func mouseExited(with event: NSEvent) { release() }
+
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        if newWindow !== window { release() }
+        super.viewWillMove(toWindow: newWindow)
+    }
+
+    private func release() {
+        pinned?.isMovable = true
+        pinned = nil
+    }
 }
 
 /// A pane header button: brightens and shows a rounded backdrop while the pointer is over it, so
