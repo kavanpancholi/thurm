@@ -156,6 +156,12 @@ the defaults alone.
 | `toggle_floating_panes` | View > Show Floating Panes |
 | `new_floating_pane` | View > New Floating Pane |
 | `float_pane` | View > Float Pane |
+| `snap_floating_pane_left` | View > Snap Floating Pane > Left Half |
+| `snap_floating_pane_right` | View > Snap Floating Pane > Right Half |
+| `snap_floating_pane_top_left` | View > Snap Floating Pane > Top Left |
+| `snap_floating_pane_top_right` | View > Snap Floating Pane > Top Right |
+| `snap_floating_pane_bottom_left` | View > Snap Floating Pane > Bottom Left |
+| `snap_floating_pane_bottom_right` | View > Snap Floating Pane > Bottom Right |
 | `float_pane_to_tab` | View > Move Floating Pane to New Tab |
 | `equalize_splits` | View > Equalize Splits |
 | `focus_left` | View > Select Split Left |
