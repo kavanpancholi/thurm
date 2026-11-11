@@ -77,6 +77,7 @@ pub const CAPABILITIES: &[&str] = &[
     CAP_FLOATING_NEW,
     CAP_FLOATING_PLACE,
     CAP_PANE_OWNER,
+    CAP_USAGE,
 ];
 
 /// The pane takes the size of the client that used it last (see the daemon's `active_size`)
@@ -120,6 +121,9 @@ pub const CAP_PANE_PAGER: &str = "pane-pager";
 /// another client really uses them. A client that sends it gets [`Event::SizeOwner`] for the
 /// panes it subscribes to.
 pub const CAP_PANE_OWNER: &str = "pane-owner";
+
+/// The daemon answers [`Request::Usage`] (on hosts that can measure it; others refuse it).
+pub const CAP_USAGE: &str = "usage";
 
 /// Sent only by `thurm events`: besides the events every client gets, it gets the [`PaneInfo`]
 /// changes that come from a pane's output (prompt, cwd, progress), which otherwise go only to
@@ -468,6 +472,11 @@ pub enum Request {
         #[serde(default)]
         panes: Vec<PaneId>,
     },
+    /// CPU and memory of every pane's processes (or only `pane`'s), per agent, and of the
+    /// system ([`CAP_USAGE`]). Answers [`Response::Usage`].
+    Usage {
+        pane: Option<PaneId>,
+    },
 }
 
 /// How [`Request::OwnPanes`] treats a pane another client holds.
@@ -568,6 +577,7 @@ pub enum Response {
     Whoami(Principal),
     FocusHistory(Vec<FocusRecord>),
     PaneModes(PaneModes),
+    Usage(Usage),
 }
 
 /// A pane that had keyboard focus in a UI (the Mac app, the iOS app).
@@ -858,6 +868,68 @@ pub struct ProcEntry {
     pub command: String,
     /// TCP ports it listens on.
     pub ports: Vec<u16>,
+}
+
+/// Resource usage measured over the last `interval_ms`. CPU is in percent of one core (two busy
+/// cores are 200), memory in bytes.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct Usage {
+    pub interval_ms: u64,
+    pub panes: Vec<PaneUsage>,
+    pub agents: Vec<AgentUsage>,
+    pub system: SystemUsage,
+}
+
+/// A pane's process tree (the processes [`Request::Processes`] lists) and their sum.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct PaneUsage {
+    pub pane: PaneId,
+    /// [`AgentState::kind`] of the agent running in it.
+    pub agent: Option<String>,
+    pub cpu: f32,
+    /// Physical footprint, what Activity Monitor shows as Memory.
+    pub memory: u64,
+    pub processes: Vec<ProcUsage>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct ProcUsage {
+    pub pid: u32,
+    pub cpu: f32,
+    pub memory: u64,
+}
+
+/// The panes running one kind of agent, summed.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct AgentUsage {
+    pub kind: String,
+    pub name: String,
+    pub panes: Vec<PaneId>,
+    pub cpu: f32,
+    pub memory: u64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct SystemUsage {
+    /// All cores together: 100 is every core busy.
+    pub cpu: f32,
+    pub cpus: u32,
+    pub memory_total: u64,
+    pub memory_used: u64,
+    pub pressure: MemoryPressure,
+    pub swap_total: u64,
+    pub swap_used: u64,
+    pub disk_total: u64,
+    pub disk_free: u64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum MemoryPressure {
+    #[default]
+    Unknown,
+    Normal,
+    Warning,
+    Critical,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
@@ -1628,6 +1700,46 @@ mod tests {
                 pane: 3,
                 yours: true
             })
+        ));
+    }
+
+    #[test]
+    fn usage_postcard() {
+        let env = Envelope {
+            id: 2,
+            request: Request::Usage { pane: Some(5) },
+        };
+        let bytes = postcard::to_allocvec(&env).expect("encodes");
+        let back: Envelope = postcard::from_bytes(&bytes).expect("decodes");
+        assert!(matches!(back.request, Request::Usage { pane: Some(5) }));
+        let usage = Usage {
+            interval_ms: 500,
+            panes: vec![PaneUsage {
+                pane: 5,
+                agent: Some("claude".into()),
+                cpu: 150.5,
+                memory: 1 << 30,
+                processes: vec![ProcUsage {
+                    pid: 42,
+                    cpu: 150.5,
+                    memory: 1 << 30,
+                }],
+            }],
+            agents: vec![],
+            system: SystemUsage {
+                pressure: MemoryPressure::Warning,
+                ..Default::default()
+            },
+        };
+        let msg = ServerMessage::Response {
+            id: 2,
+            result: Ok(Response::Usage(usage.clone())),
+        };
+        let bytes = postcard::to_allocvec(&msg).expect("encodes");
+        let back: ServerMessage = postcard::from_bytes(&bytes).expect("decodes");
+        assert!(matches!(
+            back,
+            ServerMessage::Response { result: Ok(Response::Usage(u)), .. } if u == usage
         ));
     }
 }
