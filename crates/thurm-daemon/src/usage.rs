@@ -545,6 +545,29 @@ mod tests {
         assert!(os::cpu_ticks().is_some());
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn busy_child_uses_at_most_one_core() {
+        let mut child = std::process::Command::new("/bin/sh")
+            .args(["-c", "while :; do :; done"])
+            .spawn()
+            .expect("spawn busy loop");
+        std::thread::sleep(Duration::from_millis(100));
+        let a = os::proc_sample(child.id()).expect("child rusage");
+        let t = Instant::now();
+        std::thread::sleep(Duration::from_millis(400));
+        let b = os::proc_sample(child.id()).expect("child rusage");
+        let wall_ns = t.elapsed().as_nanos() as u64;
+        let _ = child.kill();
+        let _ = child.wait();
+        let used = b.cpu_ns - a.cpu_ns;
+        assert!(
+            used <= wall_ns + wall_ns / 20,
+            "{used} ns of CPU in {wall_ns} ns"
+        );
+        assert!(used >= wall_ns / 10, "{used} ns of CPU in {wall_ns} ns");
+    }
+
     #[cfg(not(target_os = "macos"))]
     #[test]
     fn refused_off_macos() {
