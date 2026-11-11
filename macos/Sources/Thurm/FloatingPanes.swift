@@ -295,10 +295,18 @@ final class MinimizedCardsBar: NSView {
         didSet { if panes != oldValue { rebuild() } }
     }
     private(set) var chips: [MinimizedCardChip] = []
+    let overflow = NSButton(title: "", target: nil, action: nil)
+    private(set) var overflowPanes: [PaneKey] = []
 
     override init(frame: NSRect) {
         super.init(frame: frame)
         isHidden = true
+        overflow.bezelStyle = .inline
+        overflow.font = .systemFont(ofSize: 11, weight: .medium)
+        overflow.target = self
+        overflow.action = #selector(showOverflow)
+        overflow.isHidden = true
+        addSubview(overflow)
     }
 
     required init?(coder: NSCoder) {
@@ -321,32 +329,73 @@ final class MinimizedCardsBar: NSView {
         chips.forEach { $0.refresh() }
     }
 
-    func fit(maxWidth: CGFloat) -> CGSize {
-        var rows: [[(chip: MinimizedCardChip, width: CGFloat)]] = []
-        var used: CGFloat = 0
-        for chip in chips {
-            let width = min(chip.fittingSize.width, maxWidth)
-            if rows.isEmpty || used + Self.spacing + width > maxWidth {
-                rows.append([])
-                used = width
-            } else {
-                used += Self.spacing + width
-            }
-            rows[rows.count - 1].append((chip, width))
-        }
-        let rowWidths = rows.map { row in row.map(\.width).reduce(0, +) + Self.spacing * CGFloat(row.count - 1) }
-        let width = rowWidths.max() ?? 0
+    func fit(maxWidth: CGFloat, maxHeight: CGFloat) -> CGSize {
         let height = MinimizedCardChip.height
+        let maxRows = max(1, Int((maxHeight + Self.spacing) / (height + Self.spacing)))
+        let widths = chips.map { min($0.fittingSize.width, maxWidth) }
+        var shown = chips.count
+        var rows = Self.rows(widths, maxWidth: maxWidth)
+        while rows.count > maxRows && shown > 0 {
+            shown -= 1
+            overflow.title = "+\(chips.count - shown)"
+            let more = min(overflow.fittingSize.width + 8, maxWidth)
+            rows = Self.rows(Array(widths.prefix(shown)) + [more], maxWidth: maxWidth)
+        }
+        overflowPanes = chips[shown...].map(\.pane)
+        overflow.isHidden = overflowPanes.isEmpty
+        overflow.setAccessibilityLabel("\(overflowPanes.count) more minimized panes")
+        let views: [NSView] = Array(chips.prefix(shown)) + (overflowPanes.isEmpty ? [] : [overflow])
+        for chip in chips[shown...] { chip.isHidden = true }
+        for chip in chips.prefix(shown) { chip.isHidden = false }
+        let rowWidths = rows.map { row in row.reduce(0, +) + Self.spacing * CGFloat(row.count - 1) }
+        let width = rowWidths.max() ?? 0
+        var next = 0
         for (i, row) in rows.enumerated() {
             var x = width - rowWidths[i]
             let y = CGFloat(i) * (height + Self.spacing)
-            for (chip, w) in row {
-                chip.frame = NSRect(x: x, y: y, width: w, height: height)
+            for w in row {
+                views[next].frame = NSRect(x: x, y: y, width: w, height: height)
+                next += 1
                 x += w + Self.spacing
             }
         }
         let count = CGFloat(rows.count)
         return CGSize(width: width, height: count * height + max(0, count - 1) * Self.spacing)
+    }
+
+    private static func rows(_ widths: [CGFloat], maxWidth: CGFloat) -> [[CGFloat]] {
+        var rows: [[CGFloat]] = []
+        var used: CGFloat = 0
+        for width in widths {
+            if rows.isEmpty || used + spacing + width > maxWidth {
+                rows.append([width])
+                used = width
+            } else {
+                rows[rows.count - 1].append(width)
+                used += spacing + width
+            }
+        }
+        return rows
+    }
+
+    func overflowMenu() -> NSMenu {
+        let menu = NSMenu()
+        for pane in overflowPanes {
+            let item = NSMenuItem(title: PaneHeader.title(of: pane, info: SessionManager.shared.panes[pane]),
+                                  action: #selector(restoreFromMenu(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = pane
+            menu.addItem(item)
+        }
+        return menu
+    }
+
+    @objc private func showOverflow() {
+        overflowMenu().popUp(positioning: nil, at: NSPoint(x: overflow.frame.minX, y: overflow.frame.maxY), in: self)
+    }
+
+    @objc func restoreFromMenu(_ sender: NSMenuItem) {
+        if let pane = sender.representedObject as? PaneKey { onRestore?(pane) }
     }
 }
 

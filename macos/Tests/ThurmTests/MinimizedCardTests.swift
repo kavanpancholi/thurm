@@ -140,4 +140,33 @@ final class MinimizedCardTests: XCTestCase {
         XCTAssertFalse(content.isMinimized(key(10)))
         XCTAssertEqual(content.focusedPane, key(10))
     }
+
+    func testChipsThatDoNotFitGoBehindAMenu() throws {
+        try requireMetal()
+        let count = 30
+        for i in 0..<count { setTitle("build \(i)", of: key(UInt64(10 + i))) }
+        defer { for i in 0..<count { SessionManager.shared.panes[key(UInt64(10 + i))] = nil } }
+        let floating = (0..<count).map { i in
+            FloatingPane(pane: key(UInt64(10 + i)), frame: [0.2, 0.2, 0.5, 0.5], minimized: true)
+        }
+        let content = TabContentView(root: .leaf(key(1)), focused: key(1), zoomed: nil, floating: floating)
+        content.frame = CGRect(x: 0, y: 0, width: 300, height: 300)
+        content.layoutPanes()
+        defer { content.detachAll() }
+        let bar = content.minimizedBar
+        XCTAssertGreaterThanOrEqual(bar.frame.minY, content.paneArea.minY, "no row above the tab")
+        XCTAssertLessThanOrEqual(bar.frame.height, 300 / 2)
+        XCTAssertFalse(bar.overflow.isHidden)
+        let shown = bar.chips.filter { !$0.isHidden }
+        XCTAssertEqual(shown.count + bar.overflowPanes.count, count, "every pane has a chip or a menu item")
+        for view in shown as [NSView] + [bar.overflow] {
+            XCTAssertTrue(bar.bounds.contains(view.frame))
+        }
+        let menu = bar.overflowMenu()
+        XCTAssertEqual(menu.items.map(\.title), bar.overflowPanes.map { "build \($0.id - 10)" })
+        let last = try XCTUnwrap(bar.overflowPanes.last)
+        bar.restoreFromMenu(try XCTUnwrap(menu.items.last))
+        XCTAssertFalse(content.isMinimized(last))
+        XCTAssertEqual(content.focusedPane, last)
+    }
 }
