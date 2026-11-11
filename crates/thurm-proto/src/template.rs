@@ -208,6 +208,7 @@ mod tests {
             frame,
             zoomed: false,
             cells: None,
+            snap: None,
         };
         let mut tab = crate::TabLayout {
             title: None,
