@@ -133,19 +133,30 @@ final class SidebarToolbarTests: XCTestCase {
     /// A shown window switches to native tabs and back without AppKit throwing while it lays
     /// out the titlebar's sidebar section.
     func testShownWindowSwitchesToNativeTabs() throws {
+        func toggle(_ split: TabSplitViewController) {
+            split.toggleSidebarAnimated()
+            let settled = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in !split.sidebar.holdReloads },
+                                                    object: nil)
+            wait(for: [settled], timeout: 3)
+        }
         for collapsed in [false, true] {
             let (c, window, split) = try controller()
             let (tab, tabWindow, _) = try controller()
             let (hidden, _, _) = try controller()
+            let initiallyCollapsed = split.sidebarCollapsed
+            // Only the user toggle updates the default new sidebars start from: put it back.
+            defer {
+                manager.config.sidebarTabs = true
+                for c in [c, tab, hidden] { c.applyConfig() }
+                if let split = c.tabSplit, split.sidebarCollapsed != initiallyCollapsed { toggle(split) }
+            }
             manager.attachAsTab(tab, to: c)
             window.makeKeyAndOrderFront(nil)
             hidden.window?.orderFront(nil)
             RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.2))
             hidden.window?.orderOut(nil)
-            if collapsed {
-                split.toggleSidebarAnimated()
-                RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.5))
-            }
+            if split.sidebarCollapsed != collapsed { toggle(split) }
+            XCTAssertEqual(split.sidebarCollapsed, collapsed)
             tabWindow.makeKeyAndOrderFront(nil)
             RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.2))
             for sidebar in [false, true, false] {
@@ -153,12 +164,6 @@ final class SidebarToolbarTests: XCTestCase {
                 for c in [c, tab, hidden] { c.applyConfig() }
                 RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.3))
                 XCTAssertEqual(c.tabSplit != nil, sidebar)
-            }
-            manager.config.sidebarTabs = true
-            for c in [c, tab, hidden] { c.applyConfig() }
-            if collapsed, let split = c.tabSplit, split.sidebarCollapsed {
-                split.toggleSidebarAnimated()
-                RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.5))
             }
         }
     }
