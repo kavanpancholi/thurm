@@ -9,6 +9,11 @@ enum TerminalFileReference: Equatable {
         pattern: #""[^"\r\n]+"|'[^'\r\n]+'|`[^`\r\n]+`|(?:\\[^\r\n]|[^\s<>"'`])+"#)
     private static let locationSuffix = try! NSRegularExpression(pattern: #":\d+(?::\d+)?$"#)
 
+    private static func withoutLocationSuffix(_ path: String) -> String {
+        locationSuffix.stringByReplacingMatches(in: path,
+            range: NSRange(location: 0, length: (path as NSString).length), withTemplate: "")
+    }
+
     /// The column map uses UTF-16 offsets, as does the terminal row text.
     static func at(text: String, columns: [Int], column: Int, link: URL?) -> Self? {
         if let link { return link.isFileURL ? .fileURL(link) : nil }
@@ -76,8 +81,11 @@ enum TerminalFileReference: Equatable {
             path = parts.path
             guard path.hasPrefix("/") else { throw FilePreviewError.invalid }
         case .path(let value):
-            guard !value.contains("://"),
-                  value.range(of: #"^[^/]+:/|^[^/]+@[^/]+:"#, options: .regularExpression) == nil else {
+            guard !value.contains("://") else { throw FilePreviewError.remote }
+            // A colon before the first slash identifies an SCP host, unless it is a
+            // diagnostic suffix. Use ./ or an absolute path for a local colon filename.
+            let base = Self.withoutLocationSuffix(value)
+            if let colon = base.firstIndex(of: ":"), !base[..<colon].contains("/") {
                 throw FilePreviewError.remote
             }
             if value.hasPrefix("~/") {
@@ -101,11 +109,12 @@ enum TerminalFileReference: Equatable {
     func localFile(cwd: String?, isRemote: Bool) throws -> URL {
         var url = try resolve(cwd: cwd, isRemote: isRemote)
         let fm = FileManager.default
-        if case .path(let path) = self, !fm.fileExists(atPath: url.path) {
-            let range = NSRange(location: 0, length: (path as NSString).length)
-            let stripped = Self.locationSuffix.stringByReplacingMatches(in: path, range: range, withTemplate: "")
+        if !fm.fileExists(atPath: url.path) {
+            // Resolve and validate the host before changing the decoded local path.
+            let path = url.path
+            let stripped = Self.withoutLocationSuffix(path)
             if stripped != path {
-                url = try Self.path(stripped).resolve(cwd: cwd, isRemote: isRemote)
+                url = URL(fileURLWithPath: stripped).standardizedFileURL
             }
         }
         guard fm.fileExists(atPath: url.path) else { throw FilePreviewError.missing }

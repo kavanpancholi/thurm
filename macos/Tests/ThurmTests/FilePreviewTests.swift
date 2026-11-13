@@ -94,6 +94,66 @@ final class FilePreviewTests: XCTestCase {
         }
     }
 
+    func testHostRelativeSCPPathsRejectLocalNameCollisions() throws {
+        let fm = FileManager.default
+        let directory = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try fm.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: directory) }
+        for name in ["server:report.pdf", "server:report.pdf:12:3", "server.example:report.pdf"] {
+            let file = directory.appendingPathComponent(name)
+            try Data("local file".utf8).write(to: file)
+            let ref = try XCTUnwrap(reference(name, at: name))
+            XCTAssertThrowsError(try ref.localFile(cwd: directory.path, isRemote: false)) {
+                XCTAssertEqual($0 as? FilePreviewError, .remote)
+            }
+            for explicitPath in ["./" + name, file.path] {
+                XCTAssertEqual(try TerminalFileReference.path(explicitPath)
+                    .localFile(cwd: directory.path, isRemote: false).path, file.path)
+            }
+        }
+        for path in ["server:reports/report.pdf", "server:~/report.pdf", "server:report.pdf:12"] {
+            XCTAssertThrowsError(try TerminalFileReference.path(path).resolve(cwd: nil, isRemote: false)) {
+                XCTAssertEqual($0 as? FilePreviewError, .remote)
+            }
+        }
+    }
+
+    func testFileURLDiagnosticFallbackKeepsLiteralNamesAndValidatesHost() throws {
+        let fm = FileManager.default
+        let directory = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try fm.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("My Report%20.pdf")
+        try Data("base file".utf8).write(to: file)
+        for suffix in [":42", ":42:3"] {
+            let literal = directory.appendingPathComponent(file.lastPathComponent + suffix)
+            for host in ["", "localhost", ProcessInfo.processInfo.hostName] {
+                var parts = try XCTUnwrap(URLComponents(url: literal, resolvingAgainstBaseURL: false))
+                parts.host = host
+                let url = try XCTUnwrap(parts.url)
+                let ref = try XCTUnwrap(reference("report", at: "report", link: url))
+                XCTAssertEqual(try ref.localFile(cwd: nil, isRemote: false).path, file.path)
+                try Data("literal file".utf8).write(to: literal)
+                XCTAssertEqual(try ref.localFile(cwd: nil, isRemote: false).path, literal.path)
+                parts.host = "other-host.invalid"
+                let remote = TerminalFileReference.fileURL(try XCTUnwrap(parts.url))
+                XCTAssertThrowsError(try remote.localFile(cwd: directory.path, isRemote: false)) {
+                    XCTAssertEqual($0 as? FilePreviewError, .remote)
+                }
+                try fm.removeItem(at: literal)
+                XCTAssertThrowsError(try remote.localFile(cwd: directory.path, isRemote: false)) {
+                    XCTAssertEqual($0 as? FilePreviewError, .remote)
+                }
+                parts.host = "localhost"
+                parts.query = "query"
+                XCTAssertThrowsError(try TerminalFileReference.fileURL(XCTUnwrap(parts.url))
+                    .localFile(cwd: nil, isRemote: false)) {
+                    XCTAssertEqual($0 as? FilePreviewError, .invalid)
+                }
+            }
+        }
+    }
+
     func testFileValidationAndLiteralSuffix() throws {
         let fm = FileManager.default
         let directory = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)

@@ -158,7 +158,11 @@ Use an absolute path, a `~/` path, a relative path such as `./report.pdf`, or a
 `file://` link. Filenames with an extension, such as `report.pdf`, also work.
 Put paths with spaces in quotes or use shell escapes. A path must fit on one
 terminal row. OSC 8 file links can span rows. A `:line` or `:line:column` suffix
-is removed only if the full filename does not exist.
+is removed only if the full filename does not exist. This rule also applies to
+validated local file URLs. References such as `server:report.pdf` are remote
+paths, even if a local file has that name. To preview that local file, use
+`./server:report.pdf`, an absolute path, or a local file URL. Numeric suffixes
+such as `report.pdf:42` keep the full filename check.
 
 Relative paths use the clicked pane's current reported directory when the menu
 opens. Old output does not retain its original directory. Use an absolute path
