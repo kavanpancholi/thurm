@@ -371,7 +371,6 @@ impl Config {
             ("window.blur", u64::from(w.blur), 100),
             ("window.columns", u64::from(w.columns), 1000),
             ("window.rows", u64::from(w.rows), 1000),
-            ("window.sidebar_agent_rows", u64::from(w.sidebar_agent_rows), 100),
             ("terminal.scrollback", t.scrollback as u64, 10_000_000),
             (
                 "terminal.image_memory_mib",
@@ -542,11 +541,15 @@ pub struct WindowConfig {
     pub sidebar_group_by_repo: bool,
     /// List every workspace's tabs in the sidebar, under a header each.
     pub sidebar_all_workspaces: bool,
-    /// List only the tabs where something is going on: an agent that isn't idle, or progress.
+    /// List only what is going on, by status: every agent that isn't idle, one row per pane,
+    /// and the tabs with progress.
     pub sidebar_active_only: bool,
-    /// Show the agents panel below the sidebar's tabs.
+    /// Retired: the sidebar's agents panel, replaced by `sidebar_active_only`. Kept so the
+    /// configs that still set it load without a warning.
+    #[serde(skip_serializing)]
     pub sidebar_agents: bool,
-    /// Rows the sidebar's agents panel shows before it scrolls (dragging its header sets it).
+    /// Retired with `sidebar_agents`.
+    #[serde(skip_serializing)]
     pub sidebar_agent_rows: u32,
     /// Show what is left of the Claude Code subscription limits at the bottom of the sidebar.
     pub sidebar_usage_claude: bool,
@@ -2212,6 +2215,17 @@ mod tests {
     }
 
     #[test]
+    fn retired_agents_panel_settings_load_quietly() {
+        let (c, warnings) = Config::parse_with_warnings(
+            "[window]\nsidebar_agents = true\nsidebar_agent_rows = 500\n",
+        )
+        .unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let json = serde_json::to_value(&c.window).unwrap();
+        assert!(json.get("sidebar_agents").is_none() && json.get("sidebar_agent_rows").is_none());
+    }
+
+    #[test]
     fn retired_scrollback_lines_loads_quietly() {
         let (_, warnings) =
             Config::parse_with_warnings("[session]\nscrollback_lines = 4000\n").unwrap();
@@ -2605,9 +2619,6 @@ clipboard_read = "always"
         let window = Config::parse(&out).unwrap().window;
         assert!(!window.sidebar_group_by_repo);
         assert!(window.sidebar_all_workspaces && window.sidebar_active_only);
-        assert!(Config::parse(&out).unwrap().window.sidebar_agents);
-        let out = with_setting(&out, "window.sidebar_agents", "false").unwrap();
-        assert!(!Config::parse(&out).unwrap().window.sidebar_agents);
         let window = Config::parse(&out).unwrap().window;
         assert!(!window.sidebar_usage_claude && !window.sidebar_usage_codex, "opt-in");
         let out = with_setting(&out, "window.sidebar_usage_codex", "true").unwrap();

@@ -64,12 +64,11 @@ animation_speed = "normal"
 # Tab location: "native" or "sidebar".
 tab_style = "sidebar"
 sidebar_width = 240.0
-# Group the sidebar's tabs by repository; or list every workspace's tabs; or only active tabs.
+# Group the sidebar's tabs by repository; or list every workspace's tabs; or only what is
+# going on: every agent that isn't idle, by status, and the tabs with progress.
 sidebar_group_by_repo = true
 sidebar_all_workspaces = false
 sidebar_active_only = false
-# Agents shown in the sidebar before its panel scrolls (drag the "Agents" header to change).
-sidebar_agent_rows = 5
 # What is left of the Claude Code / Codex subscription limits, at the bottom of the sidebar.
 sidebar_usage_claude = false
 sidebar_usage_codex = false

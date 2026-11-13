@@ -235,14 +235,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         SessionManager.shared.toggleSidebarTabs()
     }
 
-    @objc func toggleSidebarAgents(_ sender: Any?) {
-        SessionManager.shared.toggleSidebarAgents()
-    }
-
-    @objc func toggleSidebarAgentsCollapsed(_ sender: Any?) {
-        AgentsPanel.collapsed.toggle()
-    }
-
     @objc func toggleSidebarGroupByRepo(_ sender: Any?) {
         SessionManager.shared.toggleSidebarListing("window.sidebar_group_by_repo", \.sidebarGroupByRepo)
     }
@@ -355,14 +347,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         }
         if menuItem.action == #selector(toggleActivePaneBorder(_:)) {
             menuItem.state = SessionManager.shared.config.activePaneBorder ? .on : .off
-        }
-        if menuItem.action == #selector(toggleSidebarAgents(_:)) {
-            menuItem.state = SessionManager.shared.config.sidebarAgents ? .on : .off
-            return SessionManager.shared.config.sidebarTabs
-        }
-        if menuItem.action == #selector(toggleSidebarAgentsCollapsed(_:)) {
-            menuItem.title = AgentsPanel.collapsed ? "Expand Agents" : "Collapse Agents"
-            return SessionManager.shared.config.sidebarTabs && SessionManager.shared.config.sidebarAgents
         }
         let listing: [Selector: KeyPath<AppConfig, Bool>] = [
             #selector(toggleSidebarGroupByRepo(_:)): \.sidebarGroupByRepo,

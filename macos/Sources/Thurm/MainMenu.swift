@@ -374,10 +374,13 @@ enum MainMenu {
                           name: "toggle_sidebar_all_workspaces"))
         menu.addItem(item("Only Active Tabs", #selector(AppDelegate.toggleSidebarActiveOnly(_:)),
                           name: "toggle_sidebar_active_only"))
-        menu.addItem(item("Agents in Sidebar", #selector(AppDelegate.toggleSidebarAgents(_:)),
-                          name: "toggle_sidebar_agents"))
-        menu.addItem(item("Collapse Agents", #selector(AppDelegate.toggleSidebarAgentsCollapsed(_:)),
-                          name: "toggle_sidebar_agents_collapsed"))
+        // The actions of the agents panel the active tabs replaced, so their bindings still work.
+        for name in ["toggle_sidebar_agents", "toggle_sidebar_agents_collapsed"] {
+            let alias = item("Only Active Tabs", #selector(AppDelegate.toggleSidebarActiveOnly(_:)), name: name)
+            alias.isHidden = true
+            alias.allowsKeyEquivalentWhenHidden = true
+            menu.addItem(alias)
+        }
         let usage = NSMenu(title: "Usage Limits in Sidebar")
         usage.addItem(item("Claude Code", #selector(AppDelegate.toggleSidebarUsageClaude(_:)),
                            name: "toggle_sidebar_usage_claude"))
