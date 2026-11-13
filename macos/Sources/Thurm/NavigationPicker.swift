@@ -11,15 +11,17 @@ struct NavigationTarget {
     let detail: String
     let searchText: String
     let destination: Destination
+    let tabWorkspaceID: UInt64?
     weak var tabController: TerminalWindowController?
 
     init(title: String, detail: String, searchText: String = "", destination: Destination,
-         tabController: TerminalWindowController? = nil) {
+         tabController: TerminalWindowController? = nil, tabWorkspaceID: UInt64? = nil) {
         self.title = title
         self.detail = detail
         self.searchText = [title, detail, searchText].joined(separator: " ")
         self.destination = destination
         self.tabController = tabController
+        self.tabWorkspaceID = tabWorkspaceID
     }
 }
 
@@ -52,7 +54,8 @@ extension SessionManager {
                 .map { ($0 as NSString).lastPathComponent })).sorted().joined(separator: ", ")
             targets.append(NavigationTarget(title: tabTitle, detail: joined(["Tab", location, repositories]),
                                             searchText: ids.map(metadata).joined(separator: " "),
-                                            destination: .tab(ids), tabController: controller))
+                                            destination: .tab(ids), tabController: controller,
+                                            tabWorkspaceID: workspace?.id))
             for id in ids {
                 guard let info = panes[id] else { continue }
                 let agent = info.agent.map { AgentPane(pane: id, info: info, agent: $0, controller: nil, hidden: nil) }
@@ -110,16 +113,30 @@ extension SessionManager {
             if let ws = workspace(containing: pane) { show(ws) }
             focusPane(pane, activate: true)
         case .tab(let ids):
-            let original = target.tabController.flatMap { $0.isClosed ? nil : $0 }
-            if let c = original ?? ids.lazy.compactMap({ self.controller(for: $0) }).first {
-                focusPane(c.focusedPane, activate: true)
-            } else if let ws = workspaces.first(where: { ws in
-                !isShown(ws) && ws.hiddenTabs.contains { tab in tab.panes.contains { ids.contains($0) } }
-            }), let tab = ws.hiddenTabs.first(where: { tab in tab.panes.contains { ids.contains($0) } }) {
+            func showHiddenTab(in candidates: [Workspace]) -> Bool {
+                guard let ws = candidates.first(where: { ws in
+                    !isShown(ws) && ws.hiddenTabs.contains { tab in tab.panes.contains { ids.contains($0) } }
+                }), let tab = ws.hiddenTabs.first(where: { tab in tab.panes.contains { ids.contains($0) } })
+                else { return false }
                 let focused = tab.focusedKey
                 show(ws)
                 focusPane(focused, activate: true)
+                return true
             }
+            if let c = target.tabController, !c.isClosed, ids.contains(where: { c.content.contains($0) }) {
+                focusPane(c.focusedPane, activate: true)
+                return
+            }
+            // Match surviving panes in the source workspace before a pane moved elsewhere.
+            // The hidden tab's index can change when other tabs move or close.
+            if let ws = target.tabWorkspaceID.flatMap({ workspace($0) }), showHiddenTab(in: [ws]) {
+                return
+            }
+            if let c = ids.lazy.compactMap({ self.controller(for: $0) }).first {
+                focusPane(c.focusedPane, activate: true)
+                return
+            }
+            _ = showHiddenTab(in: workspaces)
         }
     }
 

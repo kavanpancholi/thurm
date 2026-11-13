@@ -142,6 +142,69 @@ final class NavigationPickerTests: XCTestCase {
         XCTAssertTrue(c.window?.firstResponder === c.content.focusedView)
     }
 
+    func testTabSelectionRejectsOriginalControllerAfterAllPickedPanesMove() throws {
+        let first = PaneKey.local(25), second = PaneKey.local(26), replacement = PaneKey.local(27)
+        for pane in [first, second, replacement] { addPane(pane) }
+        let ws = manager.makeWorkspace(name: "Work")
+        let original = tab([first, second], in: ws)
+        let picked = try target(.tab([first, second]))
+        original.content.setRoot(.leaf(replacement))
+        let moved = tab([first, second], in: ws)
+        moved.content.focus(second)
+        original.window?.makeFirstResponder(nil)
+        moved.window?.makeFirstResponder(nil)
+
+        manager.activateNavigationTarget(picked, from: original)
+
+        XCTAssertFalse(original.isClosed)
+        XCTAssertEqual(original.content.paneIds, [replacement])
+        XCTAssertTrue(moved.window?.firstResponder === moved.content.focusedView)
+        XCTAssertEqual(moved.focusedPane, second)
+        XCTAssertFalse(original.window?.firstResponder === original.content.focusedView)
+    }
+
+    func testHiddenTabSelectionPrefersSurvivingTabOverMovedShownPane() throws {
+        let first = PaneKey.local(28), second = PaneKey.local(29), unrelated = PaneKey.local(30)
+        for pane in [first, second, unrelated] { addPane(pane) }
+        let hidden = manager.makeWorkspace(name: "Hidden")
+        let shown = manager.makeWorkspace(name: "Shown")
+        hidden.hiddenTabs = [TabLayout(title: "Task", root: .split(dir: .right, ratio: 0.5,
+            first: .pane(first), second: .pane(second)), focused: first.id, zoomed: nil)]
+        let picked = try target(.tab([first, second]))
+        // Another tab now occupies the old index. Match surviving panes in the source workspace.
+        hidden.hiddenTabs = [TabLayout(title: "Other", root: .pane(unrelated), focused: unrelated.id, zoomed: nil),
+                             TabLayout(title: "Task", root: .pane(second), focused: second.id, zoomed: nil)]
+        let moved = tab([first], in: shown)
+
+        manager.activateNavigationTarget(picked, from: moved)
+
+        let restored = try XCTUnwrap(manager.controller(for: second))
+        XCTAssertEqual(restored.workspaceID, hidden.id)
+        XCTAssertEqual(restored.focusedPane, second)
+        XCTAssertTrue(restored.window?.firstResponder === restored.content.focusedView)
+        XCTAssertFalse(manager.isShown(shown))
+        XCTAssertEqual(shown.hiddenTabs.first?.panes, [first])
+    }
+
+    func testHiddenTabSelectionFollowsShownPaneWhenOriginalTabDisappears() throws {
+        let pane = PaneKey.local(32), unrelated = PaneKey.local(33)
+        addPane(pane)
+        addPane(unrelated)
+        let hidden = manager.makeWorkspace(name: "Hidden")
+        let shown = manager.makeWorkspace(name: "Shown")
+        hidden.hiddenTabs = [TabLayout(title: "Task", root: .pane(pane), focused: pane.id, zoomed: nil)]
+        let picked = try target(.tab([pane]))
+        hidden.hiddenTabs = [TabLayout(title: "Other", root: .pane(unrelated), focused: unrelated.id, zoomed: nil)]
+        let moved = tab([pane], in: shown)
+        moved.window?.makeFirstResponder(nil)
+
+        manager.activateNavigationTarget(picked, from: moved)
+
+        XCTAssertTrue(moved.window?.firstResponder === moved.content.focusedView)
+        XCTAssertFalse(manager.isShown(hidden))
+        XCTAssertTrue(manager.isShown(shown))
+    }
+
     func testHiddenTabOpensWithoutAHostWindow() throws {
         let pane = PaneKey("devbox", 31)
         addPane(pane)
