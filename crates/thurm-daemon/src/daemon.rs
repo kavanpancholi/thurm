@@ -3817,7 +3817,7 @@ fn ensure_hooks(command: Option<&[String]>) {
     let Some(agent) = command.and_then(thurm_config::hooks::agent_for_command) else {
         return;
     };
-    let path = thurm_config::hooks::settings_path(agent);
+    let path = agent.settings_path();
     match thurm_config::hooks::ensure_at(agent, &path) {
         Ok(true) => log::info!("installed {} hooks in {}", agent.name, path.display()),
         Ok(false) => {}
