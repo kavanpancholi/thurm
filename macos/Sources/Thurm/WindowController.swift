@@ -180,6 +180,9 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         } else {
             let hadSplit = tabSplit != nil
             let frame = window.frame
+            // Drop the sidebar's toolbar section while its split view still backs it: the
+            // titlebar must never have more sections than the window.
+            window.suppressTabBar = false
             if hadSplit {
                 window.contentViewController = nil
                 content.removeFromSuperview()
@@ -192,7 +195,6 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
                 window.contentView = content
             }
             if hadSplit { window.setFrame(frame, display: true) }
-            window.suppressTabBar = false
             if !isQuick, window.tabStrip == nil {
                 let strip = TabStrip()
                 strip.controller = self

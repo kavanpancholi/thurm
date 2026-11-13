@@ -107,10 +107,13 @@ final class TerminalWindow: NSWindow, NSToolbarDelegate {
         let leading = [Self.sidebarItem, Self.activeOnlyItem]
         let expanded: [NSToolbarItem.Identifier] = [.flexibleSpace, Self.newTabItem]
         if !suppressTabBar {
-            // Switching to native tabs removes the entire sidebar section.
+            // Switching to native tabs removes the entire sidebar section. No forced layout:
+            // AppKit updates the titlebar's section backgrounds lazily, and laying them out now
+            // can index a window section that is already gone (NSRangeException).
             if let separator {
                 for i in (0...separator).reversed() { toolbar.removeItem(at: i) }
             }
+            return
         } else if let separator {
             // The separator anchors this section throughout a toggle. Change only the
             // flexible space and far-edge New Tab between the leading pair and that anchor.
