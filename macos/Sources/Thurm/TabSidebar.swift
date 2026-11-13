@@ -76,13 +76,15 @@ final class TabBox {
     init(_ tab: SidebarTab) { self.tab = tab }
 }
 
-/// A pane running an agent, as the agents panel shows it.
+/// An agent pane or a group heading in the agents panel.
 final class AgentBox {
-    let pane: PaneKey
+    let pane: PaneKey?
+    let heading: String?
     /// The pane's workspace when no window shows it.
     let hiddenWorkspace: UInt64?
     let row: SidebarTab
-    init(pane: PaneKey, hiddenWorkspace: UInt64?, row: SidebarTab) {
+    init(pane: PaneKey?, hiddenWorkspace: UInt64?, row: SidebarTab, heading: String? = nil) {
+        self.heading = heading
         self.pane = pane
         self.hiddenWorkspace = hiddenWorkspace
         self.row = row
@@ -1038,6 +1040,7 @@ final class AgentsPanel: NSView, NSTableViewDataSource, NSTableViewDelegate {
     private var height: NSLayoutConstraint!
     private var listHeight: NSLayoutConstraint!
     private static let rowHeight: CGFloat = 40
+    private static let groupHeight: CGFloat = 24
     static let headerHeight: CGFloat = 30
     static let collapsedChanged = Notification.Name("ThurmAgentsPanelCollapsedChanged")
     static var defaults = UserDefaults.standard
@@ -1074,6 +1077,7 @@ final class AgentsPanel: NSView, NSTableViewDataSource, NSTableViewDelegate {
         table.selectionHighlightStyle = .none
         table.rowSizeStyle = .custom
         table.rowHeight = Self.rowHeight
+        table.floatsGroupRows = false
         table.intercellSpacing = NSSize(width: 0, height: 0)
         table.backgroundColor = .clear
         table.dataSource = self
@@ -1090,7 +1094,7 @@ final class AgentsPanel: NSView, NSTableViewDataSource, NSTableViewDelegate {
         handle.dragged = { [weak self] dy in
             guard let self else { return }
             let available = (self.superview?.bounds.height ?? 0) - Self.headerHeight - Self.minTabsHeight
-            let fit = max(1, Int(available / Self.rowHeight), start)
+            let fit = max(1, Self.agentLimit(self.rows, available: available), start)
             self.draggedRows = min(fit, max(1, start + Int((dy / Self.rowHeight).rounded())))
             self.updateHeight()
         }
@@ -1173,7 +1177,7 @@ final class AgentsPanel: NSView, NSTableViewDataSource, NSTableViewDelegate {
         }
         let next = agentRows()
         if !repaint, next.count == rows.count, shownLimit == visibleRows,
-           zip(next, rows).allSatisfy({ $0.pane == $1.pane && $0.hiddenWorkspace == $1.hiddenWorkspace }) {
+           zip(next, rows).allSatisfy({ $0.pane == $1.pane && $0.hiddenWorkspace == $1.hiddenWorkspace && $0.heading == $1.heading }) {
             // The same agents in the same places: reconfigure the rows that changed instead of
             // rebuilding them all for every status or title change.
             for (i, box) in next.enumerated() where box.row != rows[i].row {
@@ -1186,11 +1190,11 @@ final class AgentsPanel: NSView, NSTableViewDataSource, NSTableViewDelegate {
             let current = rows.firstIndex { $0.row.selected }
             if table.selectedRow != (current ?? -1) {
                 if let i = current {
-                table.selectRowIndexes([i], byExtendingSelection: false)
-                table.scrollRowToVisible(i)
-            } else {
-                table.deselectAll(nil)
-            }
+                    table.selectRowIndexes([i], byExtendingSelection: false)
+                    table.scrollRowToVisible(i)
+                } else {
+                    table.deselectAll(nil)
+                }
             }
             return
         }
@@ -1234,7 +1238,7 @@ final class AgentsPanel: NSView, NSTableViewDataSource, NSTableViewDelegate {
         // rows don't fit and scrolling to the selected one cuts off the first. Its intrinsic
         // height, not its frame: the frame stretches to fill the scroll view, so after the panel
         // had more agents it would count the empty space as padding and never shrink.
-        let visible = min(rows.count, shownLimit)
+        let visible = Self.visibleRowCount(rows, limit: shownLimit)
         let padding = rows.isEmpty ? 0 : max(0, table.intrinsicContentSize.height - table.rect(ofRow: rows.count - 1).maxY)
         let content = visible == 0 ? 0 : table.rect(ofRow: visible - 1).maxY + padding
         listHeight.constant = content
@@ -1277,8 +1281,8 @@ final class AgentsPanel: NSView, NSTableViewDataSource, NSTableViewDelegate {
                 .sorted { (rank($0.element), $0.offset) < (rank($1.element), $1.offset) }
                 .map(\.element)
         }
-        return agents.map { a in
-            // Show the current activity before the location, so it stays visible in a narrow sidebar.
+        return Self.grouped(agents.map { a in
+            // Show the current activity before the location.
             let row = SidebarTab(controller: a.controller,
                                  title: a.title,
                                  subtitle: [a.statusDetail, a.hostLabel, a.place, a.hidden?.name].compactMap { $0 }
@@ -1289,7 +1293,38 @@ final class AgentsPanel: NSView, NSTableViewDataSource, NSTableViewDelegate {
                                      && a.controller?.focusedPane == a.pane,
                                  icon: PaneIcon(SessionManager.shared.panes[a.pane]))
             return AgentBox(pane: a.pane, hiddenWorkspace: a.hidden?.id, row: row)
+        })
+    }
+
+    /// Group only the activity rows. Keep the input order within each group.
+    static func grouped(_ agents: [AgentBox]) -> [AgentBox] {
+        let groups: [(AgentStatus, String)] = [(.needsInput, "Needs input"), (.error, "Failed"),
+                                             (.done, "Done"), (.working, "Working"), (.idle, "Idle")]
+        return groups.flatMap { status, title -> [AgentBox] in
+            let members = agents.filter { $0.row.status == status }
+            guard !members.isEmpty else { return [] }
+            let heading = AgentBox(pane: nil, hiddenWorkspace: nil,
+                                   row: SidebarTab(controller: nil, title: title, selected: false), heading: title)
+            return [heading] + members
         }
+    }
+
+    /// Include headings without counting them as agents.
+    static func visibleRowCount(_ rows: [AgentBox], limit: Int) -> Int {
+        guard limit > 0 else { return 0 }
+        return rows.indices.filter { rows[$0].heading == nil }.prefix(limit).last.map { $0 + 1 } ?? 0
+    }
+
+    /// Count the agents that fit, including the space for their headings.
+    static func agentLimit(_ rows: [AgentBox], available: CGFloat) -> Int {
+        var height: CGFloat = 0
+        var agents = 0
+        for row in rows {
+            height += row.heading == nil ? rowHeight : groupHeight
+            guard height <= available else { break }
+            if row.heading == nil { agents += 1 }
+        }
+        return agents
     }
 
     // MARK: NSTableViewDataSource / Delegate
@@ -1297,10 +1332,25 @@ final class AgentsPanel: NSView, NSTableViewDataSource, NSTableViewDelegate {
     func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
 
     func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
-        SidebarRowView()
+        rows[row].heading == nil ? SidebarRowView() : nil
+    }
+
+    func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool { rows[row].heading == nil }
+
+    func tableView(_ tableView: NSTableView, isGroupRow row: Int) -> Bool { rows[row].heading != nil }
+
+    func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
+        rows[row].heading == nil ? Self.rowHeight : Self.groupHeight
     }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        if let title = rows[row].heading {
+            let label = NSTextField(labelWithString: title)
+            label.font = .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold)
+            label.textColor = SessionManager.shared.config.chrome.contentSecondary
+            label.lineBreakMode = .byTruncatingTail
+            return label
+        }
         let cell = tableView.makeView(withIdentifier: TabRowView.identifier, owner: nil) as? TabRowView
             ?? TabRowView()
         cell.configure(rows[row].row, truncateTail: true)
@@ -1309,14 +1359,15 @@ final class AgentsPanel: NSView, NSTableViewDataSource, NSTableViewDelegate {
 
     @objc private func rowClicked(_ sender: Any?) {
         let row = table.clickedRow
-        guard row >= 0, row < rows.count else { return }
+        guard row >= 0, row < rows.count, rows[row].heading == nil else { return }
         focus(rows[row])
     }
 
     /// Brings the agent's pane forward: its window and tab, its split, its workspace.
     private func focus(_ agent: AgentBox) {
+        guard let pane = agent.pane else { return }
         let sm = SessionManager.shared
-        guard let a = sm.agentPanes(first: controller).first(where: { $0.pane == agent.pane }) else { return }
+        guard let a = sm.agentPanes(first: controller).first(where: { $0.pane == pane }) else { return }
         sm.focusAgent(a, from: controller)
         // Its tab came forward with another split focused: the panel there selects this agent
         // before it is drawn, not a refresh later.
