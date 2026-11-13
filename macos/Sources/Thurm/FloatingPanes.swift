@@ -329,17 +329,19 @@ final class MinimizedCardsBar: NSView {
         chips.forEach { $0.refresh() }
     }
 
-    func fit(maxWidth: CGFloat, maxHeight: CGFloat) -> CGSize {
+    func fit(maxWidth: CGFloat) -> CGSize {
         let height = MinimizedCardChip.height
-        let maxRows = max(1, Int((maxHeight + Self.spacing) / (height + Self.spacing)))
         let widths = chips.map { min($0.fittingSize.width, maxWidth) }
+        func rowWidth(_ widths: [CGFloat]) -> CGFloat {
+            widths.reduce(0, +) + Self.spacing * CGFloat(max(0, widths.count - 1))
+        }
         var shown = chips.count
-        var rows = Self.rows(widths, maxWidth: maxWidth)
-        while rows.count > maxRows && shown > 0 {
+        var visibleWidths = widths
+        while rowWidth(visibleWidths) > maxWidth && shown > 0 {
             shown -= 1
             overflow.title = "+\(chips.count - shown)"
             let more = min(overflow.fittingSize.width + 8, maxWidth)
-            rows = Self.rows(Array(widths.prefix(shown)) + [more], maxWidth: maxWidth)
+            visibleWidths = Array(widths.prefix(shown)) + [more]
         }
         overflowPanes = chips[shown...].map(\.pane)
         overflow.isHidden = overflowPanes.isEmpty
@@ -347,35 +349,12 @@ final class MinimizedCardsBar: NSView {
         let views: [NSView] = Array(chips.prefix(shown)) + (overflowPanes.isEmpty ? [] : [overflow])
         for chip in chips[shown...] { chip.isHidden = true }
         for chip in chips.prefix(shown) { chip.isHidden = false }
-        let rowWidths = rows.map { row in row.reduce(0, +) + Self.spacing * CGFloat(row.count - 1) }
-        let width = rowWidths.max() ?? 0
-        var next = 0
-        for (i, row) in rows.enumerated() {
-            var x = width - rowWidths[i]
-            let y = CGFloat(i) * (height + Self.spacing)
-            for w in row {
-                views[next].frame = NSRect(x: x, y: y, width: w, height: height)
-                next += 1
-                x += w + Self.spacing
-            }
+        var x: CGFloat = 0
+        for (view, width) in zip(views, visibleWidths) {
+            view.frame = NSRect(x: x, y: 0, width: width, height: height)
+            x += width + Self.spacing
         }
-        let count = CGFloat(rows.count)
-        return CGSize(width: width, height: count * height + max(0, count - 1) * Self.spacing)
-    }
-
-    private static func rows(_ widths: [CGFloat], maxWidth: CGFloat) -> [[CGFloat]] {
-        var rows: [[CGFloat]] = []
-        var used: CGFloat = 0
-        for width in widths {
-            if rows.isEmpty || used + spacing + width > maxWidth {
-                rows.append([width])
-                used = width
-            } else {
-                rows[rows.count - 1].append(width)
-                used += spacing + width
-            }
-        }
-        return rows
+        return CGSize(width: rowWidth(visibleWidths), height: views.isEmpty ? 0 : height)
     }
 
     func overflowMenu() -> NSMenu {

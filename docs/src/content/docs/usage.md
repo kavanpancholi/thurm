@@ -39,7 +39,8 @@ and drop it on the side where it should go (Esc cancels the drag).
 
 The minimize button in a card's header (or **View › Minimize Floating Pane**) puts
 the card away as a chip in the bottom right of the tab; its program keeps running,
-and the chip shows its agent's status. Click the chip to bring the card back where
+and the chip shows its agent's status. Chips stay in one row; use the **+N** menu
+to restore cards whose chips do not fit. Click a chip to bring the card back where
 it was. Focusing the pane another way (the agent wall, a notification, `thurm
 focus`) brings it back too.
 

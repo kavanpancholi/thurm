@@ -91,7 +91,7 @@ final class MinimizedCardTests: XCTestCase {
         SessionManager.shared.panes[pane] = PaneInfo(json: ["id": NSNumber(value: pane.id), "title": title, "alive": true])
     }
 
-    func testChipsWrapToStayInsideANarrowTab() throws {
+    func testChipsStayInOneRowAndReturnFromOverflowWhenWidened() throws {
         try requireMetal()
         for i in 0..<6 { setTitle("a long running build \(i)", of: key(UInt64(10 + i))) }
         defer { for i in 0..<6 { SessionManager.shared.panes[key(UInt64(10 + i))] = nil } }
@@ -101,15 +101,26 @@ final class MinimizedCardTests: XCTestCase {
         XCTAssertEqual(bar.chips.count, 6)
         XCTAssertGreaterThanOrEqual(bar.frame.minX, 0)
         XCTAssertLessThanOrEqual(bar.frame.maxX, 360)
-        XCTAssertGreaterThan(bar.frame.height, MinimizedCardChip.height, "the chips wrap into rows")
-        for chip in bar.chips {
-            XCTAssertTrue(bar.bounds.contains(chip.frame), "every chip stays on screen")
-            XCTAssertGreaterThan(chip.frame.width, 0)
+        XCTAssertEqual(bar.frame.height, MinimizedCardChip.height)
+        XCTAssertFalse(bar.overflow.isHidden)
+        let shown = bar.chips.filter { !$0.isHidden }
+        XCTAssertEqual(shown.count + bar.overflowPanes.count, 6)
+        let visible = shown as [NSView] + [bar.overflow]
+        for view in visible {
+            XCTAssertTrue(bar.bounds.contains(view.frame), "every visible control stays on screen")
+            XCTAssertEqual(view.frame.minY, 0)
+            XCTAssertGreaterThan(view.frame.width, 0)
         }
-        let frames = bar.chips.map(\.frame)
+        let frames = visible.map(\.frame)
         for (i, a) in frames.enumerated() {
             for b in frames[(i + 1)...] { XCTAssertFalse(a.intersects(b)) }
         }
+        content.frame.size.width = 2000
+        content.layoutPanes()
+        XCTAssertEqual(bar.frame.height, MinimizedCardChip.height)
+        XCTAssertTrue(bar.overflow.isHidden)
+        XCTAssertTrue(bar.overflowPanes.isEmpty)
+        XCTAssertTrue(bar.chips.allSatisfy { !$0.isHidden && bar.bounds.contains($0.frame) })
     }
 
     func testTheChipBarGrowsWithAMinimizedPanesTitle() throws {
@@ -155,7 +166,7 @@ final class MinimizedCardTests: XCTestCase {
         defer { content.detachAll() }
         let bar = content.minimizedBar
         XCTAssertGreaterThanOrEqual(bar.frame.minY, content.paneArea.minY, "no row above the tab")
-        XCTAssertLessThanOrEqual(bar.frame.height, 300 / 2)
+        XCTAssertEqual(bar.frame.height, MinimizedCardChip.height)
         XCTAssertFalse(bar.overflow.isHidden)
         let shown = bar.chips.filter { !$0.isHidden }
         XCTAssertEqual(shown.count + bar.overflowPanes.count, count, "every pane has a chip or a menu item")

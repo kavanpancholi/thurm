@@ -669,7 +669,7 @@ final class TabContentView: NSView {
         minimizedBar.panes = chips
         minimizedBar.isHidden = chips.isEmpty
         if !chips.isEmpty {
-            let size = minimizedBar.fit(maxWidth: max(0, full.width - 24), maxHeight: max(0, full.height / 2 - 10))
+            let size = minimizedBar.fit(maxWidth: max(0, full.width - 24))
             minimizedBar.frame = NSRect(x: full.maxX - size.width - 12, y: bottom - size.height,
                                         width: size.width, height: size.height)
             bottom -= size.height + 6
