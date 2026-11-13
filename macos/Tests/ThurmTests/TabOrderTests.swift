@@ -8,6 +8,7 @@ final class TabOrderTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
+        _ = NSApplication.shared
         savedWorkspaces = manager.workspaces
         manager.workspaces = []
     }
@@ -108,6 +109,45 @@ final class TabOrderTests: XCTestCase {
         XCTAssertEqual(selected.workspaceID, hidden.id)
         XCTAssertEqual(order(selected), [1, 2])
         XCTAssertTrue(selected.window?.tabGroup?.selectedWindow === selected.window)
+    }
+
+    private func hiddenWorkspaces() -> (source: Workspace, recent: Workspace) {
+        let source = manager.makeWorkspace()
+        source.hiddenTabs = [TabLayout(title: nil, root: .pane(pane(1)), focused: 1, zoomed: nil)]
+        source.lastActive = Date(timeIntervalSince1970: 1)
+        let recent = manager.makeWorkspace()
+        recent.hiddenTabs = [TabLayout(title: nil, root: .pane(pane(9)), focused: 9, zoomed: nil)]
+        recent.lastActive = Date(timeIntervalSince1970: 2)
+        XCTAssertNil(manager.currentRegularController)
+        return (source, recent)
+    }
+
+    func testForegroundCommandOpensItsHiddenSourceWithNoWindow() throws {
+        let (source, recent) = hiddenWorkspaces()
+
+        manager.newCommandTab(pane(2), target: pane(1), background: false)
+
+        let selected = try XCTUnwrap(manager.controller(for: pane(2)))
+        XCTAssertEqual(selected.workspaceID, source.id)
+        XCTAssertEqual(order(selected), [1, 2])
+        XCTAssertTrue(selected.window?.tabGroup?.selectedWindow === selected.window)
+        XCTAssertTrue(source.hiddenTabs.isEmpty)
+        XCTAssertFalse(manager.isShown(recent))
+        XCTAssertEqual(recent.hiddenTabs.flatMap(\.panes), [pane(9)])
+        XCTAssertEqual(manager.workspaces.count, 2)
+    }
+
+    func testBackgroundCommandKeepsItsHiddenSourceWithNoWindow() {
+        let (source, recent) = hiddenWorkspaces()
+
+        manager.newCommandTab(pane(2), target: pane(1), background: true)
+        manager.newCommandTab(pane(3), target: pane(1), background: true)
+
+        XCTAssertNil(manager.currentRegularController)
+        XCTAssertEqual(source.hiddenTabs.flatMap(\.panes), [pane(1), pane(2), pane(3)])
+        XCTAssertEqual(source.hiddenSelectedTab, 0)
+        XCTAssertEqual(recent.hiddenTabs.flatMap(\.panes), [pane(9)])
+        XCTAssertEqual(manager.workspaces.count, 2)
     }
 
     func testManualTabsStillOpenNextToTheirSource() {

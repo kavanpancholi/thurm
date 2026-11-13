@@ -751,9 +751,8 @@ final class SessionManager: NSObject, CoreDelegate {
 
     /// CLI tabs follow the source pane's workspace and keep creation order.
     func newCommandTab(_ pane: PaneKey, target: PaneKey?, background: Bool) {
-        if let target, let ws = workspace(containing: target), !isShown(ws),
-           let shown = currentRegularController {
-            addHiddenTab(pane, handoff: nil, to: ws, in: shown, reveal: !background)
+        if let target, let ws = workspace(containing: target), !isShown(ws) {
+            addHiddenTab(pane, handoff: nil, to: ws, in: currentRegularController, reveal: !background)
             return
         }
         newTab(from: target.flatMap { controller(for: $0) } ?? currentController,
