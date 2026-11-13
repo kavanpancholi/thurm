@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.20.1 - 2026-11-13
+
+This release fixes a macOS crash. The app now stays open when you switch from the sidebar to native tabs.
+
+### Fixes
+
+- The app no longer crashes when you use View > Tabs in Sidebar (⌃⌘S) to switch to native tabs. The titlebar now updates in the correct order.
+
 ## v0.20.0 - 2026-11-13
 
 This release gives you new ways to move, minimize and find panes. It also groups agents by status in the sidebar.
