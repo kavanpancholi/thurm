@@ -1573,14 +1573,12 @@ final class TabContentView: NSView {
         SessionManager.shared.scheduleLayoutSave()
     }
 
-    /// Whether dragging `pane`'s header can move it: a pane of the splits that keep another.
-    func canMoveByHeader(_ pane: PaneKey) -> Bool { root.contains(pane) && root.panes.count > 1 }
+    /// A split pane can move if another pane remains in the split tree.
+    func canMoveSplit(_ pane: PaneKey) -> Bool { root.contains(pane) && root.panes.count > 1 }
 
-    /// Drags pane `pane` of the splits by its header: dropped at an edge of the tab it takes that
-    /// half of the tab, dropped on another pane it splits that pane on the side under the pointer.
-    /// Esc cancels.
+    /// Moves a split pane to an edge of the tab or to one side of another pane. Esc cancels.
     func trackPaneDrag(_ pane: PaneKey, from event: NSEvent) {
-        guard let window, canMoveByHeader(pane) else { return }
+        guard let window, canMoveSplit(pane) else { return }
         let origin = convert(event.locationInWindow, from: nil)
         var moved = false
         var cancelled = false
@@ -1682,10 +1680,9 @@ final class TabContentView: NSView {
         return (id, side, FloatingGeometry.dockRect(rect, side: side, gap: splitGap))
     }
 
-    /// Moves a card by its header, from a mouse down until the button comes up. Dropped with ⌘
-    /// held over a pane of the splits, it docks there (where the indicator shows); Esc puts it
-    /// back where it was.
-    func trackCardDrag(_ pane: PaneKey, from event: NSEvent) {
+    /// Moves a card until the mouse button is released. Command docks it beside a split pane.
+    /// A drag from the terminal body gives tab edges priority. Esc restores the card's position.
+    func trackCardDrag(_ pane: PaneKey, from event: NSEvent, preferEdges: Bool = false) {
         guard let window, let start = floating.first(where: { $0.pane == pane }), !start.zoomed,
               let startRect = cardFrames.first(where: { $0.0 == pane })?.1 else { return }
         let origin = convert(event.locationInWindow, from: nil)
@@ -1723,10 +1720,11 @@ final class TabContentView: NSView {
                 let drop = sidebar?.cardDrop(at: windowPoint, for: pane)
                 tabGap = drop?.gap
                 sidebar?.showCardDrop(drop?.line)
-                target = tabGap == nil && e.modifierFlags.contains(.command)
-                    ? self.dockTarget(at: p, excluding: pane) : nil
                 let tiled = self.showsHeaders ? self.splitArea : self.paneArea
-                edge = tabGap == nil && target == nil ? FloatingGeometry.edge(at: p, in: tiled) : nil
+                edge = tabGap == nil ? FloatingGeometry.edge(at: p, in: tiled) : nil
+                target = tabGap == nil && e.modifierFlags.contains(.command) && !(preferEdges && edge != nil)
+                    ? self.dockTarget(at: p, excluding: pane) : nil
+                if target != nil { edge = nil }
                 self.dockIndicator.show(target?.rect ?? edge.map { FloatingGeometry.edgeRect($0, in: tiled) })
                 self.needsLayout = true
             }

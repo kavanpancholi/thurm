@@ -73,7 +73,7 @@ final class EdgeMoveTests: XCTestCase {
         let content = TabContentView(root: sideBySide(), focused: key(1), zoomed: nil)
         content.frame = CGRect(x: 0, y: 0, width: 1000, height: 600)
         defer { content.detachAll() }
-        XCTAssertTrue(content.canMoveByHeader(key(1)))
+        XCTAssertTrue(content.canMoveSplit(key(1)))
         content.moveToEdge(key(1), .down)
         XCTAssertEqual(content.root.panes, [key(2), key(1)])
         XCTAssertEqual(content.root.side(of: key(1))?.axis, .vertical)
@@ -96,7 +96,7 @@ final class EdgeMoveTests: XCTestCase {
         let content = TabContentView(root: .leaf(key(1)), focused: key(1), zoomed: nil)
         content.frame = CGRect(x: 0, y: 0, width: 1000, height: 600)
         defer { content.detachAll() }
-        XCTAssertFalse(content.canMoveByHeader(key(1)))
+        XCTAssertFalse(content.canMoveSplit(key(1)))
         content.moveToEdge(key(1), .left)
         XCTAssertEqual(content.root.panes, [key(1)])
         guard case .leaf = content.root else { return XCTFail("the lone pane got split") }

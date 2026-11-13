@@ -594,7 +594,7 @@ extension TerminalWindowController: NSMenuItemValidation {
             menuItem.title = pinned ? "Unpin Tab" : "Pin Tab"
             return !isQuick && SessionManager.shared.config.sidebarTabs
         case #selector(movePaneToEdge(_:)):
-            return content.isFloating(content.focusedPane) || content.canMoveByHeader(content.focusedPane)
+            return content.isFloating(content.focusedPane) || content.canMoveSplit(content.focusedPane)
         case #selector(minimizeFloatingPane(_:)):
             return content.isFloating(content.focusedPane)
         case #selector(moveFloatingPaneToNewTab(_:)):

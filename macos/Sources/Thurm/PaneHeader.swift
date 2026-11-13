@@ -27,7 +27,6 @@ final class PaneHeader: NSView {
     private let dot = NSView()
     private let title = NSTextField(labelWithString: "")
     private let buttons = NSStackView()
-    private let handle = HeaderHandle()
     private var splitButtons: [NSButton] = []
     private var floatButton: NSButton?
     private var minimizeButton: NSButton?
@@ -76,7 +75,7 @@ final class PaneHeader: NSView {
             if action == #selector(toggleFloat) { floatButton = b }
             if action == #selector(minimize) { minimizeButton = b }
         }
-        for v in [icon, dot, title, buttons, handle] as [NSView] {
+        for v in [icon, dot, title, buttons] as [NSView] {
             v.translatesAutoresizingMaskIntoConstraints = false
             addSubview(v)
         }
@@ -92,17 +91,9 @@ final class PaneHeader: NSView {
             title.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 7),
             title.centerYAnchor.constraint(equalTo: centerYAnchor),
             title.trailingAnchor.constraint(lessThanOrEqualTo: buttons.leadingAnchor, constant: -8),
-            handle.leadingAnchor.constraint(equalTo: icon.leadingAnchor, constant: -4),
-            handle.trailingAnchor.constraint(equalTo: title.trailingAnchor, constant: 4),
-            handle.topAnchor.constraint(equalTo: topAnchor),
-            handle.bottomAnchor.constraint(equalTo: bottomAnchor),
             buttons.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
             buttons.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
-        handle.movesPane = { [weak self] in
-            guard let self, let content = self.content else { return false }
-            return content.isFloating(self.pane) || content.canMoveByHeader(self.pane)
-        }
         update(focused: false)
     }
 
@@ -125,7 +116,9 @@ final class PaneHeader: NSView {
         let text = Self.title(of: pane, info: info)
         if title.stringValue != text { title.stringValue = text }
         toolTip = [text, info?.cwd].compactMap { $0 }.joined(separator: "\n")
-        handle.toolTip = toolTip
+        if content?.isFloating(pane) == true || content?.canMoveSplit(pane) == true {
+            toolTip = (toolTip ?? "") + "\nHold Command + Option and drag inside the pane to move it."
+        }
 
         let fg = colorFromRGB(cfg.theme.foreground)
         title.textColor = focused ? cfg.chrome.contentPrimary : cfg.chrome.contentSecondary
@@ -169,8 +162,6 @@ final class PaneHeader: NSView {
             content.focus(pane)
             if content.isFloating(pane) {
                 content.trackCardDrag(pane, from: event)
-            } else if content.canMoveByHeader(pane) {
-                content.trackPaneDrag(pane, from: event)
             }
         }
     }
@@ -188,44 +179,6 @@ final class PaneHeader: NSView {
     @objc private func minimize() { act { $0.minimizeFloatingPane(nil) } }
     @objc private func zoom() { act { $0.toggleZoom(nil) } }
     @objc private func close() { act { $0.closePane(nil) } }
-}
-
-/// Over a header's icon and title: pressing there drags the pane rather than the window, where
-/// the header lies in the titlebar. The window server starts titlebar drags itself, so the
-/// window stays put while the pointer is here.
-private final class HeaderHandle: NSView {
-    private weak var pinned: NSWindow?
-    var movesPane: () -> Bool = { false }
-
-    override init(frame: NSRect) {
-        super.init(frame: frame)
-        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
-                                       owner: self))
-    }
-
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) is not supported")
-    }
-
-    override var mouseDownCanMoveWindow: Bool { !movesPane() }
-
-    override func mouseEntered(with event: NSEvent) {
-        guard let window, window.isMovable, movesPane() else { return }
-        window.isMovable = false
-        pinned = window
-    }
-
-    override func mouseExited(with event: NSEvent) { release() }
-
-    override func viewWillMove(toWindow newWindow: NSWindow?) {
-        if newWindow !== window { release() }
-        super.viewWillMove(toWindow: newWindow)
-    }
-
-    private func release() {
-        pinned?.isMovable = true
-        pinned = nil
-    }
 }
 
 /// A pane header button: brightens and shows a rounded backdrop while the pointer is over it, so

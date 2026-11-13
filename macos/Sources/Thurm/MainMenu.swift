@@ -408,6 +408,7 @@ enum MainMenu {
                                   name: d.name))
         }
         let edgeItem = item("Move Pane to Edge", nil)
+        edgeItem.toolTip = "Hold Command + Option and drag inside a pane to move it. Press Esc to cancel."
         edgeItem.submenu = edgeMenu
         menu.addItem(edgeItem)
         menu.addItem(item("Minimize Floating Pane", #selector(TerminalWindowController.minimizeFloatingPane(_:)),

@@ -17,6 +17,7 @@ of tabs.
 | Back / forward through the tabs visited | Cmd+[ / Cmd+] |
 | Split right / down | Cmd+D / Cmd+Shift+D |
 | Move focus between panes | Cmd+Option+Arrow |
+| Move a pane with the mouse | Cmd+Option+drag inside the pane |
 | Move a divider | Cmd+Control+Arrow |
 | Zoom the current pane | Cmd+Shift+Return |
 | Show / hide floating panes | Cmd+Option+Return |
@@ -38,10 +39,15 @@ its edges to resize it, and double-click the header to zoom it. To put it in the
 splits, use **View › Dock Pane**, or hold Cmd while dragging its header over a pane
 and drop it on the side where it should go (Esc cancels the drag).
 
-Drag a card's header, or a split's icon and title, to an edge of the tab to make it that half of the
-tab; the tab shows where it goes before you let go. Drop a split's title on another
-pane to split that pane on the side under the pointer. Esc cancels. **View › Move
-Pane to Edge** moves the current pane to an edge from the keyboard.
+Hold Cmd+Option and drag inside a pane to move it, even when pane headers are
+hidden. Drop it at an edge of the tab to give it that half of the tab, or over
+another pane to split that pane on the side under the pointer. The drop preview
+shows the new position. Esc cancels the move. A click without a drag keeps the
+layout unchanged. A split pane can move only if another split pane remains.
+
+You can also drag a floating card's header to an edge to dock it there.
+Normal titlebar dragging and double-clicking keep their window actions.
+**View › Move Pane to Edge** moves the current pane to an edge from the keyboard.
 
 The minimize button in a card's header (or **View › Minimize Floating Pane**) puts
 the card away as a chip in the bottom right of the tab; its program keeps running,
