@@ -250,7 +250,7 @@ mod tests {
             result: Ok(Response::PathMatches(matches.clone())),
         };
         let frame = encode(&response).unwrap();
-        assert_eq!(&payload(&frame)[..4], &[0, 9, 0, 19]);
+        assert_eq!(&payload(&frame)[..4], &[0, 9, 0, 21]);
         assert!(
             matches!(decode_message(payload(&frame)).unwrap(), ServerMessage::Response {
             id: 9, result: Ok(Response::PathMatches(back))
