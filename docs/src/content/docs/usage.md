@@ -136,6 +136,7 @@ Showing the sidebar restores the filter button, with its setting preserved.
 | Delete to line start / go to line start / end | Cmd+Backspace / Cmd+Left / Cmd+Right |
 | Increase / decrease / reset font size | Cmd++ / Cmd+- / Cmd+0 |
 | Open a URL | Cmd+click |
+| Preview a file | Right-click its path, then select Quick Look |
 | Open / reload configuration | Cmd+, / Cmd+Shift+, |
 | Secure Keyboard Entry | Cmd+Option+I |
 | Full screen | Cmd+Control+F |
@@ -148,6 +149,24 @@ combination maps to an action name, or to `none` to remove it. See
 Shell integration adds prompt marks and working directory tracking for zsh,
 bash, and fish. It also supports completion choices at a shell prompt. Use
 `thurm scroll prev-prompt` or `thurm scroll next-prompt` to move between marks.
+
+On Mac, **Quick Look** opens a native preview panel for images, PDFs, and other
+files that macOS can preview. Press Escape to close the panel. If macOS has no
+preview provider for the file type, the panel shows basic file information.
+
+Use an absolute path, a `~/` path, a relative path such as `./report.pdf`, or a
+`file://` link. Filenames with an extension, such as `report.pdf`, also work.
+Put paths with spaces in quotes or use shell escapes. A path must fit on one
+terminal row. OSC 8 file links can span rows. A `:line` or `:line:column` suffix
+is removed only if the full filename does not exist.
+
+Relative paths use the clicked pane's current reported directory when the menu
+opens. Old output does not retain its original directory. Use an absolute path
+if the pane has since changed directory or its directory is unknown.
+Remote panes and file links to other hosts cannot use Quick Look. Copy the file
+to this Mac first. Missing files, unreadable files, folders, and special files
+show a message. In programs that use the mouse, hold Shift when you right-click
+to open the Thurm context menu.
 
 Completion choices for a command come from a spec named `<command>.json`. Thurm
 reads it from `~/.config/thurm/completions` first, then from the specs bundled with

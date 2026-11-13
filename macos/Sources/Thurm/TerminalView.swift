@@ -1,5 +1,6 @@
 import AppKit
 import QuartzCore
+import QuickLookUI
 import CThurm
 
 /// Grid size last reported to the daemon.
@@ -75,6 +76,8 @@ final class TerminalView: NSView, NSTextInputClient {
     private var lastMouseLocation: NSPoint?
     private var hoverLink: UInt16 = 0
     private var hoverSpan: (row: Int, start: Int, end: Int)?
+    private var previewURL: URL?
+    private weak var previewPanel: QLPreviewPanel?
 
     // Animation state.
     private var blinkEpoch = CACurrentMediaTime()
@@ -198,6 +201,11 @@ final class TerminalView: NSView, NSTextInputClient {
     // MARK: Window attachment
 
     override func viewWillMove(toWindow newWindow: NSWindow?) {
+        if newWindow !== window, let panel = previewPanel {
+            previewURL = nil
+            panel.orderOut(nil)
+            panel.updateController()
+        }
         super.viewWillMove(toWindow: newWindow)
         if let old = window {
             let nc = NotificationCenter.default
@@ -1562,7 +1570,10 @@ final class TerminalView: NSView, NSTextInputClient {
         }
         let p = cellPosition(convert(event.locationInWindow, from: nil))
         let link = p.inGrid ? linkURL(col: p.col, row: p.row) : nil
-        NSMenu.popUpContextMenu(contextMenu(link: link), with: event, for: self)
+        let (text, columns) = renderer.snapshot.rowText(p.row)
+        let file = p.inGrid
+            ? TerminalFileReference.at(text: text, columns: columns, column: p.col, link: link) : nil
+        NSMenu.popUpContextMenu(contextMenu(link: link, file: file), with: event, for: self)
     }
 
     override func rightMouseUp(with event: NSEvent) {
@@ -1733,8 +1744,16 @@ final class TerminalView: NSView, NSTextInputClient {
 
     // MARK: Context menu
 
-    private func contextMenu(link: URL?) -> NSMenu {
+    func contextMenu(link: URL?, file: TerminalFileReference? = nil) -> NSMenu {
         let menu = NSMenu(title: "Terminal")
+        if let file {
+            let item = menu.addItem(withTitle: "Quick Look", action: #selector(quickLookFile(_:)),
+                                    keyEquivalent: "")
+            item.target = self
+            item.representedObject = FilePreviewRequest(reference: file,
+                cwd: SessionManager.shared.panes[pane]?.cwd, isRemote: pane.isRemote)
+            menu.addItem(NSMenuItem.separator())
+        }
         if let link {
             let openItem = menu.addItem(withTitle: "Open Link", action: #selector(openLinkFromMenu(_:)),
                                         keyEquivalent: "")
@@ -1765,6 +1784,43 @@ final class TerminalView: NSView, NSTextInputClient {
         return menu
     }
 
+    @objc private func quickLookFile(_ sender: NSMenuItem) {
+        guard let request = sender.representedObject as? FilePreviewRequest else { return }
+        do {
+            let url = try request.reference.localFile(cwd: request.cwd, isRemote: request.isRemote)
+            guard let window, let panel = QLPreviewPanel.shared() else { return }
+            window.makeKeyAndOrderFront(nil)
+            window.makeFirstResponder(self)
+            previewURL = url
+            panel.makeKeyAndOrderFront(nil)
+            panel.updateController()
+            guard panel.currentController as AnyObject? === self else {
+                previewURL = nil
+                if panel.currentController == nil { panel.orderOut(nil) }
+                showToast("Quick Look could not open the preview.", duration: 5)
+                return
+            }
+            panel.reloadData()
+        } catch {
+            showToast(error.localizedDescription, duration: 6)
+        }
+    }
+
+    override func acceptsPreviewPanelControl(_ panel: QLPreviewPanel!) -> Bool {
+        previewURL != nil && window != nil
+    }
+
+    override func beginPreviewPanelControl(_ panel: QLPreviewPanel!) {
+        previewPanel = panel
+        panel.dataSource = self
+    }
+
+    override func endPreviewPanelControl(_ panel: QLPreviewPanel!) {
+        panel.dataSource = nil
+        previewPanel = nil
+        previewURL = nil
+    }
+
     @objc private func openLinkFromMenu(_ sender: NSMenuItem) {
         guard let url = sender.representedObject as? URL else { return }
         SessionManager.shared.openLink(url, from: pane, in: window)
@@ -1780,6 +1836,24 @@ final class TerminalView: NSView, NSTextInputClient {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(pane.copyText, forType: .string)
     }
+}
+
+extension TerminalView: QLPreviewPanelDataSource {
+    func numberOfPreviewItems(in panel: QLPreviewPanel!) -> Int {
+        previewURL == nil ? 0 : 1
+    }
+
+    func previewPanel(_ panel: QLPreviewPanel!, previewItemAt index: Int) -> QLPreviewItem! {
+        guard index == 0 else { return nil }
+        return previewURL as NSURL?
+    }
+}
+
+/// Keep the directory from the time the context menu opened.
+struct FilePreviewRequest {
+    let reference: TerminalFileReference
+    let cwd: String?
+    let isRemote: Bool
 }
 
 /// "Disconnected — reconnecting…" over a remote pane whose host is not connected; the pane's
