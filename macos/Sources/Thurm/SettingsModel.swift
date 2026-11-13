@@ -6,6 +6,8 @@ import Foundation
 /// How a setting is shown and edited (`kind`).
 enum SettingKind: String {
     case bool, int, float, text, font, color, theme, list
+    /// A face of the font family, by its style name.
+    case fontStyle = "font_style"
     case `enum`
     /// A table or a list of tables: shown as a summary, edited in the file.
     case table

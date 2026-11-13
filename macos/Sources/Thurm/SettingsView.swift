@@ -295,6 +295,8 @@ private struct SettingControl: View {
             EmptyView()
         case .font:
             FontPicker(item: item, store: store)
+        case .fontStyle:
+            FontStylePicker(item: item, store: store)
         case .color:
             ColorControl(item: item, store: store)
         case .text, .list:
@@ -479,7 +481,15 @@ private struct FontPicker: View {
         let known = Set(families.monospaced + families.other + faces.map(\.name) + [Self.sameAsFamily])
         return Picker("", selection: Binding(
             get: { selected },
-            set: { title in store.commit(item.key, title == Self.sameAsFamily ? NSNull() : title) }
+            set: { title in
+                store.commit(item.key, title == Self.sameAsFamily ? NSNull() : title)
+                // A style the new family lacks would be ignored: drop it.
+                if item.key == "font.family", let style = store.setting("font.style"),
+                   style.isOverridden, !style.text.isEmpty,
+                   !FontFamilies.styles(of: title).contains(style.text) {
+                    store.commit(style.key, NSNull())
+                }
+            }
         )) {
             if item.isNullable {
                 Text(Self.sameAsFamily).tag(Self.sameAsFamily)
@@ -506,6 +516,35 @@ private struct FontPicker: View {
         }
         .labelsHidden()
         .fixedSize()
+    }
+}
+
+/// The face of the family regular text uses, by style name: the family's upright faces.
+private struct FontStylePicker: View {
+    let item: SettingItem
+    let store: SettingsStore
+
+    var body: some View {
+        let styles = FontFamilies.styles(of: store.setting("font.family")?.text ?? "")
+        let current = item.text
+        return Picker("", selection: Binding(
+            get: { current },
+            set: { store.commit(item.key, $0.isEmpty ? NSNull() : $0) }
+        )) {
+            Text("Default").tag("")
+            if !current.isEmpty && !styles.contains(current) {
+                Text(current).tag(current)
+            }
+            if !styles.isEmpty {
+                Divider()
+                ForEach(styles, id: \.self) { style in
+                    Text(style).tag(style)
+                }
+            }
+        }
+        .labelsHidden()
+        .fixedSize()
+        .disabled(styles.isEmpty && current.isEmpty)
     }
 }
 
@@ -839,4 +878,16 @@ private enum FontFamilies {
         }
         return (monospaced, other)
     }()
+
+    /// The style names of a family's upright faces ("Semi-Condensed", "Bold Semi-Condensed").
+    static func styles(of family: String) -> [String] {
+        let members = NSFontManager.shared.availableMembers(ofFontFamily: family) ?? []
+        return members.compactMap { member in
+            guard member.count > 3, let style = member[1] as? String,
+                  let traits = (member[3] as? NSNumber).map({ NSFontTraitMask(rawValue: $0.uintValue) }),
+                  !traits.contains(.italicFontMask)
+            else { return nil }
+            return style
+        }
+    }
 }
