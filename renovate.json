@@ -15,13 +15,16 @@
   },
   "packageRules": [
     {
-      "description": "flake.nix keys tailnet's vendored modules on vendorHash, which Renovate cannot recompute. One weekly PR, merged by hand after `just tailnet-hash`.",
+      "description": "flake.nix keys tailnet's vendored modules on vendorHash, which Renovate cannot recompute. One weekly PR, merged by hand after `just tailnet-hash`. tailnet/e2e replaces tailnet with ../, so a dependency both share (tailscale.com) must move in both go.mod files at once.",
       "matchManagers": [
         "gomod"
       ],
       "matchFileNames": [
-        "tailnet/go.mod"
+        "tailnet/go.mod",
+        "tailnet/e2e/go.mod"
       ],
+      "separateMajorMinor": false,
+      "separateMinorPatch": false,
       "groupName": "tailnet Go modules",
       "schedule": [
         "before 6am on monday"
