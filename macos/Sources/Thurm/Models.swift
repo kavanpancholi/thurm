@@ -469,16 +469,18 @@ struct FloatingPane: Codable, Equatable {
     /// Its terminal's size, for a card placed in cells: the card keeps it whatever the tab's size
     /// (only its position follows `frame`), stored as `[cols, rows]`.
     var cells: CardCells? = nil
+    var minimized = false
 
     private enum CodingKeys: String, CodingKey {
-        case id, host, frame, zoomed, cells
+        case id, host, frame, zoomed, cells, minimized
     }
 
-    init(pane: PaneKey, frame: [Double], zoomed: Bool = false, cells: CardCells? = nil) {
+    init(pane: PaneKey, frame: [Double], zoomed: Bool = false, cells: CardCells? = nil, minimized: Bool = false) {
         self.pane = pane
         self.frame = frame
         self.zoomed = zoomed
         self.cells = cells
+        self.minimized = minimized
     }
 
     init(from decoder: Decoder) throws {
@@ -488,6 +490,7 @@ struct FloatingPane: Codable, Equatable {
         frame = try c.decode([Double].self, forKey: .frame)
         zoomed = try c.decodeIfPresent(Bool.self, forKey: .zoomed) ?? false
         cells = try c.decodeIfPresent([Int].self, forKey: .cells).flatMap(CardCells.init(array:))
+        minimized = try c.decodeIfPresent(Bool.self, forKey: .minimized) ?? false
     }
 
     func encode(to encoder: Encoder) throws {
@@ -497,6 +500,7 @@ struct FloatingPane: Codable, Equatable {
         try c.encode(frame, forKey: .frame)
         if zoomed { try c.encode(true, forKey: .zoomed) }
         if let cells { try c.encode([cells.cols, cells.rows], forKey: .cells) }
+        if minimized { try c.encode(true, forKey: .minimized) }
     }
 }
 

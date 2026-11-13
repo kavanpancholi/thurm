@@ -29,6 +29,7 @@ final class PaneHeader: NSView {
     private let buttons = NSStackView()
     private var splitButtons: [NSButton] = []
     private var floatButton: NSButton?
+    private var minimizeButton: NSButton?
     private var focused = false
     private var iconKind: PaneIcon?
     private lazy var iconLeading = icon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: Self.leading)
@@ -56,6 +57,7 @@ final class PaneHeader: NSView {
         for (symbol, label, action) in [
             ("rectangle.split.2x1", "Split Right", #selector(splitRight)),
             ("rectangle.split.1x2", "Split Down", #selector(splitDown)),
+            ("minus", "Minimize Floating Pane", #selector(minimize)),
             ("pip.exit", "Float Pane", #selector(toggleFloat)),
             ("arrow.up.left.and.arrow.down.right", "Zoom", #selector(zoom)),
             ("xmark", "Close Pane", #selector(close)),
@@ -71,6 +73,7 @@ final class PaneHeader: NSView {
             buttons.addArrangedSubview(b)
             if action == #selector(splitRight) || action == #selector(splitDown) { splitButtons.append(b) }
             if action == #selector(toggleFloat) { floatButton = b }
+            if action == #selector(minimize) { minimizeButton = b }
         }
         for v in [icon, dot, title, buttons] as [NSView] {
             v.translatesAutoresizingMaskIntoConstraints = false
@@ -110,9 +113,7 @@ final class PaneHeader: NSView {
             iconKind = kind
             icon.image = kind.glyph(size: 15)
         }
-        var text = info?.displayTitle ?? ""
-        if let agent = info?.agent, text.isEmpty || text == "Thurm" { text = agent.name }
-        if pane.isRemote { text = "\(pane.host) · \(text)" }
+        let text = Self.title(of: pane, info: info)
         if title.stringValue != text { title.stringValue = text }
         toolTip = [text, info?.cwd].compactMap { $0 }.joined(separator: "\n")
 
@@ -130,6 +131,7 @@ final class PaneHeader: NSView {
         // A floating pane docks rather than splits; the splits' only pane cannot float.
         let floats = content?.isFloating(pane) ?? false
         for b in splitButtons where b.isHidden != floats { b.isHidden = floats }
+        if let b = minimizeButton, b.isHidden == floats { b.isHidden = !floats }
         if let b = floatButton {
             let symbol = floats ? "pip.enter" : "pip.exit"
             if b.toolTip != (floats ? "Dock Pane" : "Float Pane") {
@@ -139,6 +141,13 @@ final class PaneHeader: NSView {
             let hidden = !floats && !(content?.canFloat(pane) ?? false)
             if b.isHidden != hidden { b.isHidden = hidden }
         }
+    }
+
+    static func title(of pane: PaneKey, info: PaneInfo?) -> String {
+        var text = info?.displayTitle ?? ""
+        if let agent = info?.agent, text.isEmpty || text == "Thurm" { text = agent.name }
+        if pane.isRemote { text = "\(pane.host) · \(text)" }
+        return text
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -162,6 +171,7 @@ final class PaneHeader: NSView {
     @objc private func splitRight() { act { $0.splitRight(nil) } }
     @objc private func splitDown() { act { $0.splitDown(nil) } }
     @objc private func toggleFloat() { act { $0.toggleFloat(nil) } }
+    @objc private func minimize() { act { $0.minimizeFloatingPane(nil) } }
     @objc private func zoom() { act { $0.toggleZoom(nil) } }
     @objc private func close() { act { $0.closePane(nil) } }
 }

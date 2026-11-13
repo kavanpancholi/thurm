@@ -38,6 +38,13 @@ its edges to resize it, and double-click the header to zoom it. To put it in the
 splits, use **View › Dock Pane**, or hold Cmd while dragging its header over a pane
 and drop it on the side where it should go (Esc cancels the drag).
 
+The minimize button in a card's header (or **View › Minimize Floating Pane**) puts
+the card away as a chip in the bottom right of the tab; its program keeps running,
+and the chip shows its agent's status. Chips stay in one row; use the **+N** menu
+to restore cards whose chips do not fit. Click a chip to bring the card back where
+it was. Focusing the pane another way (the agent wall, a notification, `thurm
+focus`) brings it back too.
+
 Drag a tab's row from the sidebar onto the terminal area to float that tab as a
 card in the tab you're looking at; its programs keep running and its own floating
 panes come along. Only a tab with one pane in its splits can float, and only into

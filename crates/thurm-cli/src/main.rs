@@ -2618,6 +2618,7 @@ mod tests {
                     frame: [0.1, 0.1, 0.4, 0.4],
                     zoomed: false,
                     cells: None,
+                    minimized: false,
                 })
                 .collect(),
             floating_hidden: false,
