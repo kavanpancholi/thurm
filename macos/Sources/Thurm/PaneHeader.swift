@@ -116,6 +116,9 @@ final class PaneHeader: NSView {
         let text = Self.title(of: pane, info: info)
         if title.stringValue != text { title.stringValue = text }
         toolTip = [text, info?.cwd].compactMap { $0 }.joined(separator: "\n")
+        if content?.isFloating(pane) == true || content?.canMoveSplit(pane) == true {
+            toolTip = (toolTip ?? "") + "\nHold Command + Option and drag inside the pane to move it."
+        }
 
         let fg = colorFromRGB(cfg.theme.foreground)
         title.textColor = focused ? cfg.chrome.contentPrimary : cfg.chrome.contentSecondary
@@ -157,7 +160,9 @@ final class PaneHeader: NSView {
             content.toggleZoom()
         } else {
             content.focus(pane)
-            if content.isFloating(pane) { content.trackCardDrag(pane, from: event) }
+            if content.isFloating(pane) {
+                content.trackCardDrag(pane, from: event)
+            }
         }
     }
 

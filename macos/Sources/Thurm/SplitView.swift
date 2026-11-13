@@ -66,6 +66,16 @@ indirect enum SplitNode {
         }
     }
 
+    /// `newPane` on the `edge` side of the whole tree, with `share` of the space.
+    func wrapping(_ newPane: PaneKey, edge: SplitDirName, share: CGFloat = 0.5) -> SplitNode {
+        switch edge {
+        case .right: return .split(axis: .horizontal, ratio: 1 - share, first: self, second: .leaf(newPane))
+        case .left: return .split(axis: .horizontal, ratio: share, first: .leaf(newPane), second: self)
+        case .down: return .split(axis: .vertical, ratio: 1 - share, first: self, second: .leaf(newPane))
+        case .up: return .split(axis: .vertical, ratio: share, first: .leaf(newPane), second: self)
+        }
+    }
+
     /// Exchanges the places of two panes (their splits stay where they are).
     func swapping(_ a: PaneKey, _ b: PaneKey) -> SplitNode {
         switch self {
@@ -1541,6 +1551,75 @@ final class TabContentView: NSView {
         SessionManager.shared.scheduleLayoutSave()
     }
 
+    /// Puts `pane`, floating or in the splits, on the `edge` side of the whole tab, with half of
+    /// it.
+    func moveToEdge(_ pane: PaneKey, _ edge: SplitDirName) {
+        if let i = floating.firstIndex(where: { $0.pane == pane }) {
+            floatedFrames[pane] = floating[i].frame
+            transitionLayout {
+                zoomedPane = nil
+                floating.remove(at: i)
+                if floating.isEmpty { floatingHidden = false }
+                root = root.wrapping(pane, edge: edge)
+            }
+        } else {
+            guard let rest = root.removing(pane), root.contains(pane) else { return }
+            transitionLayout {
+                zoomedPane = nil
+                root = rest.wrapping(pane, edge: edge)
+            }
+        }
+        window?.invalidateCursorRects(for: self)
+        SessionManager.shared.scheduleLayoutSave()
+    }
+
+    /// A split pane can move if another pane remains in the split tree.
+    func canMoveSplit(_ pane: PaneKey) -> Bool { root.contains(pane) && root.panes.count > 1 }
+
+    /// Moves a split pane to an edge of the tab or to one side of another pane. Esc cancels.
+    func trackPaneDrag(_ pane: PaneKey, from event: NSEvent) {
+        guard let window, canMoveSplit(pane) else { return }
+        let origin = convert(event.locationInWindow, from: nil)
+        var moved = false
+        var cancelled = false
+        var edge: SplitDirName?
+        var target: (pane: PaneKey, side: SplitDirName, rect: CGRect)?
+        window.trackEvents(matching: [.leftMouseDragged, .leftMouseUp, .keyDown], timeout: NSEvent.foreverDuration,
+                           mode: .eventTracking) { [weak self] e, stop in
+            guard let self, let e else {
+                stop.pointee = true
+                return
+            }
+            switch e.type {
+            case .leftMouseUp:
+                stop.pointee = true
+            case .keyDown:
+                guard e.keyCode == 53 else { return }
+                cancelled = true
+                stop.pointee = true
+            default:
+                let p = self.convert(e.locationInWindow, from: nil)
+                if !moved && hypot(p.x - origin.x, p.y - origin.y) < 3 { return }
+                moved = true
+                let tiled = self.showsHeaders ? self.splitArea : self.paneArea
+                edge = FloatingGeometry.edge(at: p, in: tiled)
+                target = edge == nil ? self.dockTarget(at: p, excluding: pane) : nil
+                self.dockIndicator.show(edge.map { FloatingGeometry.edgeRect($0, in: tiled) } ?? target?.rect)
+            }
+        }
+        dockIndicator.show(nil)
+        guard moved, !cancelled else { return }
+        if let edge {
+            moveToEdge(pane, edge)
+        } else if let target {
+            move(pane, nextTo: target.pane, direction: target.side, share: nil)
+        } else {
+            return
+        }
+        focus(pane)
+        SessionManager.shared.scheduleLayoutSave()
+    }
+
     func setMinimized(_ pane: PaneKey, _ on: Bool) {
         guard let i = floating.firstIndex(where: { $0.pane == pane }), floating[i].minimized != on else { return }
         let refocus = on && pane == focusedPane
@@ -1601,10 +1680,9 @@ final class TabContentView: NSView {
         return (id, side, FloatingGeometry.dockRect(rect, side: side, gap: splitGap))
     }
 
-    /// Moves a card by its header, from a mouse down until the button comes up. Dropped with ⌘
-    /// held over a pane of the splits, it docks there (where the indicator shows); Esc puts it
-    /// back where it was.
-    func trackCardDrag(_ pane: PaneKey, from event: NSEvent) {
+    /// Moves a card until the mouse button is released. Command docks it beside a split pane.
+    /// A drag from the terminal body gives tab edges priority. Esc restores the card's position.
+    func trackCardDrag(_ pane: PaneKey, from event: NSEvent, preferEdges: Bool = false) {
         guard let window, let start = floating.first(where: { $0.pane == pane }), !start.zoomed,
               let startRect = cardFrames.first(where: { $0.0 == pane })?.1 else { return }
         let origin = convert(event.locationInWindow, from: nil)
@@ -1612,6 +1690,7 @@ final class TabContentView: NSView {
         var cancelled = false
         var target: (pane: PaneKey, side: SplitDirName, rect: CGRect)?
         var tabGap: TabGap?
+        var edge: SplitDirName?
         let sidebar = self.sidebar
         window.trackEvents(matching: [.leftMouseDragged, .leftMouseUp, .keyDown, .flagsChanged],
                            timeout: NSEvent.foreverDuration, mode: .eventTracking) { [weak self] e, stop in
@@ -1641,9 +1720,12 @@ final class TabContentView: NSView {
                 let drop = sidebar?.cardDrop(at: windowPoint, for: pane)
                 tabGap = drop?.gap
                 sidebar?.showCardDrop(drop?.line)
-                target = tabGap == nil && e.modifierFlags.contains(.command)
+                let tiled = self.showsHeaders ? self.splitArea : self.paneArea
+                edge = tabGap == nil ? FloatingGeometry.edge(at: p, in: tiled) : nil
+                target = tabGap == nil && e.modifierFlags.contains(.command) && !(preferEdges && edge != nil)
                     ? self.dockTarget(at: p, excluding: pane) : nil
-                self.dockIndicator.show(target?.rect)
+                if target != nil { edge = nil }
+                self.dockIndicator.show(target?.rect ?? edge.map { FloatingGeometry.edgeRect($0, in: tiled) })
                 self.needsLayout = true
             }
         }
@@ -1656,6 +1738,11 @@ final class TabContentView: NSView {
         }
         if let tabGap, !cancelled, let controller {
             SessionManager.shared.moveCardToNewTab(pane, from: controller, next: tabGap)
+            return
+        }
+        if let edge, moved, !cancelled {
+            moveToEdge(pane, edge)
+            focus(pane)
             return
         }
         needsLayout = true

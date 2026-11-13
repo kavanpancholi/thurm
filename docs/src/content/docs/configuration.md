@@ -172,6 +172,10 @@ the defaults alone.
 | `toggle_floating_panes` | View > Show Floating Panes |
 | `new_floating_pane` | View > New Floating Pane |
 | `float_pane` | View > Float Pane |
+| `move_pane_to_left_edge` | View > Move Pane to Edge > Left Edge |
+| `move_pane_to_right_edge` | View > Move Pane to Edge > Right Edge |
+| `move_pane_to_top_edge` | View > Move Pane to Edge > Top Edge |
+| `move_pane_to_bottom_edge` | View > Move Pane to Edge > Bottom Edge |
 | `minimize_floating_pane` | View > Minimize Floating Pane |
 | `float_pane_to_tab` | View > Move Floating Pane to New Tab |
 | `equalize_splits` | View > Equalize Splits |

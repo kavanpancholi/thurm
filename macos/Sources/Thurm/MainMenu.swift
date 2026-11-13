@@ -405,6 +405,15 @@ enum MainMenu {
         menu.addItem(item("New Floating Pane", #selector(TerminalWindowController.newFloatingPane(_:)),
                           name: "new_floating_pane"))
         menu.addItem(item("Float Pane", #selector(TerminalWindowController.toggleFloat(_:)), name: "float_pane"))
+        let edgeMenu = NSMenu(title: "Move Pane to Edge")
+        for (i, d) in TerminalWindowController.edgeMoves.enumerated() {
+            edgeMenu.addItem(item(d.title, #selector(TerminalWindowController.movePaneToEdge(_:)), tag: i,
+                                  name: d.name))
+        }
+        let edgeItem = item("Move Pane to Edge", nil)
+        edgeItem.toolTip = "Hold Command + Option and drag inside a pane to move it. Press Esc to cancel."
+        edgeItem.submenu = edgeMenu
+        menu.addItem(edgeItem)
         menu.addItem(item("Minimize Floating Pane", #selector(TerminalWindowController.minimizeFloatingPane(_:)),
                           name: "minimize_floating_pane"))
         menu.addItem(item("Move Floating Pane to New Tab",

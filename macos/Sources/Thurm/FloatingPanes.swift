@@ -149,6 +149,30 @@ enum FloatingGeometry {
         return CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
     }
 
+    static let edgeReach: CGFloat = 32
+
+    /// The edge of the splits' `area` (flipped) a card dragged to `point` docks at: the nearest
+    /// one within `edgeReach`, and none outside the area.
+    static func edge(at point: CGPoint, in area: CGRect) -> SplitDirName? {
+        guard area.contains(point) else { return nil }
+        let distances: [(SplitDirName, CGFloat)] = [
+            (.left, point.x - area.minX), (.right, area.maxX - point.x),
+            (.up, point.y - area.minY), (.down, area.maxY - point.y),
+        ]
+        guard let nearest = distances.min(by: { $0.1 < $1.1 }), nearest.1 <= edgeReach else { return nil }
+        return nearest.0
+    }
+
+    /// The half of `area` a card docked at `edge` takes.
+    static func edgeRect(_ edge: SplitDirName, in area: CGRect) -> CGRect {
+        switch edge {
+        case .left: return CGRect(x: area.minX, y: area.minY, width: area.width / 2, height: area.height)
+        case .right: return CGRect(x: area.midX, y: area.minY, width: area.width / 2, height: area.height)
+        case .up: return CGRect(x: area.minX, y: area.minY, width: area.width, height: area.height / 2)
+        case .down: return CGRect(x: area.minX, y: area.midY, width: area.width, height: area.height / 2)
+        }
+    }
+
     /// The side of `rect` a pane dropped at `point` docks on: the one whose triangle (between
     /// the rectangle's diagonals) holds the point.
     static func dockSide(_ point: CGPoint, in rect: CGRect) -> SplitDirName {

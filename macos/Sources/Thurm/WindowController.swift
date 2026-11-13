@@ -480,6 +480,18 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
+    static let edgeMoves: [(edge: SplitDirName, title: String, name: String)] = [
+        (.left, "Left Edge", "move_pane_to_left_edge"), (.right, "Right Edge", "move_pane_to_right_edge"),
+        (.up, "Top Edge", "move_pane_to_top_edge"), (.down, "Bottom Edge", "move_pane_to_bottom_edge"),
+    ]
+
+    @objc func movePaneToEdge(_ sender: Any?) {
+        guard let tag = (sender as? NSMenuItem)?.tag, Self.edgeMoves.indices.contains(tag) else { return }
+        let pane = content.focusedPane
+        content.moveToEdge(pane, Self.edgeMoves[tag].edge)
+        content.focus(pane)
+    }
+
     @objc func minimizeFloatingPane(_ sender: Any?) {
         content.setMinimized(content.focusedPane, true)
     }
@@ -581,6 +593,8 @@ extension TerminalWindowController: NSMenuItemValidation {
         case #selector(togglePinTab(_:)):
             menuItem.title = pinned ? "Unpin Tab" : "Pin Tab"
             return !isQuick && SessionManager.shared.config.sidebarTabs
+        case #selector(movePaneToEdge(_:)):
+            return content.isFloating(content.focusedPane) || content.canMoveSplit(content.focusedPane)
         case #selector(minimizeFloatingPane(_:)):
             return content.isFloating(content.focusedPane)
         case #selector(moveFloatingPaneToNewTab(_:)):

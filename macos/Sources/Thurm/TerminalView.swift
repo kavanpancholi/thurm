@@ -1531,6 +1531,17 @@ final class TerminalView: NSView, NSTextInputClient {
         if window?.firstResponder !== self {
             window?.makeFirstResponder(self)
         }
+        let modifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
+        if modifiers == [.command, .option], let container {
+            pressedButton = nil
+            container.focus(pane)
+            if container.isFloating(pane) {
+                container.trackCardDrag(pane, from: event, preferEdges: true)
+            } else {
+                container.trackPaneDrag(pane, from: event)
+            }
+            return
+        }
         let point = convert(event.locationInWindow, from: nil)
         if event.modifierFlags.contains(.command) {
             let p = cellPosition(point)
