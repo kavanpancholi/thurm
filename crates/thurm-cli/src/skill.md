@@ -23,6 +23,11 @@ has the screen (`alt_screen`), and whether the user has it focused (`focused`).
 
 ## Run something in its own pane
 
+Use your command tool for short checks. A new tab is not needed for each build or test.
+For a long command or output the user needs to see, use one background split. Run related
+checks in that pane and close it when you have checked the results. Open a separate tab
+when the user asks for one or the task needs a separate workspace.
+
 ```sh
 # Split the current pane to the right and start a dev server there, without taking the focus;
 # prints the new pane id.
@@ -40,8 +45,13 @@ thurm procs --pane "$id" --ports
 
 - Put Thurm's options before `--` and the command after it, as separate words. Use
   `-- sh -c 'a | b'` for shell syntax.
-- `thurm new-tab [--cwd DIR] [--title NAME] -- CMD...` opens a tab,
-  `thurm split --dir right|down|left|up [--size PERCENT]` a split (of `--pane ID`, default
+- For commands that must run in your tool's working directory, pass `--cwd "$PWD"`.
+  The default directory comes from the source pane and can differ from your tool's directory.
+- `thurm new-tab [--pane ID] [--cwd DIR] [--title NAME] -- CMD...` opens a tab in the source
+  pane's workspace (default: your pane). CLI tabs go at the end, in creation order.
+  Use `--pane ID` to choose another workspace. On an older app, check `thurm layout` after
+  opening a tab: it can use the selected workspace instead.
+  `thurm split --dir right|down|left|up [--size PERCENT]` opens a split (of `--pane ID`, default
   yours) with that share of the space. `new-tab --window` opens a new workspace in the
   background; name it with `thurm workspace rename --pane "$id" NAME`.
 - New tabs and splits take the focus and bring the app forward. Pass `--background` for
@@ -64,6 +74,11 @@ thurm capture --pane ID -n 80                                    # ID: the first
 For a long run, leave out `--wait`, then `thurm wait --pane "$id" --exit --timeout 600` and
 `exit_code` in `thurm info`. A `wait` timeout says nothing about whether the tests passed: look
 at the pane.
+
+To run several checks, put them in one command, for example
+`thurm split --dir down --background --hold --cwd "$PWD" -- sh -c 'cargo test && cargo clippy'`.
+After the command exits, capture the result and close the pane. A held pane is not an idle
+shell: do not send the next command into it.
 
 ### Show a diff
 

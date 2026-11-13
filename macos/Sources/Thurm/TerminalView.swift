@@ -1,5 +1,6 @@
 import AppKit
 import QuartzCore
+import QuickLookUI
 import CThurm
 
 /// Grid size last reported to the daemon.
@@ -42,20 +43,6 @@ final class TerminalView: NSView, NSTextInputClient {
     /// A frame is on screen. Until then there is no last image to keep while a resize is
     /// waited for, so the drawable follows the bounds at once.
     private var hasDrawn = false
-    /// A sidebar slide reveals a surface large enough for both endpoints. Keep its drawable
-    /// fixed while the view's bounds animate, avoiding new Metal surfaces on every step.
-    private var sidebarViewportSize: CGSize?
-    private enum SidebarReflow {
-        case capture, waiting
-        case blending(CFTimeInterval)
-    }
-    private var sidebarReflow: SidebarReflow?
-    /// Keep the old grid until its image has been submitted, even if the slide finishes first.
-    private var pendingSidebarSize: CGSize?
-    private var blendingSidebarContent: Bool {
-        if case .blending? = sidebarReflow { return true }
-        return false
-    }
     /// The daemon didn't answer a resize in time: draw the frame we have at the new size.
     private var resizeTimedOut = false
     private var resizeFrameTimeout: DispatchWorkItem?
@@ -89,6 +76,8 @@ final class TerminalView: NSView, NSTextInputClient {
     private var lastMouseLocation: NSPoint?
     private var hoverLink: UInt16 = 0
     private var hoverSpan: (row: Int, start: Int, end: Int)?
+    private var previewURL: URL?
+    private weak var previewPanel: QLPreviewPanel?
 
     // Animation state.
     private var blinkEpoch = CACurrentMediaTime()
@@ -212,6 +201,11 @@ final class TerminalView: NSView, NSTextInputClient {
     // MARK: Window attachment
 
     override func viewWillMove(toWindow newWindow: NSWindow?) {
+        if newWindow !== window, let panel = previewPanel {
+            previewURL = nil
+            panel.orderOut(nil)
+            panel.updateController()
+        }
         super.viewWillMove(toWindow: newWindow)
         if let old = window {
             let nc = NotificationCenter.default
@@ -268,6 +262,7 @@ final class TerminalView: NSView, NSTextInputClient {
         }
         super.setFrameSize(newSize)
         if holdGridSize {
+            // Keep the current frame until the sidebar layout reaches its final size.
             layoutOverlays()
             return
         }
@@ -281,9 +276,6 @@ final class TerminalView: NSView, NSTextInputClient {
 
     /// Stops rendering and unsubscribes (pane closed or tab closing).
     func detach() {
-        sidebarReflow = nil
-        pendingSidebarSize = nil
-        renderer.clearContentTransition()
         if subscribed {
             subscribed = false
             Core.shared.unsubscribe(pane)
@@ -328,48 +320,20 @@ final class TerminalView: NSView, NSTextInputClient {
     }
 
     private func updateDrawableSize() {
-        // Baked split moves keep their drawable. A sidebar prepares its larger endpoint
-        // once, then clips that surface as AppKit changes the view's bounds.
-        guard sidebarViewportSize != nil || (!holdGridSize && (!waitingForResizeFrame || !hasDrawn)) else { return }
+        // A held grid keeps its drawable: a pane opening in a split took its final size before
+        // the move, and must not take the in-between bounds of the move.
+        guard !holdGridSize, !waitingForResizeFrame || !hasDrawn else { return }
         guard let layer = metalLayer else { return }
         let scale = backingScale
-        let viewport = sidebarViewportSize ?? bounds.size
-        let size = CGSize(width: max(1, (viewport.width * scale).rounded()),
-                          height: max(1, (viewport.height * scale).rounded()))
+        let size = CGSize(width: max(1, (bounds.width * scale).rounded()),
+                          height: max(1, (bounds.height * scale).rounded()))
         if layer.drawableSize != size {
             layer.drawableSize = size
         }
     }
 
-    func beginSidebarResize(to size: CGSize? = nil) {
-        pendingSidebarSize = nil
-        let destination = size ?? bounds.size
-        sidebarViewportSize = CGSize(width: max(bounds.width, destination.width),
-                                     height: max(bounds.height, destination.height))
-        holdGridSize = true
-        // The visible surface can still be empty while the first daemon frame is pending.
-        if destination != bounds.size, hasDrawn, Motion.duration(Motion.sidebarReflow) > 0 {
-            sidebarReflow = .capture
-        } else {
-            sidebarReflow = nil
-        }
-        updateDrawableSize()
-        // Save the visible layout before asking the program to wrap at its new width.
-        renderNow()
-        // Give the program the destination size before the slide starts. Its redraw can
-        // finish during the animation, instead of starting a second resize after it ends.
-        if let size { reportGridSize(for: size) }
-    }
-
-    func endSidebarResize() {
-        holdGridSize = false
-        renderNow()
-        if waitingForResizeFrame { scheduleResizeFrameTimeout() }
-    }
-
     /// Computes cols/rows from the view size and tells the daemon when they change.
-    /// Keep intermediate animation sizes away from the PTY. A sidebar can report its
-    /// destination up front; layout completion checks the actual size once more.
+    /// Hold the grid size during a sidebar toggle. Resize once after layout is complete.
     var holdGridSize = false {
         didSet {
             if holdGridSize {
@@ -387,19 +351,10 @@ final class TerminalView: NSView, NSTextInputClient {
 
     private func updateGridSize() {
         guard !holdGridSize else { return }
-        reportGridSize(for: bounds.size)
-    }
-
-    private func reportGridSize(for size: CGSize) {
-        if case .capture? = sidebarReflow {
-            pendingSidebarSize = size
-            return
-        }
-        pendingSidebarSize = nil
-        guard let s = shaper, size.width > 1, size.height > 1, window != nil, !isHidden else { return }
+        guard let s = shaper, bounds.width > 1, bounds.height > 1, window != nil, !isHidden else { return }
         let scale = backingScale
-        let availW = size.width * scale - CGFloat(2 * padXPixels)
-        let availH = size.height * scale - CGFloat(2 * padYPixels)
+        let availW = bounds.width * scale - CGFloat(2 * padXPixels)
+        let availH = bounds.height * scale - CGFloat(2 * padYPixels)
         let newCols = max(2, Int(availW / CGFloat(s.cellWidth)))
         let newRows = max(1, Int(availH / CGFloat(s.cellHeight)))
         cols = newCols
@@ -509,13 +464,8 @@ final class TerminalView: NSView, NSTextInputClient {
     private func updateFrameRate() {
         guard let link = frameLink else { return }
         let maxFPS = Float(window?.screen?.maximumFramesPerSecond ?? 60)
-        // Keep the short text handoff at a steady cadence even when the terminal is quiet.
-        let minimum = min(blendingSidebarContent ? 60 : 10, maxFPS)
-        let current = link.preferredFrameRateRange
-        if current.minimum != minimum || current.maximum != maxFPS || current.preferred != maxFPS {
-            link.preferredFrameRateRange = CAFrameRateRange(minimum: minimum, maximum: maxFPS,
-                                                          preferred: maxFPS)
-        }
+        link.preferredFrameRateRange = CAFrameRateRange(minimum: min(10, maxFPS), maximum: maxFPS,
+                                                        preferred: maxFPS)
     }
 
     /// Resumes the display link for at least one tick.
@@ -527,7 +477,7 @@ final class TerminalView: NSView, NSTextInputClient {
     /// True while the next refresh has work: a pending draw, scroll or animation.
     private var wantsTick: Bool {
         needsRender || pendingScroll != nil || smoothActive || flashStart > 0 || renderer.wantsAnotherFrame
-            || !dimTween.isFinished(at: CACurrentMediaTime()) || blendingSidebarContent
+            || !dimTween.isFinished(at: CACurrentMediaTime())
     }
 
     /// Pauses the display link when nothing animates, so an idle pane costs no wakeups. New
@@ -535,7 +485,6 @@ final class TerminalView: NSView, NSTextInputClient {
     /// a one-shot timer wakes it for the next cursor blink.
     private func updateLinkState() {
         guard let link = frameLink else { return }
-        updateFrameRate()
         if Perf.tickRendering || wantsTick {
             link.isPaused = false
             blinkTimer?.invalidate()
@@ -575,7 +524,7 @@ final class TerminalView: NSView, NSTextInputClient {
             Core.shared.wheel(pane, lines: s.lines, col: s.col, row: s.row, mods: s.mods)
             if Perf.enabled { Perf.shared.wheelSent(pane: pane) }
         }
-        var render = needsRender || blendingSidebarContent
+        var render = needsRender
         if smoothActive {
             advanceSmoothScroll(CACurrentMediaTime())
             render = true
@@ -672,20 +621,19 @@ final class TerminalView: NSView, NSTextInputClient {
         let perfGrid = Perf.enabled ? CACurrentMediaTime() : 0
         if renderer.snapshot.update(pane: pane) { accessibilityGridChanged() }
         // A previous resize can still be in flight when another layout change occurs. A held
-        // grid draws its last complete snapshot while the program prepares the destination.
+        // grid draws whatever snapshot it has: its drawable keeps the size that snapshot had.
         let sized = renderer.snapshot.cols == cols && renderer.snapshot.rows == rows
         if sized { resizeTimedOut = false }
         // Only our own resize is waited for. A size another client set (the phone, while it is
         // the one in use) is drawn as it is, pinned top left, until this view is used again.
-        guard sized || resizeTimedOut || holdGridSize || sidebarViewportSize != nil || !waitingForResizeFrame else {
+        guard sized || resizeTimedOut || holdGridSize || !waitingForResizeFrame else {
             needsRender = true
             return
         }
-        // Release the prepared surface after layout settles and the matching frame arrives.
-        // Output can still update it during the slide without reallocating its drawable.
-        if !holdGridSize && (sized || resizeTimedOut) {
+        // A held grid keeps its drawable too: frames still draw (new output, the dim easing
+        // in or out during a layout move) at the held size, pinned to the top left.
+        if waitingForResizeFrame && !holdGridSize {
             waitingForResizeFrame = false
-            sidebarViewportSize = nil
             updateDrawableSize()
         }
         let perfDraw = Perf.enabled ? CACurrentMediaTime() : 0
@@ -723,11 +671,8 @@ final class TerminalView: NSView, NSTextInputClient {
                                   hoverSpan: hoverSpan,
                                   scrollY: smoothScrollY,
                                   colors: config.colorAdjustments,
-                                  backgroundInLayer: true,
-                                  contentTransition: sidebarContentTransition(at: CACurrentMediaTime(), sized: sized))
+                                  backgroundInLayer: true)
         if renderer.draw(layer: layer, params: params) {
-            if case .capture? = sidebarReflow { sidebarReflow = .waiting }
-            if let size = pendingSidebarSize { reportGridSize(for: size) }
             let color = renderer.surfaceColor(params: params)
             let components = [CGFloat(color.x), CGFloat(color.y), CGFloat(color.z), CGFloat(color.w)]
             let background = NSColor(colorSpace: config.displayP3 ? .displayP3 : .sRGB,
@@ -754,32 +699,6 @@ final class TerminalView: NSView, NSTextInputClient {
         let newCursor = (renderer.snapshot.info.cursor_col, renderer.snapshot.info.cursor_row)
         if hasMarkedText() && (oldCursor.0 != newCursor.0 || oldCursor.1 != newCursor.1) {
             updateMarkedTextOverlay()
-        }
-    }
-
-    /// Reflow arrives independently of the geometry animation. Blend only once the new
-    /// grid is ready, so long lines changing rows do not jump in a single presented frame.
-    private func sidebarContentTransition(at now: CFTimeInterval, sized: Bool) -> ContentTransition {
-        let duration = Motion.duration(Motion.sidebarReflow)
-        guard duration > 0 else {
-            sidebarReflow = nil
-            return .none
-        }
-        switch sidebarReflow {
-        case .capture:
-            return .capture
-        case .waiting:
-            if sized || resizeTimedOut { sidebarReflow = .blending(now) }
-            return .blend(0)
-        case .blending(let start):
-            let t = min(1, max(0, (now - start) / duration))
-            if t >= 1 {
-                sidebarReflow = nil
-                return .none
-            }
-            return .blend(Float(t * t * (3 - 2 * t)))
-        case nil:
-            return .none
         }
     }
 
@@ -1369,6 +1288,25 @@ final class TerminalView: NSView, NSTextInputClient {
         pb.setString(text, forType: .string)
     }
 
+    @objc func insertPath(_ sender: Any?) {
+        completion.close()
+        InsertPathPicker.shared.show(for: self)
+    }
+
+    @discardableResult
+    func insertPickedPath(_ path: String, cwd: String) -> Bool {
+        guard !isOffline, window != nil, let info = SessionManager.shared.panes[pane],
+              info.alive, !info.passwordInput, info.cwd == cwd,
+              !["ssh", "mosh", "mosh-client"].contains(info.foregroundName ?? ""),
+              let text = InsertPathPicker.shellText(path) else {
+            showToast("The terminal changed. Open Insert Path again.")
+            return false
+        }
+        window?.makeFirstResponder(self)
+        Core.shared.paste(pane, text: text)
+        return true
+    }
+
     @objc func paste(_ sender: Any?) {
         if isOffline { return }
         let pb = NSPasteboard.general
@@ -1632,7 +1570,10 @@ final class TerminalView: NSView, NSTextInputClient {
         }
         let p = cellPosition(convert(event.locationInWindow, from: nil))
         let link = p.inGrid ? linkURL(col: p.col, row: p.row) : nil
-        NSMenu.popUpContextMenu(contextMenu(link: link), with: event, for: self)
+        let (text, columns) = renderer.snapshot.rowText(p.row)
+        let file = p.inGrid
+            ? TerminalFileReference.at(text: text, columns: columns, column: p.col, link: link) : nil
+        NSMenu.popUpContextMenu(contextMenu(link: link, file: file), with: event, for: self)
     }
 
     override func rightMouseUp(with event: NSEvent) {
@@ -1803,8 +1744,16 @@ final class TerminalView: NSView, NSTextInputClient {
 
     // MARK: Context menu
 
-    private func contextMenu(link: URL?) -> NSMenu {
+    func contextMenu(link: URL?, file: TerminalFileReference? = nil) -> NSMenu {
         let menu = NSMenu(title: "Terminal")
+        if let file {
+            let item = menu.addItem(withTitle: "Quick Look", action: #selector(quickLookFile(_:)),
+                                    keyEquivalent: "")
+            item.target = self
+            item.representedObject = FilePreviewRequest(reference: file,
+                cwd: SessionManager.shared.panes[pane]?.cwd, isRemote: pane.isRemote)
+            menu.addItem(NSMenuItem.separator())
+        }
         if let link {
             let openItem = menu.addItem(withTitle: "Open Link", action: #selector(openLinkFromMenu(_:)),
                                         keyEquivalent: "")
@@ -1820,6 +1769,8 @@ final class TerminalView: NSView, NSTextInputClient {
         copyItem.target = self
         let pasteItem = menu.addItem(withTitle: "Paste", action: #selector(paste(_:)), keyEquivalent: "")
         pasteItem.target = self
+        let pathItem = menu.addItem(withTitle: "Insert Path…", action: #selector(insertPath(_:)), keyEquivalent: "")
+        pathItem.target = self
         menu.addItem(NSMenuItem.separator())
         menu.addItem(withTitle: "Split Right", action: #selector(TerminalWindowController.splitRight(_:)),
                      keyEquivalent: "")
@@ -1831,6 +1782,43 @@ final class TerminalView: NSView, NSTextInputClient {
         let clearItem = menu.addItem(withTitle: "Clear", action: #selector(clearScreen(_:)), keyEquivalent: "")
         clearItem.target = self
         return menu
+    }
+
+    @objc private func quickLookFile(_ sender: NSMenuItem) {
+        guard let request = sender.representedObject as? FilePreviewRequest else { return }
+        do {
+            let url = try request.reference.localFile(cwd: request.cwd, isRemote: request.isRemote)
+            guard let window, let panel = QLPreviewPanel.shared() else { return }
+            window.makeKeyAndOrderFront(nil)
+            window.makeFirstResponder(self)
+            previewURL = url
+            panel.makeKeyAndOrderFront(nil)
+            panel.updateController()
+            guard panel.currentController as AnyObject? === self else {
+                previewURL = nil
+                if panel.currentController == nil { panel.orderOut(nil) }
+                showToast("Quick Look could not open the preview.", duration: 5)
+                return
+            }
+            panel.reloadData()
+        } catch {
+            showToast(error.localizedDescription, duration: 6)
+        }
+    }
+
+    override func acceptsPreviewPanelControl(_ panel: QLPreviewPanel!) -> Bool {
+        previewURL != nil && window != nil
+    }
+
+    override func beginPreviewPanelControl(_ panel: QLPreviewPanel!) {
+        previewPanel = panel
+        panel.dataSource = self
+    }
+
+    override func endPreviewPanelControl(_ panel: QLPreviewPanel!) {
+        panel.dataSource = nil
+        previewPanel = nil
+        previewURL = nil
     }
 
     @objc private func openLinkFromMenu(_ sender: NSMenuItem) {
@@ -1848,6 +1836,24 @@ final class TerminalView: NSView, NSTextInputClient {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(pane.copyText, forType: .string)
     }
+}
+
+extension TerminalView: QLPreviewPanelDataSource {
+    func numberOfPreviewItems(in panel: QLPreviewPanel!) -> Int {
+        previewURL == nil ? 0 : 1
+    }
+
+    func previewPanel(_ panel: QLPreviewPanel!, previewItemAt index: Int) -> QLPreviewItem! {
+        guard index == 0 else { return nil }
+        return previewURL as NSURL?
+    }
+}
+
+/// Keep the directory from the time the context menu opened.
+struct FilePreviewRequest {
+    let reference: TerminalFileReference
+    let cwd: String?
+    let isRemote: Bool
 }
 
 /// "Disconnected — reconnecting…" over a remote pane whose host is not connected; the pane's

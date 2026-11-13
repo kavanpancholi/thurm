@@ -1,5 +1,8 @@
 //! End-to-end: run the real daemon with real PTYs and drive it through the client library.
 
+#[path = "e2e/path_search.rs"]
+mod path_search;
+
 #[path = "e2e/workflows_upgrade.rs"]
 mod workflows_upgrade;
 
@@ -14,6 +17,9 @@ mod program_status;
 
 #[path = "e2e/mobile.rs"]
 mod mobile;
+
+#[path = "e2e/activity_age.rs"]
+mod activity_age;
 
 #[path = "e2e/state_events.rs"]
 mod state_events;

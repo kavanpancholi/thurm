@@ -102,10 +102,10 @@ impl Encoders {
             KeyAction::Release => ffi::KeyAction::RELEASE,
         };
         let mut out = unsafe {
-            ffi::ghostty_key_encoder_setopt_from_terminal(self.key, vt.raw());
+            ffi::ghostty_key_encoder_set_from_terminal(self.key, vt.raw());
             if !kitty {
                 let none: ffi::KittyKeyFlags = 0;
-                ffi::ghostty_key_encoder_setopt(
+                ffi::ghostty_key_encoder_set(
                     self.key,
                     ffi::KeyEncoderOption::KITTY_FLAGS,
                     (&none as *const ffi::KittyKeyFlags).cast(),
@@ -113,7 +113,7 @@ impl Encoders {
             }
             // Option-as-Alt is decided by the app: ALT only arrives when it applies.
             let alt = ffi::OptionAsAlt::TRUE;
-            ffi::ghostty_key_encoder_setopt(
+            ffi::ghostty_key_encoder_set(
                 self.key,
                 ffi::KeyEncoderOption::MACOS_OPTION_AS_ALT,
                 (&alt as *const ffi::OptionAsAlt::Type).cast(),
@@ -124,7 +124,13 @@ impl Encoders {
             ffi::ghostty_key_event_set_mods(ev_, m);
             ffi::ghostty_key_event_set_consumed_mods(ev_, consumed);
             ffi::ghostty_key_event_set_unshifted_codepoint(ev_, unshifted);
-            ffi::ghostty_key_event_set_utf8(ev_, text.as_ptr().cast(), text.len());
+            ffi::ghostty_key_event_set_utf8(
+                ev_,
+                ffi::String {
+                    ptr: text.as_ptr(),
+                    len: text.len(),
+                },
+            );
             encode(|buf, len, out| ffi::ghostty_key_encoder_encode(self.key, ev_, buf, len, out))
         };
         // Line feed/new line mode (LNM): Return sends CR LF.
@@ -251,14 +257,14 @@ impl Encoders {
             ..Default::default()
         };
         let out = unsafe {
-            ffi::ghostty_mouse_encoder_setopt_from_terminal(self.mouse, vt.raw());
-            ffi::ghostty_mouse_encoder_setopt(
+            ffi::ghostty_mouse_encoder_set_from_terminal(self.mouse, vt.raw());
+            ffi::ghostty_mouse_encoder_set(
                 self.mouse,
                 ffi::MouseEncoderOption::SIZE,
                 (&size as *const ffi::MouseEncoderSize).cast(),
             );
             let any = pressed && action == ffi::MouseAction::MOTION;
-            ffi::ghostty_mouse_encoder_setopt(
+            ffi::ghostty_mouse_encoder_set(
                 self.mouse,
                 ffi::MouseEncoderOption::ANY_BUTTON_PRESSED,
                 (&any as *const bool).cast(),
@@ -268,7 +274,7 @@ impl Encoders {
             match button {
                 Some(b) => ffi::ghostty_mouse_event_set_button(ev, b),
                 None => ffi::ghostty_mouse_event_clear_button(ev),
-            }
+            };
             ffi::ghostty_mouse_event_set_mods(ev, ghostty_mods(m));
             ffi::ghostty_mouse_event_set_position(
                 ev,
@@ -336,15 +342,13 @@ pub fn paste_is_safe(text: &str) -> bool {
 }
 
 /// Runs a libghostty-vt encode call, growing the buffer when it's too small.
-unsafe fn encode(
-    mut f: impl FnMut(*mut std::ffi::c_char, usize, *mut usize) -> ffi::Result::Type,
-) -> Vec<u8> {
+unsafe fn encode(mut f: impl FnMut(*mut u8, usize, *mut usize) -> ffi::Result::Type) -> Vec<u8> {
     let mut buf = vec![0u8; 64];
     let mut len = 0usize;
-    let mut r = f(buf.as_mut_ptr().cast(), buf.len(), &mut len);
+    let mut r = f(buf.as_mut_ptr(), buf.len(), &mut len);
     if r == ffi::Result::OUT_OF_SPACE {
         buf.resize(len, 0);
-        r = f(buf.as_mut_ptr().cast(), buf.len(), &mut len);
+        r = f(buf.as_mut_ptr(), buf.len(), &mut len);
     }
     if r != ffi::Result::SUCCESS {
         return Vec::new();

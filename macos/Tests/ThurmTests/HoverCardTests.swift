@@ -94,6 +94,17 @@ final class HoverCardTests: XCTestCase {
         XCTAssertEqual(pane.icon, .claude)
     }
 
+    func testWorkingAgentsSayWhatTheyAreDoing() {
+        func detail(_ message: String?) -> String? {
+            HoverCardModel.make(root: .leaf(key(1)), focused: key(1), zoomed: nil, titleOverride: nil,
+                                host: localHost, panes: [key(1): info(1, agent("Working", message: message))])
+                .panes[0].detail
+        }
+        XCTAssertEqual(detail("  Running the test suite\n"), "Running the test suite")
+        XCTAssertEqual(detail(" \n\t"), "Working")
+        XCTAssertEqual(detail(nil), "Working")
+    }
+
     func testAWaitingAgentStaysWhenPanesAreLeftOut() {
         var root = SplitNode.leaf(key(1))
         var panes = [key(1): info(1)]

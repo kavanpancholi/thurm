@@ -458,6 +458,7 @@ impl AgentTracker {
     fn hook_state(&self) -> Option<AgentState> {
         let h = self.hook.as_ref()?;
         Some(AgentState {
+            updated_at_ms: None,
             name: h.name.clone(),
             kind: h.kind.clone(),
             status: h.status,
@@ -517,7 +518,16 @@ impl AgentTracker {
 
     /// Make `plain`, with the program's report over it, the current state.
     fn set(&mut self, plain: Option<AgentState>) -> Option<Option<AgentState>> {
-        let next = plain.clone().map(|s| self.with_program(s));
+        let mut next = plain.clone().map(|s| self.with_program(s));
+        if let Some(state) = &mut next {
+            state.updated_at_ms = self.current.as_ref().and_then(|s| s.updated_at_ms);
+            if self.current.as_ref() != Some(state) {
+                state.updated_at_ms = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .ok()
+                    .and_then(|d| u64::try_from(d.as_millis()).ok());
+            }
+        }
         self.plain = plain;
         self.prompt.observe(self.fg_pgrp, next.as_ref());
         if let Some(n) = &next {
@@ -619,6 +629,7 @@ impl AgentTracker {
             screen_certain = seen.filter(|s| self.stop_signal != Some(*s));
             self.with_ai(self.with_hook(
                 AgentState {
+                    updated_at_ms: None,
                     name: d.name.clone(),
                     kind: d.kind.clone(),
                     status,
@@ -744,6 +755,49 @@ mod tests {
             pid: pgrp,
             ..proc(name)
         }
+    }
+
+    #[test]
+    fn activity_timestamp_changes_only_with_reported_state() {
+        let mut tracker = AgentTracker::default();
+        tracker.apply_hook(
+            Some(1),
+            "claude",
+            "Claude Code",
+            "prompt-submit",
+            None,
+            None,
+        );
+        tracker.saw_foreground(Some(1));
+        tracker.refresh();
+        let stamp = tracker.state().unwrap().updated_at_ms;
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        assert!(stamp.is_some_and(|s| s > now - 10_000 && s <= now));
+        assert!(tracker.refresh().is_none());
+        assert_eq!(tracker.state().unwrap().updated_at_ms, stamp);
+        tracker.current.as_mut().unwrap().updated_at_ms = Some(1);
+        tracker.apply_hook(
+            Some(1),
+            "claude",
+            "Claude Code",
+            "notification",
+            None,
+            Some("Allow?".into()),
+        );
+        tracker.refresh();
+        assert!(tracker.state().unwrap().updated_at_ms.unwrap() > 1);
+
+        // A new task or message is an update even when the status stays the same.
+        tracker.current.as_mut().unwrap().updated_at_ms = Some(1);
+        tracker.set_ai_topic(Some("Check tests".into()));
+        tracker.refresh();
+        assert!(tracker.state().unwrap().updated_at_ms.unwrap() > 1);
+        assert!(tracker.refresh().is_none());
+        tracker.set(None);
+        assert!(tracker.state().is_none());
     }
 
     #[test]
@@ -1491,6 +1545,7 @@ mod tests {
     #[test]
     fn generic_titles() {
         let a = AgentState {
+            updated_at_ms: None,
             name: "Claude Code".into(),
             kind: "claude".into(),
             status: AgentStatus::Idle,

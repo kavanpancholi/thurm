@@ -195,6 +195,7 @@ enum AgentStatus: String {
 }
 
 struct AgentState: Equatable {
+    var updatedAtMs: UInt64? = nil
     var name: String
     var kind: String
     var status: AgentStatus
@@ -260,7 +261,9 @@ struct PaneInfo {
     var git: GitInfo?
 
     init?(json: Any?, host: HostId = localHost) {
-        guard let d = json as? [String: Any], let id = jsonUInt64(d["id"]) else { return nil }
+        guard let payload = json as? [String: Any] else { return nil }
+        let d = payload["info"] as? [String: Any] ?? payload
+        guard let id = jsonUInt64(d["id"]) else { return nil }
         self.id = id
         self.host = host
         title = jsonString(d["title"]) ?? ""
@@ -281,7 +284,7 @@ struct PaneInfo {
         if let a = d["agent"] as? [String: Any],
            let statusName = jsonString(a["status"]),
            let status = AgentStatus(rawValue: statusName) {
-            agent = AgentState(name: jsonString(a["name"]) ?? "Agent",
+            agent = AgentState(updatedAtMs: Self.activityTimestamp(payload["updated_at_ms"]), name: jsonString(a["name"]) ?? "Agent",
                                kind: jsonString(a["kind"]) ?? "",
                                status: status,
                                sessionId: jsonString(a["session_id"]),
@@ -313,6 +316,12 @@ struct PaneInfo {
     }
 
     var key: PaneKey { PaneKey(host, id) }
+
+    private static func activityTimestamp(_ value: Any?) -> UInt64? {
+        guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
+              let timestamp = UInt64(number.stringValue), timestamp > 0 else { return nil }
+        return timestamp
+    }
 
     /// Title for tabs: program title, else the cwd's last path component.
     var displayTitle: String {

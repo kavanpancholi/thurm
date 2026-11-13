@@ -8,6 +8,9 @@ config_version = 9
 [font]
 # A family or a face name ("TX-02 Retina ExtraCondensed"). JetBrains Mono ships with Thurm.
 family = "JetBrains Mono"
+# A face of the family for regular text, by its style name ("Semi-Condensed",
+# "Retina ExtraCondensed"); bold and italic follow its width. The family's regular face when unset.
+# style = "..."
 # Optional faces for styled text; derived from `family` when unset.
 # Bold face.
 # family_bold = "JetBrains Mono ExtraBold"

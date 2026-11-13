@@ -1,5 +1,39 @@
 # Changelog
 
+## v0.19.4 - 2026-11-10
+
+Thurm now clears the Dock badge for a pane that you close. This release fixes a bug that kept a finished agent in the badge count.
+
+### Fixes
+
+- The Dock badge clears when you close a pane that ran an agent. Before this fix, a closed pane could come back and keep its finished agent in the badge count until you restarted the app.
+
+## v0.19.3 - 2026-11-10
+
+This release fixes notifications that stayed in Notification Center after you read their pane.
+
+### Fixes
+
+- Notifications now leave Notification Center after you read their pane. Before, program notifications, finished commands and failed commands could stay. The daemon now marks these as unread. The macOS app also removes notifications of panes on screen when focus changes.
+
+## v0.19.2 - 2026-11-08
+
+This release fixes the motion of the sidebar toggle. Panes keep their size during the slide and resize once it ends.
+
+### Fixes
+
+- The sidebar toggle uses the standard motion again. The Agents panel fold uses the same motion.
+- Panes no longer resize before the sidebar slide. Text no longer wraps and fades in the middle of the slide.
+- Full-screen programs no longer flash their old layout after a resize. The terminal holds the frame until the program redraws.
+
+## v0.19.1 - 2026-11-07
+
+This release updates the terminal engine to libghostty-vt 1.0.0. Your terminal sessions behave as before.
+
+### Other changes
+
+- Thurm now builds against libghostty-vt 1.0.0, the first release with a stable C interface. Styles, underline colors, and scrollback history keep working as before.
+
 ## v0.19.0 - 2026-11-07
 
 This release adds tab history and a fold for the Agents panel. It also fixes how a pane clears its selection.

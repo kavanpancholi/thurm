@@ -341,6 +341,8 @@ pub struct Client {
     pub pane_owner: AtomicBool,
     /// `thurm events` ([`thurm_proto::CAP_STATE_EVENTS`]): gets every `PaneInfo`.
     pub state_events: AtomicBool,
+    /// Accepts pane snapshots with activity times.
+    pub agent_activity: AtomicBool,
     /// A UI that carries out the newer UI commands ([`thurm_proto::CAP_UI_LAYOUT`]).
     pub ui_layout: AtomicBool,
     /// A UI that gathers agents into a wall ([`thurm_proto::CAP_AGENT_WALL`]).
@@ -369,6 +371,32 @@ pub struct Client {
 
 impl Client {
     pub fn send(&self, msg: ServerMessage) {
+        let msg = if self.agent_activity.load(Ordering::Relaxed) {
+            match msg {
+                ServerMessage::Event(Event::PaneInfo(info)) => {
+                    ServerMessage::Event(Event::PaneActivity(info.into()))
+                }
+                ServerMessage::Response {
+                    id,
+                    result: Ok(Response::PaneInfo(info)),
+                } => ServerMessage::Response {
+                    id,
+                    result: Ok(Response::PaneActivity(info.into())),
+                },
+                ServerMessage::Response {
+                    id,
+                    result: Ok(Response::Panes(panes)),
+                } => ServerMessage::Response {
+                    id,
+                    result: Ok(Response::PanesWithActivity(
+                        panes.into_iter().map(Into::into).collect(),
+                    )),
+                },
+                other => other,
+            }
+        } else {
+            msg
+        };
         self.queued
             .fetch_add(message_weight(&msg), Ordering::Relaxed);
         self.unflushed.fetch_add(1, Ordering::AcqRel);
@@ -422,6 +450,9 @@ pub struct PaneState {
     pub info: PaneInfo,
     pub command: Option<Vec<String>>,
     pub hold: bool,
+    /// `close_pane` took the pane away and told clients so: its exit says nothing more. Set
+    /// under this lock, where `pane_exited` decides, so no PaneInfo can follow PaneClosed.
+    pub closed: bool,
     pub subscribers: HashMap<u64, Subscriber>,
     pub terminal_attachment: Option<(u64, PaneSize)>,
     /// Per client, the size it shows the pane at (see `active_size`).
@@ -518,7 +549,7 @@ pub struct Daemon {
     push: crate::push::Pusher,
     /// Serving over Tailscale.
     pub tailnet: Arc<crate::tailnet::Tailnet>,
-    /// Panes with an agent notice nobody has read yet (see `pane_read`).
+    /// Panes with a notification nobody has read yet (see `pane_read`).
     unread: Mutex<HashSet<PaneId>>,
     ai_rx: Receiver<AiJob>,
     store: Option<Store>,
@@ -624,24 +655,27 @@ impl Daemon {
                 .collect()
         };
         match &event {
-            // Agent notices only, which carry their state's sound (`[notifications.<state>]`): a
-            // program's own (OSC 9 / 99 / 777) and a finished command stay on the desktop.
+            // Every notification is unread until its pane is read (`pane_read`). Agent notices
+            // only, which carry their state's sound (`[notifications.<state>]`), go to phones:
+            // a program's own (OSC 9 / 99 / 777) and a finished command stay on the desktop.
             Event::Notify {
                 pane,
                 title,
                 permission,
-                sound: Some(_),
+                sound,
                 ..
             } => {
                 self.unread.lock().insert(*pane);
-                self.push.notify(
-                    crate::push::Notice {
-                        pane: *pane,
-                        title: title.clone(),
-                        permission: *permission,
-                    },
-                    &open(),
-                );
+                if sound.is_some() {
+                    self.push.notify(
+                        crate::push::Notice {
+                            pane: *pane,
+                            title: title.clone(),
+                            permission: *permission,
+                        },
+                        &open(),
+                    );
+                }
             }
             Event::PaneInfo(info) => self.push.agent_changed(
                 info.id,
@@ -675,8 +709,8 @@ impl Daemon {
         }
     }
 
-    /// The user read `pane` on some device (focused it, typed in it, answered its prompt): an
-    /// agent notice still standing for it comes down everywhere, the desktops' and the phones'.
+    /// The user read `pane` on some device (focused it, typed in it, answered its prompt): a
+    /// notification still standing for it comes down everywhere, the desktops' and the phones'.
     /// Only the first read after a notice says so.
     fn pane_read(&self, pane: PaneId) {
         if self.unread.lock().remove(&pane) {
@@ -746,6 +780,7 @@ impl Daemon {
             pane_pager: AtomicBool::new(false),
             pane_owner: AtomicBool::new(false),
             state_events: AtomicBool::new(false),
+            agent_activity: AtomicBool::new(false),
             ui_layout: AtomicBool::new(false),
             agent_wall: AtomicBool::new(false),
             floating: AtomicBool::new(false),
@@ -949,6 +984,7 @@ impl Daemon {
                 info: p.info,
                 command: p.command,
                 hold: p.hold,
+                closed: false,
                 subscribers: HashMap::new(),
                 terminal_attachment: None,
                 wanted: HashMap::new(),
@@ -1413,11 +1449,13 @@ impl Daemon {
             log::info!("pane {} ended with the daemon", pane.id);
             return;
         }
-        let (hold, info) = {
+        let (hold, info, closed) = {
             let mut st = pane.state.lock();
             st.info.alive = false;
             st.info.exit_code = code;
-            if st.term.program_exited() {
+            // Closed explicitly: a PaneInfo or a notification now would bring the pane back to
+            // clients that already dropped it.
+            if st.term.program_exited() && !st.closed {
                 let records = st.term.program_status();
                 let events = self.sync_programs(pane.id, &mut st, records);
                 self.broadcast(Event::PaneInfo(st.info.clone()), false);
@@ -1432,9 +1470,10 @@ impl Daemon {
                 };
                 st.term.print(&msg);
             }
-            (st.hold, st.info.clone())
+            (st.hold, st.info.clone(), st.closed)
         };
-        if self.pane(pane.id).is_none() {
+        // A close that took the pane out of the map may not have taken its lock yet.
+        if closed || self.pane(pane.id).is_none() {
             // Closed explicitly; ClosePane already notified clients.
             return;
         }
@@ -1485,8 +1524,12 @@ impl Daemon {
             return false;
         };
         self.just_exited.lock().retain(|(p, _)| p.id != id);
-        pane.state.lock().pty.hangup();
         self.session_dirty.store(true, Ordering::Relaxed);
+        // Under the pane's lock, as `pane_exited` broadcasts: its exit's PaneInfo comes before
+        // PaneClosed or not at all.
+        let mut st = pane.state.lock();
+        st.closed = true;
+        st.pty.hangup();
         self.broadcast(Event::PaneClosed { pane: id }, false);
         true
     }
@@ -2402,6 +2445,7 @@ impl Daemon {
             // Slow queries and layout confirmation must not block later requests,
             // including the desktop client's reply. Responses carry their request ID.
             slow @ (Request::Complete { .. }
+            | Request::SearchPaths { .. }
             | Request::Processes { .. }
             | Request::ApplyLayout { .. }) => {
                 let daemon = self.clone();
@@ -2574,6 +2618,9 @@ impl Daemon {
                 if has(thurm_proto::CAP_STATE_EVENTS) {
                     client.state_events.store(true, Ordering::Relaxed);
                 }
+                if has(thurm_proto::CAP_AGENT_ACTIVITY) {
+                    client.agent_activity.store(true, Ordering::Relaxed);
+                }
                 if has(thurm_proto::CAP_UI_LAYOUT) {
                     client.ui_layout.store(true, Ordering::Relaxed);
                 }
@@ -2643,6 +2690,33 @@ impl Daemon {
                 } else {
                     Err(format!("no such pane: {pane}"))
                 }
+            }
+            Request::SearchPaths { pane, query } => {
+                let (cwd, pid, foreground, alive) = self.with_pane(pane, |_, st| {
+                    (
+                        st.info.cwd.clone(),
+                        st.info.pid,
+                        st.info.foreground.clone(),
+                        st.info.alive,
+                    )
+                })?;
+                if !alive {
+                    return Err("This terminal has closed.".into());
+                }
+                if foreground
+                    .as_ref()
+                    .is_some_and(|p| matches!(p.name.as_str(), "ssh" | "mosh" | "mosh-client"))
+                {
+                    return Err("Use a Thurm remote workspace to search this host.".into());
+                }
+                let cwd = cwd
+                    .filter(|s| Path::new(s).is_absolute())
+                    .ok_or("The terminal's working folder is not available.")?;
+                let home = pid
+                    .and_then(|pid| procinfo::env_var(pid, "HOME"))
+                    .or_else(|| std::env::var("HOME").ok());
+                crate::path_search::search(&query, Path::new(&cwd), home.as_deref())
+                    .map(Response::PathMatches)
             }
             Request::Complete { pane } => {
                 let (line, cwd, at_prompt, path, pid) = self.with_pane(pane, |_, st| {
@@ -3765,6 +3839,7 @@ mod tests {
 
     fn agent(status: AgentStatus, permission: Option<u64>) -> AgentState {
         AgentState {
+            updated_at_ms: None,
             name: "Claude Code".into(),
             kind: "claude".into(),
             status,
@@ -3825,6 +3900,106 @@ mod tests {
         daemon.parse_output(&pane, b"\x1b]7501;state=working:app=x\x1b\\", Some(job));
         assert_eq!(pane.state.lock().programs_pgrp, Some(job));
         daemon.close_pane(id);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Closing a pane hangs up its pty, and its reader then sees the program end. Clients have
+    /// dropped the pane by then: a PaneInfo would bring it back to them, with its agent still
+    /// counted on the Dock badge.
+    #[test]
+    fn a_closed_pane_is_not_heard_of_again() {
+        let dir = std::env::temp_dir().join(format!("thurm-closed-quiet-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let daemon = Daemon::new(
+            Config::default(),
+            dir.join("s.sock"),
+            dir.join("state"),
+            Arc::new(AtomicBool::new(false)),
+        );
+        let id = daemon
+            .create_pane(
+                CreatePane {
+                    command: Some(vec!["sleep".into(), "30".into()]),
+                    size: PaneSize {
+                        cols: 80,
+                        rows: 24,
+                        cell_width: 8,
+                        cell_height: 16,
+                    },
+                    ..Default::default()
+                },
+                None,
+            )
+            .unwrap();
+        let pane = daemon.pane(id).unwrap();
+        daemon.parse_output(&pane, b"\x1b]7501;state=working:app=x\x1b\\", None);
+        let (client, rx) = daemon.add_client();
+        client.ui.store(true, Ordering::Relaxed);
+        daemon.close_pane(id);
+        let mut closed = false;
+        let mut after = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline {
+            match rx.recv_timeout(Duration::from_millis(50)) {
+                Ok(ServerMessage::Event(Event::PaneClosed { pane })) if pane == id => closed = true,
+                Ok(ServerMessage::Event(ev)) if closed => after.push(ev),
+                _ => {}
+            }
+        }
+        assert!(closed);
+        assert!(after.is_empty(), "heard after PaneClosed: {after:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The exit can have looked at the pane before a close took it away: whether it speaks is
+    /// decided under the pane's lock, where the close marks it, not by the pane map.
+    #[test]
+    fn an_exit_that_saw_the_pane_before_its_close_stays_quiet() {
+        let dir = std::env::temp_dir().join(format!("thurm-closed-race-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let daemon = Daemon::new(
+            Config::default(),
+            dir.join("s.sock"),
+            dir.join("state"),
+            Arc::new(AtomicBool::new(false)),
+        );
+        let id = daemon
+            .create_pane(
+                CreatePane {
+                    command: Some(vec!["sleep".into(), "30".into()]),
+                    size: PaneSize {
+                        cols: 80,
+                        rows: 24,
+                        cell_width: 8,
+                        cell_height: 16,
+                    },
+                    ..Default::default()
+                },
+                None,
+            )
+            .unwrap();
+        let pane = daemon.pane(id).unwrap();
+        daemon.parse_output(&pane, b"\x1b]7501;state=working:app=x\x1b\\", None);
+        let (client, rx) = daemon.add_client();
+        client.ui.store(true, Ordering::Relaxed);
+        daemon.close_pane(id);
+        // The map as the exit saw it before the close.
+        daemon.panes.lock().insert(id, pane.clone());
+        daemon.pane_exited(&pane);
+        daemon.panes.lock().remove(&id);
+        let mut closed = false;
+        let mut after = Vec::new();
+        while let Ok(msg) = rx.recv_timeout(Duration::from_millis(200)) {
+            match msg {
+                ServerMessage::Event(Event::PaneClosed { pane }) if pane == id && !closed => {
+                    closed = true
+                }
+                ServerMessage::Event(ev) if closed => after.push(ev),
+                _ => {}
+            }
+        }
+        assert!(closed);
+        assert!(after.is_empty(), "heard after PaneClosed: {after:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -4113,6 +4288,7 @@ mod tests {
             pane_pager: AtomicBool::new(false),
             pane_owner: AtomicBool::new(false),
             state_events: AtomicBool::new(false),
+            agent_activity: AtomicBool::new(false),
             ui_layout: AtomicBool::new(false),
             agent_wall: AtomicBool::new(false),
             floating: AtomicBool::new(false),
@@ -4263,6 +4439,39 @@ mod tests {
             posts.recv_timeout(Duration::from_millis(500)).is_err(),
             "a program notification was pushed"
         );
+        // Both are unread all the same: reading the pane takes either down on the desktops.
+        assert!(
+            daemon.unread.lock().contains(&1),
+            "a program notification is not unread"
+        );
+        assert!(daemon.unread.lock().contains(&2));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A program's notification is unread until its pane is read, once.
+    #[test]
+    fn a_program_notification_is_unread_until_read() {
+        let dir = std::env::temp_dir().join(format!("thurm-unread-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let daemon = Daemon::new(
+            Config::default(),
+            dir.join("s.sock"),
+            dir.join("state"),
+            Arc::new(AtomicBool::new(false)),
+        );
+        daemon.broadcast(
+            Event::Notify {
+                pane: 1,
+                title: "make finished".into(),
+                body: "after 20s".into(),
+                permission: None,
+                sound: None,
+            },
+            true,
+        );
+        assert!(daemon.unread.lock().contains(&1));
+        daemon.pane_read(1);
+        assert!(!daemon.unread.lock().contains(&1));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

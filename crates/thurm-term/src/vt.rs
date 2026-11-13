@@ -137,9 +137,10 @@ pub const TAG_GRAPHEME: ffi::CellContentTag::Type = ffi::CellContentTag::CODEPOI
 pub const TAG_BG_PALETTE: ffi::CellContentTag::Type = ffi::CellContentTag::BG_COLOR_PALETTE;
 pub const TAG_BG_RGB: ffi::CellContentTag::Type = ffi::CellContentTag::BG_COLOR_RGB;
 
-pub const COLOR_NONE: ffi::StyleColorTag::Type = ffi::StyleColorTag::NONE;
-pub const COLOR_PALETTE: ffi::StyleColorTag::Type = ffi::StyleColorTag::PALETTE;
-pub const COLOR_RGB: ffi::StyleColorTag::Type = ffi::StyleColorTag::RGB;
+/// `StyleColor::tag` values (the tag is a byte).
+pub const COLOR_NONE: u8 = ffi::StyleColorTag::NONE as u8;
+pub const COLOR_PALETTE: u8 = ffi::StyleColorTag::PALETTE as u8;
+pub const COLOR_RGB: u8 = ffi::StyleColorTag::RGB as u8;
 
 /// DEC private mode number (or ANSI with `ansi`), as libghostty-vt encodes it.
 pub const fn mode(value: u16, ansi: bool) -> ffi::Mode {
@@ -148,7 +149,6 @@ pub const fn mode(value: u16, ansi: bool) -> ffi::Mode {
 
 pub fn default_style() -> Style {
     let mut s: Style = unsafe { std::mem::zeroed() };
-    s.size = std::mem::size_of::<Style>();
     unsafe { ffi::ghostty_style_default(&mut s) };
     s
 }
@@ -371,8 +371,14 @@ impl Vt {
         );
         set_scrollback(raw, scrollback);
         unsafe {
-            // No byte limit on top: the line limit alone decides.
-            ffi::ghostty_terminal_set(raw, ffi::TerminalOption::SCROLLBACK_MAX_BYTES, ptr::null());
+            // No byte limit on top: the line limit alone decides. (NULL would restore the
+            // default limit of 10,000 bytes.)
+            let unlimited = usize::MAX;
+            ffi::ghostty_terminal_set(
+                raw,
+                ffi::TerminalOption::SCROLLBACK_MAX_BYTES,
+                (&unlimited as *const usize).cast(),
+            );
         }
         install_png_decoder();
         let mut placements: ffi::KittyGraphicsPlacementIterator = ptr::null_mut();
@@ -556,7 +562,7 @@ impl Vt {
         let r = unsafe {
             ffi::ghostty_terminal_get(
                 self.raw,
-                ffi::TerminalData::CURSOR_STYLE,
+                ffi::TerminalData::CURSOR_SGR_STYLE,
                 (&mut s as *mut Style).cast(),
             )
         };
@@ -655,7 +661,7 @@ impl Vt {
             ffi::ghostty_terminal_scroll_viewport(
                 self.raw,
                 ffi::TerminalScrollViewport { tag, value },
-            )
+            );
         }
     }
 
@@ -730,7 +736,6 @@ impl Vt {
             },
         };
         let mut out = GridRef {
-            size: std::mem::size_of::<GridRef>(),
             node: ptr::null_mut(),
             x: 0,
             y: 0,
@@ -922,7 +927,10 @@ impl Vt {
         use ffi::KittyGraphicsImageData as D;
         let h = self.kitty_image_handle(id)?;
         let (mut w, mut hgt, mut format) = (0u32, 0u32, ffi::KittyImageFormat::RGBA);
-        let (mut data, mut len): (*const u8, usize) = (ptr::null(), 0);
+        let mut pixels = ffi::String {
+            ptr: ptr::null(),
+            len: 0,
+        };
         unsafe {
             kitty_ffi::ghostty_kitty_graphics_image_get(h, D::WIDTH, (&mut w as *mut u32).cast());
             kitty_ffi::ghostty_kitty_graphics_image_get(
@@ -937,19 +945,14 @@ impl Vt {
             );
             kitty_ffi::ghostty_kitty_graphics_image_get(
                 h,
-                D::DATA_PTR,
-                (&mut data as *mut *const u8).cast(),
-            );
-            kitty_ffi::ghostty_kitty_graphics_image_get(
-                h,
-                D::DATA_LEN,
-                (&mut len as *mut usize).cast(),
+                D::PIXELS,
+                (&mut pixels as *mut ffi::String).cast(),
             );
         }
-        if data.is_null() {
+        if pixels.ptr.is_null() {
             return None;
         }
-        let px = unsafe { std::slice::from_raw_parts(data, len) };
+        let px = unsafe { std::slice::from_raw_parts(pixels.ptr, pixels.len) };
         let rgba = match format {
             ffi::KittyImageFormat::RGBA => px.to_vec(),
             ffi::KittyImageFormat::RGB => px
@@ -1011,7 +1014,6 @@ impl Vt {
     /// The active selection.
     pub fn selection(&self) -> Option<Sel> {
         let mut sel = ffi::Selection {
-            size: std::mem::size_of::<ffi::Selection>(),
             start: empty_ref(),
             end: empty_ref(),
             rectangle: false,
@@ -1051,7 +1053,6 @@ impl Vt {
     pub fn set_selection(&mut self, sel: Option<Sel>) {
         let raw = sel.and_then(|s| {
             Some(ffi::Selection {
-                size: std::mem::size_of::<ffi::Selection>(),
                 start: self.screen_ref(s.start.0, s.start.1)?,
                 end: self.screen_ref(s.end.0, s.end.1)?,
                 rectangle: s.rectangle,
@@ -1066,7 +1067,6 @@ impl Vt {
     /// Select everything (scrollback and screen).
     pub fn select_all(&mut self) {
         let mut sel = ffi::Selection {
-            size: std::mem::size_of::<ffi::Selection>(),
             start: empty_ref(),
             end: empty_ref(),
             rectangle: false,
@@ -1079,30 +1079,29 @@ impl Vt {
 
     /// The selected text as it is copied: soft wraps joined, trailing blanks trimmed.
     pub fn selection_text(&self) -> String {
-        let opts = ffi::TerminalSelectionFormatOptions {
-            size: std::mem::size_of::<ffi::TerminalSelectionFormatOptions>(),
-            emit: ffi::FormatterFormat::PLAIN,
-            unwrap: true,
-            trim: true,
-            selection: ptr::null(),
+        let mut sel = ffi::Selection {
+            start: empty_ref(),
+            end: empty_ref(),
+            rectangle: false,
         };
-        let (mut out, mut len): (*mut u8, usize) = (ptr::null_mut(), 0);
         let r = unsafe {
-            ffi::ghostty_terminal_selection_format_alloc(
+            ffi::ghostty_terminal_get(
                 self.raw,
-                ptr::null(),
-                opts,
-                &mut out,
-                &mut len,
+                ffi::TerminalData::SELECTION,
+                (&mut sel as *mut ffi::Selection).cast(),
             )
         };
-        if r != ffi::Result::SUCCESS || out.is_null() {
+        if r != ffi::Result::SUCCESS {
             return String::new();
         }
-        let text =
-            String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(out, len) }).into_owned();
-        unsafe { ffi::ghostty_free(ptr::null(), out, len) };
-        text
+        let text = self.format_raw(
+            ffi::FormatterFormat::PLAIN,
+            true,
+            true,
+            ffi::FORMATTER_EXTRAS_NONE,
+            Some(&sel),
+        );
+        String::from_utf8_lossy(&text).into_owned()
     }
 
     /// A mouse press starting a selection (`by`: what a click selects), with word boundaries.
@@ -1171,7 +1170,6 @@ impl Vt {
             len: words.len(),
         };
         let mut sel = ffi::Selection {
-            size: std::mem::size_of::<ffi::Selection>(),
             start: empty_ref(),
             end: empty_ref(),
             rectangle: false,
@@ -1221,6 +1219,28 @@ pub struct FormatExtras {
     pub charsets: bool,
 }
 
+impl FormatExtras {
+    fn bits(self) -> ffi::FormatterExtras {
+        [
+            (self.palette, ffi::FORMATTER_EXTRA_PALETTE),
+            (self.modes, ffi::FORMATTER_EXTRA_MODES),
+            (self.scrolling_region, ffi::FORMATTER_EXTRA_SCROLLING_REGION),
+            (self.tabstops, ffi::FORMATTER_EXTRA_TABSTOPS),
+            (self.pwd, ffi::FORMATTER_EXTRA_PWD),
+            (self.keyboard, ffi::FORMATTER_EXTRA_KEYBOARD),
+            (self.cursor, ffi::FORMATTER_EXTRA_CURSOR),
+            (self.style, ffi::FORMATTER_EXTRA_STYLE),
+            (self.hyperlink, ffi::FORMATTER_EXTRA_HYPERLINK),
+            (self.protection, ffi::FORMATTER_EXTRA_PROTECTION),
+            (self.kitty_keyboard, ffi::FORMATTER_EXTRA_KITTY_KEYBOARD),
+            (self.charsets, ffi::FORMATTER_EXTRA_CHARSETS),
+        ]
+        .into_iter()
+        .filter(|(on, _)| *on)
+        .fold(0, |bits, (_, bit)| bits | bit)
+    }
+}
+
 impl Vt {
     /// The active screen (or the rows `range` spans) as text: VT sequences (`vt`) or plain,
     /// soft wraps joined (`unwrap`), trailing blanks trimmed (`trim`).
@@ -1234,7 +1254,6 @@ impl Vt {
     ) -> Vec<u8> {
         let sel = range.and_then(|s| {
             Some(ffi::Selection {
-                size: std::mem::size_of::<ffi::Selection>(),
                 start: self.screen_ref(s.start.0, s.start.1)?,
                 end: self.screen_ref(s.end.0, s.end.1)?,
                 rectangle: s.rectangle,
@@ -1243,42 +1262,41 @@ impl Vt {
         if range.is_some() && sel.is_none() {
             return Vec::new();
         }
-        let e = extras;
-        let opts = ffi::FormatterTerminalOptions {
-            size: std::mem::size_of::<ffi::FormatterTerminalOptions>(),
-            emit: if vt {
-                ffi::FormatterFormat::VT
-            } else {
-                ffi::FormatterFormat::PLAIN
-            },
-            unwrap,
-            trim,
-            extra: ffi::FormatterTerminalExtra {
-                size: std::mem::size_of::<ffi::FormatterTerminalExtra>(),
-                palette: e.palette,
-                modes: e.modes,
-                scrolling_region: e.scrolling_region,
-                tabstops: e.tabstops,
-                pwd: e.pwd,
-                keyboard: e.keyboard,
-                screen: ffi::FormatterScreenExtra {
-                    size: std::mem::size_of::<ffi::FormatterScreenExtra>(),
-                    cursor: e.cursor,
-                    style: e.style,
-                    hyperlink: e.hyperlink,
-                    protection: e.protection,
-                    kitty_keyboard: e.kitty_keyboard,
-                    charsets: e.charsets,
-                },
-            },
-            selection: sel
-                .as_ref()
-                .map_or(ptr::null(), |s| s as *const ffi::Selection),
+        let emit = if vt {
+            ffi::FormatterFormat::VT
+        } else {
+            ffi::FormatterFormat::PLAIN
         };
+        self.format_raw(emit, unwrap, trim, extras.bits(), sel.as_ref())
+    }
+
+    /// Format the active screen (or `sel`) with a formatter set to these options.
+    fn format_raw(
+        &self,
+        emit: ffi::FormatterFormat::Type,
+        unwrap: bool,
+        trim: bool,
+        extras: ffi::FormatterExtras,
+        sel: Option<&ffi::Selection>,
+    ) -> Vec<u8> {
         let mut f: ffi::Formatter = ptr::null_mut();
-        if unsafe { ffi::ghostty_formatter_terminal_new(ptr::null(), &mut f, self.raw, opts) }
+        if unsafe { ffi::ghostty_formatter_terminal_new(ptr::null(), &mut f, self.raw) }
             != ffi::Result::SUCCESS
         {
+            return Vec::new();
+        }
+        fn set<T>(f: ffi::Formatter, opt: ffi::FormatterOption::Type, value: &T) -> bool {
+            let value = (value as *const T).cast();
+            unsafe { ffi::ghostty_formatter_set(f, opt, value) == ffi::Result::SUCCESS }
+        }
+        use ffi::FormatterOption as O;
+        let applied = set(f, O::EMIT, &emit)
+            && set(f, O::UNWRAP, &unwrap)
+            && set(f, O::TRIM, &trim)
+            && set(f, O::EXTRAS, &extras)
+            && sel.is_none_or(|s| set(f, O::SELECTION, s));
+        if !applied {
+            unsafe { ffi::ghostty_formatter_free(f) };
             return Vec::new();
         }
         let (mut out, mut len): (*mut u8, usize) = (ptr::null_mut(), 0);
@@ -1297,7 +1315,6 @@ impl Vt {
 
 fn empty_ref() -> GridRef {
     GridRef {
-        size: std::mem::size_of::<GridRef>(),
         node: ptr::null_mut(),
         x: 0,
         y: 0,
@@ -1568,11 +1585,17 @@ impl Render {
                                 (&mut len as *mut u32).cast(),
                             );
                             let mut buf = vec![0u32; len as usize];
+                            let mut out = ffi::CodepointBuffer {
+                                ptr: buf.as_mut_ptr(),
+                                cap: buf.len(),
+                                len: 0,
+                            };
                             ffi::ghostty_render_state_row_cells_get(
                                 c,
                                 C::GRAPHEMES_BUF,
-                                buf.as_mut_ptr().cast(),
+                                (&mut out as *mut ffi::CodepointBuffer).cast(),
                             );
+                            buf.truncate(out.len.min(buf.len()));
                             buf.into_iter().filter_map(char::from_u32).collect()
                         } else {
                             Vec::new()
@@ -1607,13 +1630,13 @@ impl Render {
 /// The cursor as the render state has it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RenderCursor {
-    pub style: ffi::RenderStateCursorVisualStyle::Type,
+    pub style: ffi::CursorStyle::Type,
     pub visible: bool,
     pub blinking: bool,
 }
 
-pub use ffi::RenderStateCursorVisualStyle as CursorVisual;
-pub use ffi::TerminalCursorStyle as CursorStyle;
+pub use ffi::CursorStyle;
+pub use ffi::CursorStyle as CursorVisual;
 
 fn set_scrollback(raw: ffi::Terminal, lines: usize) {
     // libghostty-vt prunes whole pages (a few hundred rows), so the limit gets a page of
@@ -1642,7 +1665,7 @@ impl Render {
             ffi::ghostty_render_state_get(
                 self.state,
                 D::CURSOR_VISUAL_STYLE,
-                (&mut c.style as *mut ffi::RenderStateCursorVisualStyle::Type).cast(),
+                (&mut c.style as *mut ffi::CursorStyle::Type).cast(),
             );
             ffi::ghostty_render_state_get(
                 self.state,

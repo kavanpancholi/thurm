@@ -982,6 +982,45 @@ fn a_pane_read_on_the_mac_clears_the_phones_notice() {
     assert!(!heard_read(&mac_events, pane, Duration::from_millis(500)));
 }
 
+/// A program's own notification is unread too: reading its pane says so, once.
+#[test]
+fn a_program_notification_is_read_once() {
+    let env = push_env("read-program");
+    let _daemon = env.start();
+    let (mac, events) = env.connect();
+    let pane = create(&mac, &env.dir);
+    mac.request(Request::Input {
+        pane,
+        data: b"printf '\\033]9;done\\a'\r".to_vec(),
+    })
+    .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let sound = loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if let Event::Notify { pane: p, sound, .. } =
+            events.recv_timeout(left).expect("no notification")
+            && p == pane
+        {
+            break sound;
+        }
+    };
+    assert_eq!(sound, None);
+
+    mac.request(Request::Focus {
+        pane,
+        focused: true,
+    })
+    .unwrap();
+    assert!(heard_read(&events, pane, Duration::from_secs(5)));
+
+    mac.request(Request::Focus {
+        pane,
+        focused: true,
+    })
+    .unwrap();
+    assert!(!heard_read(&events, pane, Duration::from_millis(500)));
+}
+
 /// Reading a pane on one phone tells the Mac (live) and the other phones (through the relay),
 /// but not the phone that read it.
 #[test]
