@@ -73,6 +73,7 @@ final class ActivityGroupsViewTests: XCTestCase {
         super.setUp()
         _ = NSApplication.shared
         savedConfig = manager.config
+        manager.config = AppConfig()
         savedWorkspaces = manager.workspaces
         savedPanes = manager.panes
         manager.workspaces = []
@@ -97,6 +98,24 @@ final class ActivityGroupsViewTests: XCTestCase {
 
     private func setStatus(_ id: UInt64, _ status: AgentStatus) {
         manager.panes[.local(id)] = PaneInfo(json: ["id": id, "agent": ["name": "Codex", "status": status.rawValue]])!
+    }
+
+    func testConfigChangesDoNotChangeSavedConfig() {
+        XCTAssertFalse(manager.config === savedConfig)
+        let agents = savedConfig.sidebarAgents
+        let allWorkspaces = savedConfig.sidebarAllWorkspaces
+        let rows = savedConfig.sidebarAgentRows
+        let tabs = savedConfig.sidebarTabs
+
+        manager.config.sidebarAgents = !agents
+        manager.config.sidebarAllWorkspaces = !allWorkspaces
+        manager.config.sidebarAgentRows = rows + 1
+        manager.config.sidebarTabs = !tabs
+
+        XCTAssertEqual(savedConfig.sidebarAgents, agents)
+        XCTAssertEqual(savedConfig.sidebarAllWorkspaces, allWorkspaces)
+        XCTAssertEqual(savedConfig.sidebarAgentRows, rows)
+        XCTAssertEqual(savedConfig.sidebarTabs, tabs)
     }
 
     func testHeadingsCannotBeSelectedAndRowsResizeAfterStatusChanges() throws {
@@ -150,24 +169,35 @@ final class ActivityGroupsViewTests: XCTestCase {
         }
         let first = try XCTUnwrap(controllers.first)
         let original = first.orderedTabs
+        let tabGroup = try XCTUnwrap(first.window?.tabGroup)
+        let shortcuts = [(1, original[0]), (2, original[1]), (3, original[2]), (9, original[2])]
+        func checkTabsAndShortcuts(_ panel: AgentsPanel) {
+            for sidebar in [true, false] {
+                manager.config.sidebarTabs = sidebar
+                panel.reload()
+                XCTAssertEqual(first.orderedTabs, original)
+                XCTAssertEqual(tabGroup.windows, original)
+                for (number, target) in shortcuts {
+                    // Start on another tab so a failed action cannot pass.
+                    tabGroup.selectedWindow = target === original[0] ? original[1] : original[0]
+                    let item = NSMenuItem()
+                    item.tag = number
+                    first.selectTabByNumber(item)
+                    XCTAssertTrue(tabGroup.selectedWindow === target, "Shortcut \(number), sidebar \(sidebar)")
+                }
+            }
+        }
         setStatus(1, .working)
         setStatus(2, .needsInput)
         setStatus(3, .error)
         let panel = AgentsPanel()
         panel.controller = first
-        panel.reload()
-        XCTAssertEqual(first.orderedTabs, original)
-        XCTAssertEqual(first.window?.tabGroup?.windows, original)
+        checkTabsAndShortcuts(panel)
         XCTAssertEqual(manager.agentPanes(first: first).map(\.pane), [.local(1), .local(2), .local(3)])
 
         setStatus(1, .done)
         setStatus(2, .working)
         setStatus(3, .needsInput)
-        panel.reload()
-        for sidebar in [true, false] {
-            manager.config.sidebarTabs = sidebar
-            XCTAssertEqual(first.orderedTabs, original)
-        }
-        XCTAssertEqual(original.indices.map { tabShortcut(index: $0, count: original.count) }, [1, 2, 3])
+        checkTabsAndShortcuts(panel)
     }
 }
