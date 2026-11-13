@@ -85,8 +85,8 @@ sidebar_group_by_repo = true
 sidebar_all_workspaces = false
 # List only what is going on, by status (Needs input, Failed, Done, Working): every agent that
 # isn't idle, in any window or workspace, one row per pane; then the tabs with a program
-# reporting progress (the selected tab always shows). The filter button next to the sidebar
-# button, View > Only Active Tabs.
+# reporting progress, and the selected tab when its focused pane has no agent row. The filter
+# button next to the sidebar button, View > Only Active Tabs.
 sidebar_active_only = false
 # Show what is left of a subscription's limits (the 5-hour and weekly windows) at the bottom of
 # the sidebar. View > Usage Limits in Sidebar.

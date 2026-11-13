@@ -326,13 +326,29 @@ final class TabSidebarViewController: NSViewController, NSOutlineViewDataSource,
         let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
             guard let self, SessionManager.shared.config.sidebarActiveOnly,
                   self.view.window?.isVisible == true, !self.view.isHiddenOrHasHiddenAncestor else { return }
-            self.reload()
+            self.refreshAges()
         }
         RunLoop.main.add(timer, forMode: .common)
         ageTimer = timer
     }
 
     deinit { ageTimer?.invalidate() }
+
+    /// Moves the agent rows' "updated 20s ago" on. Only the shown rows, and only their age:
+    /// a status or membership change comes with a full reload.
+    func refreshAges(now: Date = Date()) {
+        let panes = SessionManager.shared.panes
+        let visible = outline.rows(in: outline.visibleRect)
+        for row in visible.location..<NSMaxRange(visible) {
+            guard let box = outline.item(atRow: row) as? TabBox, let pane = box.tab.pane,
+                  let info = panes[pane], let agent = info.agent else { continue }
+            let age = AgentPane(pane: pane, info: info, agent: agent, controller: nil, hidden: nil).activityAge(now: now)
+            guard age != box.tab.trailingDetail else { continue }
+            box.tab.trailingDetail = age
+            (outline.view(atColumn: 0, row: row, makeIfNecessary: false) as? TabRowView)?
+                .configure(box.tab, truncateTail: true)
+        }
+    }
 
     // MARK: Model
 
@@ -718,7 +734,9 @@ final class TabSidebarViewController: NSViewController, NSOutlineViewDataSource,
         }
         // Select the row of this window's tab, also when the rows are unchanged: a click on
         // another tab's row selected that row here, and this window's tab is the one shown again.
-        let current = (0..<outline.numberOfRows).first { (outline.item(atRow: $0) as? TabBox)?.tab.selected == true }
+        // An agent row goes before its tab's row (a pinned tab's, say): it is the pane in focus.
+        let selected = (0..<outline.numberOfRows).filter { (outline.item(atRow: $0) as? TabBox)?.tab.selected == true }
+        let current = selected.first { (outline.item(atRow: $0) as? TabBox)?.tab.pane != nil } ?? selected.first
         if let row = current, outline.selectedRow != row {
             outline.selectRowIndexes([row], byExtendingSelection: false)
         }
@@ -907,7 +925,8 @@ final class TabSidebarViewController: NSViewController, NSOutlineViewDataSource,
         guard let box = item as? TabBox else { return nil }
         let cell = outlineView.makeView(withIdentifier: TabRowView.identifier, owner: nil) as? TabRowView
             ?? TabRowView()
-        cell.showsHoverCard = box.tab.controller != nil
+        // A tab's card previews the tab, not an agent's pane.
+        cell.showsHoverCard = box.tab.pane == nil && box.tab.controller != nil
         cell.configure(box.tab, truncateTail: box.tab.pane != nil)
         return cell
     }

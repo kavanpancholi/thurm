@@ -171,6 +171,76 @@ final class ActivityListViewTests: XCTestCase {
         XCTAssertEqual(listed(outline), ["tab", "tab", "tab"])
     }
 
+    private func click(_ row: Int, in outline: NSOutlineView) {
+        outline.selectRowIndexes([row], byExtendingSelection: false)
+        _ = outline.sendAction(outline.action, to: outline.target)
+    }
+
+    func testClickingAnAgentRowBringsItsPaneForward() throws {
+        let first = try tabs()
+        let hidden = try XCTUnwrap(manager.workspaces.first { $0.name == "api" })
+        setStatus(2, .needsInput)
+        setStatus(4, .error)
+        manager.config.sidebarActiveOnly = true
+        let sidebar = try XCTUnwrap(first.sidebar)
+        sidebar.reload()
+        let outline = try outline(sidebar)
+        XCTAssertEqual(listed(outline), ["Needs input", "2", "Failed", "4", "Tabs", "tab"])
+
+        // Another tab of this window.
+        click(1, in: outline)
+        let second = controllers[1]
+        XCTAssertTrue(first.window?.tabGroup?.selectedWindow === second.window)
+        XCTAssertEqual(second.focusedPane, .local(2))
+
+        // A workspace no window shows: it comes into this window, with the agent's pane focused.
+        click(3, in: outline)
+        let shown = try XCTUnwrap(manager.controllerShowing(hidden))
+        controllers += manager.group(of: shown).filter { c in !controllers.contains { $0 === c } }
+        XCTAssertEqual(shown.focusedPane, .local(4))
+    }
+
+    func testAgentRowsHaveNoHoverCardAndWinTheSelectionOverTheirPinnedTab() throws {
+        let first = try tabs()
+        first.pinned = true
+        setStatus(1, .working)
+        manager.config.sidebarActiveOnly = true
+        let sidebar = try XCTUnwrap(first.sidebar)
+        sidebar.view.frame = NSRect(x: 0, y: 0, width: 240, height: 600)
+        sidebar.reload()
+        sidebar.view.layoutSubtreeIfNeeded()
+        let outline = try outline(sidebar)
+        XCTAssertEqual(listed(outline), ["Pinned", "tab", "Working", "1"])
+        XCTAssertEqual(outline.selectedRow, 3)
+        let tab = try XCTUnwrap(outline.view(atColumn: 0, row: 1, makeIfNecessary: true) as? TabRowView)
+        let agent = try XCTUnwrap(outline.view(atColumn: 0, row: 3, makeIfNecessary: true) as? TabRowView)
+        XCTAssertTrue(tab.showsHoverCard)
+        XCTAssertFalse(agent.showsHoverCard)
+    }
+
+    func testAgeRefreshChangesOnlyTheShownAges() throws {
+        let first = try tabs()
+        setStatus(1, .working)
+        setStatus(2, .done)
+        manager.panes[.local(1)]?.agent?.updatedAtMs = 1_800_000_000_000
+        manager.config.sidebarActiveOnly = true
+        let sidebar = try XCTUnwrap(first.sidebar)
+        sidebar.view.frame = NSRect(x: 0, y: 0, width: 240, height: 600)
+        sidebar.reload()
+        sidebar.view.layoutSubtreeIfNeeded()
+        let outline = try outline(sidebar)
+        XCTAssertEqual(listed(outline), ["Done", "2", "Working", "1"])
+        let box = try XCTUnwrap(outline.item(atRow: 3) as? TabBox)
+        let done = try XCTUnwrap(outline.item(atRow: 1) as? TabBox)
+
+        sidebar.refreshAges(now: Date(timeIntervalSince1970: 1_800_000_020))
+        XCTAssertTrue(outline.item(atRow: 3) as? TabBox === box)
+        XCTAssertEqual(box.tab.trailingDetail, "updated 20s ago")
+        XCTAssertNil(done.tab.trailingDetail)
+        sidebar.refreshAges(now: Date(timeIntervalSince1970: 1_800_000_120))
+        XCTAssertEqual(box.tab.trailingDetail, "updated 2m ago")
+    }
+
     func testActivityRowsCannotReorderTabs() throws {
         let first = try tabs()
         setStatus(1, .working)
