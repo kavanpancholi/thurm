@@ -150,6 +150,33 @@ final class MainMenuTests: XCTestCase {
         XCTAssertEqual(names, listed)
     }
 
+    func testNavigationShortcutAndExistingPickers() {
+        _ = NSApplication.shared
+        let main = MainMenu.build()
+        MainMenu.applyKeys([:], commands: [], in: main)
+        for (key, mods, name) in [
+            ("p", NSEvent.ModifierFlags.command, "go_to_anything"),
+            ("p", [.command, .shift], "command_palette"),
+            ("o", [.command, .shift], "switch_workspace"),
+            ("a", [.command, .shift], "switch_agent"),
+        ] {
+            XCTAssertEqual(MainMenu.keyedItem(key, mods, in: main)?.identifier, MainMenu.actionIdentifier(name))
+        }
+        XCTAssertEqual(MainMenu.keyedItem("p", [.command], in: main)?.action,
+                       #selector(AppDelegate.goToAnything(_:)))
+        XCTAssertEqual(MainMenu.applyKeys(["cmd+g": "go_to_anything"], commands: [], in: main), [])
+        XCTAssertEqual(MainMenu.keyedItem("g", [.command], in: main)?.identifier,
+                       MainMenu.actionIdentifier("go_to_anything"))
+        XCTAssertEqual(MainMenu.keyedItem("p", [.command], in: main)?.identifier,
+                       MainMenu.actionIdentifier("go_to_anything"))
+        MainMenu.applyKeys(["cmd+p": "none"], commands: [], in: main)
+        XCTAssertNil(MainMenu.keyedItem("p", [.command], in: main))
+        XCTAssertEqual(MainMenu.keyedItem("p", [.command, .shift], in: main)?.identifier,
+                       MainMenu.actionIdentifier("command_palette"))
+        MainMenu.applyKeys([:], commands: [UserCommand(name: "Print", key: "cmd+p")], in: main)
+        XCTAssertEqual(MainMenu.keyedItem("p", [.command], in: main)?.title, "Print")
+    }
+
     func testUnknownKeysAndModifiersAreRejected() {
         XCTAssertNil(parse(""))
         XCTAssertNil(parse("cmd+"))

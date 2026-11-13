@@ -20,6 +20,7 @@ final class CommandPalette: NSObject, NSTableViewDataSource, NSTableViewDelegate
     struct Item {
         let title: String
         let detail: String
+        let searchText: String
         /// Shown right-aligned ("⇧⌘D").
         let shortcut: String
         /// Text that changes with time while the picker is open.
@@ -30,10 +31,11 @@ final class CommandPalette: NSObject, NSTableViewDataSource, NSTableViewDelegate
         let preview: (() -> Void)?
         let action: () -> Void
 
-        init(title: String, detail: String, shortcut: String = "", rename: (() -> Void)? = nil,
+        init(title: String, detail: String, searchText: String? = nil, shortcut: String = "", rename: (() -> Void)? = nil,
              preview: (() -> Void)? = nil, liveShortcut: ((Date) -> String)? = nil, action: @escaping () -> Void) {
             self.title = title
             self.detail = detail
+            self.searchText = searchText ?? title
             self.shortcut = shortcut
             self.liveShortcut = liveShortcut
             self.rename = rename
@@ -302,7 +304,7 @@ final class CommandPalette: NSObject, NSTableViewDataSource, NSTableViewDelegate
     private func applyFilter() {
         let query = field?.stringValue.trimmingCharacters(in: .whitespaces) ?? ""
         let scored: [(Int, Int, Item)] = allItems.enumerated().compactMap { entry in
-            guard let s = CommandPalette.score(entry.element.title, query) else { return nil }
+            guard let s = CommandPalette.score(entry.element.searchText, query) else { return nil }
             return (s, entry.offset, entry.element)
         }
         filtered = scored.sorted { a, b in a.0 != b.0 ? a.0 < b.0 : a.1 < b.1 }.map { $0.2 }

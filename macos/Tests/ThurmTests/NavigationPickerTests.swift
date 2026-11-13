@@ -1,0 +1,186 @@
+import AppKit
+import XCTest
+@testable import Thurm
+
+final class NavigationPickerTests: XCTestCase {
+    private let manager = SessionManager.shared
+    private var savedWorkspaces: [Workspace] = []
+    private var savedPanes: [PaneKey: PaneInfo] = [:]
+
+    override func setUp() {
+        super.setUp()
+        _ = NSApplication.shared
+        savedWorkspaces = manager.workspaces
+        savedPanes = manager.panes
+        manager.workspaces = []
+        manager.panes = [:]
+    }
+
+    override func tearDown() {
+        for c in manager.liveControllers {
+            c.closingWithoutConfirmation = true
+            c.window?.close()
+        }
+        manager.workspaces = savedWorkspaces
+        manager.panes = savedPanes
+        super.tearDown()
+    }
+
+    private func addPane(_ id: PaneKey, title: String = "Shell") {
+        manager.panes[id] = PaneInfo(json: ["id": id.id, "title": title], host: id.host)!
+    }
+
+    private func tab(_ ids: [PaneKey], in ws: Workspace, title: String = "Task") -> TerminalWindowController {
+        let root = ids.dropFirst().reduce(SplitNode.leaf(ids[0])) {
+            .split(axis: .horizontal, ratio: 0.5, first: $0, second: .leaf($1))
+        }
+        let c = manager.makeController(root: root, focused: ids[0], zoomed: nil, title: title, frame: nil)
+        c.workspaceID = ws.id
+        return c
+    }
+
+    private func target(_ destination: NavigationTarget.Destination) throws -> NavigationTarget {
+        try XCTUnwrap(manager.navigationTargets().first { $0.destination == destination })
+    }
+
+    func testListsSinglePaneTabsAgentsAndHiddenRemoteTargets() throws {
+        let local = PaneKey.local(1), remote = PaneKey("devbox", 1)
+        addPane(local, title: "Local task")
+        addPane(remote, title: "Remote task")
+        manager.panes[remote]?.cwd = "/tmp/checkout"
+        manager.panes[remote]?.git = GitInfo(root: "/src/billing", branch: "fix-login", added: 0, removed: 0)
+        manager.panes[remote]?.agent = AgentState(name: "Codex", kind: "codex", status: .working,
+                                                 topic: "Repair login")
+        let shown = manager.makeWorkspace(name: "Local work")
+        let hidden = manager.makeWorkspace(name: "Deploy", host: "devbox")
+        _ = tab([local], in: shown, title: "Editor")
+        hidden.hiddenTabs = [TabLayout(title: "Release", root: .pane(remote), focused: 1, zoomed: nil)]
+        hidden.lastActive = Date(timeIntervalSince1970: 1)
+
+        let targets = manager.navigationTargets()
+        XCTAssertEqual(targets.count, 6)
+        XCTAssertEqual(targets.first?.destination, .workspace(shown.id))
+        XCTAssertEqual(try target(.tab([local])).title, "Editor")
+        XCTAssertEqual(try target(.tab([remote])).title, "Release")
+        let agent = try target(.pane(remote))
+        XCTAssertEqual(agent.title, "Repair login")
+        XCTAssertTrue(agent.detail.hasPrefix("Agent · Deploy · devbox"))
+        for text in ["Remote task", "billing", "/tmp/checkout", "fix-login", "Codex", "devbox"] {
+            XCTAssertTrue(agent.searchText.contains(text), text)
+            XCTAssertTrue(try target(.tab([remote])).searchText.contains(text), text)
+        }
+        XCTAssertTrue(try target(.pane(local)).detail.contains("local"))
+    }
+
+    func testPaneSelectionUsesCurrentWorkspaceAfterMove() throws {
+        let pane = PaneKey.local(11), other = PaneKey.local(12)
+        addPane(pane)
+        addPane(other)
+        let old = manager.makeWorkspace(name: "Old")
+        let new = manager.makeWorkspace(name: "New")
+        let c = tab([pane], in: old)
+        let host = tab([other], in: old)
+        manager.attachAsTab(host, to: c)
+        let picked = try target(.pane(pane))
+        manager.moveTab(c, to: new)
+
+        manager.activateNavigationTarget(picked, from: host)
+
+        XCTAssertEqual(manager.controller(for: pane)?.workspaceID, new.id)
+        XCTAssertEqual(manager.controller(for: pane)?.focusedPane, pane)
+        XCTAssertTrue(manager.isShown(new))
+        XCTAssertFalse(manager.isShown(old))
+    }
+
+    func testHiddenRemotePaneWithSameNumberSelectsCorrectHost() throws {
+        let local = PaneKey.local(1), remote = PaneKey("devbox", 1)
+        addPane(local)
+        addPane(remote)
+        let shown = manager.makeWorkspace(name: "Local")
+        let hidden = manager.makeWorkspace(name: "Remote", host: "devbox")
+        let host = tab([local], in: shown)
+        hidden.hiddenTabs = [TabLayout(title: "Remote task", root: .pane(remote), focused: 1, zoomed: nil)]
+
+        manager.activateNavigationTarget(try target(.pane(remote)), from: host)
+
+        XCTAssertEqual(manager.controller(for: remote)?.focusedPane, remote)
+        XCTAssertEqual(manager.controller(for: remote)?.workspaceID, hidden.id)
+        XCTAssertNil(manager.controller(for: local))
+        XCTAssertEqual(shown.hiddenTabs.first?.panes, [local])
+    }
+
+    func testTabSelectionKeepsCurrentFocusAndSurvivesClosedPane() throws {
+        let first = PaneKey.local(21), second = PaneKey.local(22)
+        addPane(first)
+        addPane(second)
+        let ws = manager.makeWorkspace(name: "Work")
+        let c = tab([first, second], in: ws)
+        let picked = try target(.tab([first, second]))
+        c.content.focus(second)
+        manager.activateNavigationTarget(picked, from: c)
+        XCTAssertEqual(c.focusedPane, second)
+
+        _ = c.content.remove(pane: first)
+        manager.panes.removeValue(forKey: first)
+        manager.activateNavigationTarget(picked, from: c)
+        XCTAssertEqual(c.focusedPane, second)
+    }
+
+    func testTabSelectionStaysWithOriginalTabWhenOnePaneMoves() throws {
+        let first = PaneKey.local(23), second = PaneKey.local(24)
+        addPane(first)
+        addPane(second)
+        let ws = manager.makeWorkspace(name: "Work")
+        let c = tab([first, second], in: ws)
+        let picked = try target(.tab([first, second]))
+        _ = c.content.remove(pane: first)
+        let moved = tab([first], in: ws)
+        c.content.focus(second)
+        c.window?.makeFirstResponder(nil)
+        manager.activateNavigationTarget(picked, from: moved)
+        XCTAssertEqual(c.focusedPane, second)
+        XCTAssertTrue(c.window?.firstResponder === c.content.focusedView)
+    }
+
+    func testHiddenTabOpensWithoutAHostWindow() throws {
+        let pane = PaneKey("devbox", 31)
+        addPane(pane)
+        let ws = manager.makeWorkspace(name: "Remote", host: "devbox")
+        ws.hiddenTabs = [TabLayout(title: "Task", root: .pane(pane), focused: 31, zoomed: nil)]
+        manager.activateNavigationTarget(try target(.tab([pane])), from: nil)
+        XCTAssertEqual(manager.controller(for: pane)?.focusedPane, pane)
+        XCTAssertTrue(ws.hiddenTabs.isEmpty)
+    }
+
+    func testClosedPaneAndDeletedWorkspaceDoNothing() throws {
+        let pane = PaneKey.local(41)
+        addPane(pane)
+        let ws = manager.makeWorkspace(name: "Work")
+        let c = tab([pane], in: ws)
+        let picked = try target(.pane(pane))
+        let workspace = try target(.workspace(ws.id))
+        c.closingWithoutConfirmation = true
+        c.window?.close()
+        manager.panes.removeValue(forKey: pane)
+        manager.workspaces = []
+
+        manager.activateNavigationTarget(picked, from: c)
+        manager.activateNavigationTarget(workspace, from: c)
+        XCTAssertTrue(manager.liveControllers.isEmpty)
+        XCTAssertTrue(manager.workspaces.isEmpty)
+    }
+
+    func testFloatingPaneSelectionRevealsThePane() throws {
+        let base = PaneKey.local(51), floating = PaneKey.local(52)
+        addPane(base)
+        addPane(floating)
+        let ws = manager.makeWorkspace(name: "Work")
+        let c = manager.makeController(root: .leaf(base), focused: base, zoomed: nil, title: nil, frame: nil,
+                                       floating: [FloatingPane(pane: floating, frame: [0.1, 0.1, 0.5, 0.5])],
+                                       floatingHidden: true)
+        c.workspaceID = ws.id
+        manager.activateNavigationTarget(try target(.pane(floating)), from: c)
+        XCTAssertEqual(c.focusedPane, floating)
+        XCTAssertTrue(c.content.visiblePaneIds.contains(floating))
+    }
+}
