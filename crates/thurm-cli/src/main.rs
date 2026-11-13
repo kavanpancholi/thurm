@@ -169,6 +169,9 @@ enum Cmd {
     },
     /// Open a new tab running COMMAND (default: shell).
     NewTab {
+        /// Pane whose workspace receives the tab (default: current pane).
+        #[arg(short, long)]
+        pane: Option<PaneId>,
         #[arg(long)]
         cwd: Option<String>,
         /// Open in a new workspace (in the background) instead of a tab.
@@ -1455,6 +1458,7 @@ fn run_connected(c: &Client, cmd: Cmd, json: bool) -> R {
             }
         }
         Cmd::NewTab {
+            pane,
             cwd,
             window,
             hold,
@@ -1463,21 +1467,21 @@ fn run_connected(c: &Client, cmd: Cmd, json: bool) -> R {
             wait,
             command,
         } => {
-            let inherit = current_pane(None).ok();
+            let inherit = current_pane(pane).ok();
             // `--wait` reads the exit status from the held pane, then closes it.
             let pane = create(c, command, cwd, inherit, hold || wait, None)?;
             let plain = UiCommand::NewTab {
                 pane,
                 new_window: window,
             };
-            if background && !window {
+            if !window {
                 open(
                     c,
                     plain,
                     UiCommand::Open {
                         pane,
                         split: None,
-                        target: None,
+                        target: inherit,
                         new_window: false,
                         percent: None,
                         background,
@@ -1785,11 +1789,19 @@ fn run_connected(c: &Client, cmd: Cmd, json: bool) -> R {
                         dir: d.into(),
                     },
                 ),
-                None => show(
+                None => open(
                     c,
                     UiCommand::NewTab {
                         pane: new,
                         new_window: false,
+                    },
+                    UiCommand::Open {
+                        pane: new,
+                        split: None,
+                        target: Some(src),
+                        new_window: false,
+                        percent: None,
+                        background: false,
                     },
                 ),
             }
@@ -1807,11 +1819,19 @@ fn run_connected(c: &Client, cmd: Cmd, json: bool) -> R {
                         dir: d.into(),
                     },
                 ),
-                None => show(
+                None => open(
                     c,
                     UiCommand::NewTab {
                         pane: new,
                         new_window: false,
+                    },
+                    UiCommand::Open {
+                        pane: new,
+                        split: None,
+                        target,
+                        new_window: false,
+                        percent: None,
+                        background: false,
                     },
                 ),
             }
@@ -2344,6 +2364,25 @@ fn key_bytes(k: &str) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn new_tab_accepts_a_source_pane() {
+        let cli = Cli::try_parse_from([
+            "thurm",
+            "new-tab",
+            "--pane",
+            "42",
+            "--background",
+            "--",
+            "cargo",
+            "test",
+        ])
+        .unwrap();
+        assert!(
+            matches!(cli.cmd, Cmd::NewTab { pane: Some(42), background: true, command, .. }
+            if command == ["cargo", "test"])
+        );
+    }
 
     #[test]
     fn systemd_unit_quotes_paths() {
