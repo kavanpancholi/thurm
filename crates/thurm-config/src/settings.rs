@@ -1053,6 +1053,12 @@ mod tests {
         assert!(style["default"].is_null());
         assert!(!style["doc"].as_str().unwrap().is_empty());
         std::fs::remove_dir_all(config.parent().unwrap()).unwrap();
+        // The window's "Default" over config.toml's style: an empty style in the overlay.
+        let config = temp_config("style_file", "[font]\nstyle = \"Condensed Medium\"\n");
+        set_at(&config, "font.style", &json!("")).unwrap();
+        let (cfg, _) = Config::load_with_warnings_from(&config).unwrap();
+        assert_eq!(cfg.font.style.as_deref(), Some(""));
+        std::fs::remove_dir_all(config.parent().unwrap()).unwrap();
     }
 
     #[test]

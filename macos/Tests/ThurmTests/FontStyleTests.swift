@@ -33,7 +33,21 @@ final class FontStyleTests: XCTestCase {
     }
 
     func testUnknownStyleFallsBackToTheFamily() throws {
-        XCTAssertEqual(try faces(family: "Helvetica Neue", style: "Semi-Condensed"),
-                       try faces(family: "Helvetica Neue", style: nil))
+        // All four faces, in families with several weights and widths.
+        for family in ["Helvetica Neue", "Futura"] {
+            XCTAssertEqual(try faces(family: family, style: "Semi-Condensed"),
+                           try faces(family: family, style: nil), family)
+        }
+    }
+
+    func testStyleRuleMatchesAnyCase() {
+        XCTAssertTrue(FontStyleRule.offers(["Light", "Bold"], "light"))
+        XCTAssertFalse(FontStyleRule.offers(["Light", "Bold"], "Semi-Condensed"))
+    }
+
+    func testDefaultStyleOverridesConfigFile() {
+        XCTAssertTrue(FontStyleRule.defaultValue(fileValue: nil) is NSNull)
+        XCTAssertTrue(FontStyleRule.defaultValue(fileValue: "") is NSNull)
+        XCTAssertEqual(FontStyleRule.defaultValue(fileValue: "Semi-Condensed") as? String, "")
     }
 }

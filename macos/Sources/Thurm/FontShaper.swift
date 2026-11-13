@@ -132,19 +132,20 @@ final class FontShaper {
         self.scale = scale
         let pixelSize = max(4, fontSize) * scale
 
-        let (regular, descriptor) = FontShaper.makeBaseFont(config: config, pixelSize: pixelSize)
+        let (regular, descriptor, styled) = FontShaper.makeBaseFont(config: config, pixelSize: pixelSize)
         let extras = FontShaper.extraAttributes(config: config)
-        func styled(_ name: String?, _ traits: CTFontSymbolicTraits) -> CTFont {
+        func face(_ name: String?, _ traits: CTFontSymbolicTraits) -> CTFont {
             if let name, let font = FontShaper.resolve(name, size: pixelSize, extra: extras) { return font }
-            if config.fontStyle != nil,
+            // Only beside the chosen style: a style the family lacks changes nothing.
+            if styled,
                let font = FontShaper.sibling(of: regular, traits: traits, size: pixelSize, extra: extras) {
                 return font
             }
             return FontShaper.variant(of: regular, descriptor: descriptor, traits: traits, size: pixelSize)
         }
-        let bold = styled(config.fontFamilyBold, .traitBold)
-        let italic = styled(config.fontFamilyItalic, .traitItalic)
-        let boldItalic = styled(config.fontFamilyBoldItalic ?? config.fontFamilyBold, [.traitBold, .traitItalic])
+        let bold = face(config.fontFamilyBold, .traitBold)
+        let italic = face(config.fontFamilyItalic, .traitItalic)
+        let boldItalic = face(config.fontFamilyBoldItalic ?? config.fontFamilyBold, [.traitBold, .traitItalic])
         styleFonts = [regular, bold, italic, boldItalic]
 
         // Cell metrics from the primary font.
@@ -249,24 +250,27 @@ final class FontShaper {
     #if canImport(AppKit)
     /// The terminal font as an NSFont (point size), for UI that should match the grid.
     static func terminalFont(config: any FontSettings, size: CGFloat) -> NSFont {
-        let (font, _) = makeBaseFont(config: config, pixelSize: size)
+        let (font, _, _) = makeBaseFont(config: config, pixelSize: size)
         return font as NSFont
     }
     #endif
 
     /// Resolves the configured font (then the fallbacks, then Menlo), with features and the
-    /// fallback cascade list applied.
-    private static func makeBaseFont(config: any FontSettings, pixelSize: CGFloat) -> (CTFont, CTFontDescriptor) {
+    /// fallback cascade list applied, and whether it is the face `fontStyle` names.
+    private static func makeBaseFont(config: any FontSettings,
+                                     pixelSize: CGFloat) -> (CTFont, CTFontDescriptor, styled: Bool) {
         let extra = extraAttributes(config: config)
         if let style = config.fontStyle,
-           let found = face(config.fontFamily, style: style, size: pixelSize, extra: extra) {
-            return found
+           let (font, desc) = face(config.fontFamily, style: style, size: pixelSize, extra: extra) {
+            return (font, desc, true)
         }
         var candidates = [config.fontFamily]
         candidates.append(contentsOf: config.fontFallback)
         candidates.append("Menlo")
         for name in candidates where !name.isEmpty {
-            if let found = resolveWithDescriptor(name, size: pixelSize, extra: extra) { return found }
+            if let (font, desc) = resolveWithDescriptor(name, size: pixelSize, extra: extra) {
+                return (font, desc, false)
+            }
             tlog("font \"\(name)\" not available")
         }
         #if canImport(AppKit)
@@ -274,7 +278,7 @@ final class FontShaper {
         #else
         let system = UIFont.monospacedSystemFont(ofSize: pixelSize, weight: .regular) as CTFont
         #endif
-        return (system, CTFontCopyFontDescriptor(system))
+        return (system, CTFontCopyFontDescriptor(system), false)
     }
 
     /// The traits that pick a style face: italic alone must not come out bold.

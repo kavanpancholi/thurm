@@ -483,11 +483,11 @@ private struct FontPicker: View {
             get: { selected },
             set: { title in
                 store.commit(item.key, title == Self.sameAsFamily ? NSNull() : title)
-                // A style the new family lacks would be ignored: drop it.
+                // A style the new family lacks would be ignored: drop it, from either file.
                 if item.key == "font.family", let style = store.setting("font.style"),
-                   style.isOverridden, !style.text.isEmpty,
-                   !FontFamilies.styles(of: title).contains(style.text) {
-                    store.commit(style.key, NSNull())
+                   !style.text.isEmpty,
+                   !FontStyleRule.offers(FontFamilies.styles(of: title), style.text) {
+                    store.commit(style.key, FontStyleRule.defaultValue(fileValue: style.fileValue))
                 }
             }
         )) {
@@ -529,7 +529,7 @@ private struct FontStylePicker: View {
         let current = item.text
         return Picker("", selection: Binding(
             get: { current },
-            set: { store.commit(item.key, $0.isEmpty ? NSNull() : $0) }
+            set: { store.commit(item.key, $0.isEmpty ? FontStyleRule.defaultValue(fileValue: item.fileValue) : $0) }
         )) {
             Text("Default").tag("")
             if !current.isEmpty && !styles.contains(current) {
