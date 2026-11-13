@@ -130,6 +130,39 @@ final class SidebarToolbarTests: XCTestCase {
         }
     }
 
+    /// A shown window switches to native tabs and back without AppKit throwing while it lays
+    /// out the titlebar's sidebar section.
+    func testShownWindowSwitchesToNativeTabs() throws {
+        for collapsed in [false, true] {
+            let (c, window, split) = try controller()
+            let (tab, tabWindow, _) = try controller()
+            let (hidden, _, _) = try controller()
+            manager.attachAsTab(tab, to: c)
+            window.makeKeyAndOrderFront(nil)
+            hidden.window?.orderFront(nil)
+            RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.2))
+            hidden.window?.orderOut(nil)
+            if collapsed {
+                split.toggleSidebarAnimated()
+                RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.5))
+            }
+            tabWindow.makeKeyAndOrderFront(nil)
+            RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.2))
+            for sidebar in [false, true, false] {
+                manager.config.sidebarTabs = sidebar
+                for c in [c, tab, hidden] { c.applyConfig() }
+                RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.3))
+                XCTAssertEqual(c.tabSplit != nil, sidebar)
+            }
+            manager.config.sidebarTabs = true
+            for c in [c, tab, hidden] { c.applyConfig() }
+            if collapsed, let split = c.tabSplit, split.sidebarCollapsed {
+                split.toggleSidebarAnimated()
+                RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.5))
+            }
+        }
+    }
+
     /// Both controls fit directly in the toolbar even at the window's minimum width.
     func testCollapsedControlsStayOutOfOverflow() throws {
         let (_, window, split) = try controller()
