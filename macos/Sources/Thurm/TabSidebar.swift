@@ -1260,11 +1260,10 @@ final class AgentsPanel: NSView, NSTableViewDataSource, NSTableViewDelegate {
                 .map(\.element)
         }
         return agents.map { a in
-            // Where it runs first (the repository or directory, and the workspace when hidden),
-            // so a long status is what gets cut.
+            // Show the current activity before the location, so it stays visible in a narrow sidebar.
             let row = SidebarTab(controller: a.controller,
                                  title: a.title,
-                                 subtitle: [a.hostLabel, a.place, a.hidden?.name, a.statusDetail].compactMap { $0 }
+                                 subtitle: [a.statusDetail, a.hostLabel, a.place, a.hidden?.name].compactMap { $0 }
                                      .joined(separator: " · "),
                                  status: a.agent.status,
                                  shortcut: nil,

@@ -27,7 +27,9 @@ struct AgentPane {
     var statusDetail: String {
         switch agent.status {
         case .needsInput: return agent.message.map { Self.shorten($0, agent: agent.name) } ?? "Needs input"
-        case .working: return "Working"
+        case .working:
+            let message = agent.message?.trimmingCharacters(in: .whitespacesAndNewlines)
+            return message.flatMap { $0.isEmpty ? nil : $0 } ?? "Working"
         case .done:
             let done = agent.turnMs.map { "Done in \(formatDuration($0))" } ?? "Done"
             // The turn's summary (`ai.notifications`).
