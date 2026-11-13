@@ -169,6 +169,9 @@ enum Cmd {
     },
     /// Open a new tab running COMMAND (default: shell).
     NewTab {
+        /// Pane whose workspace receives the tab (default: current pane).
+        #[arg(short, long)]
+        pane: Option<PaneId>,
         #[arg(long)]
         cwd: Option<String>,
         /// Open in a new workspace (in the background) instead of a tab.
@@ -591,13 +594,19 @@ fn agent_hook(agent: Option<String>, event: Option<String>) {
     }
     let payload: serde_json::Value = serde_json::from_str(&input).unwrap_or_default();
     let field = |k: &str| payload.get(k).and_then(|v| v.as_str()).map(str::to_owned);
-    let event = hooks::hook_event(&event, &payload);
+    let def = hooks::AGENTS.iter().find(|a| a.kind == agent);
+    let event = def.map_or_else(
+        || event.to_ascii_lowercase(),
+        |a| a.hook_event(&event, &payload),
+    );
     if event == "session-start" {
-        // Claude Code and Codex add a SessionStart hook's output to the session's context.
-        print!(
-            "{}",
-            skill::session_context(pane, skill::cli_off_path().as_deref())
-        );
+        // The agent adds a SessionStart hook's output to the session's context.
+        let context = skill::session_context(pane, skill::cli_off_path().as_deref());
+        let output = match def {
+            Some(a) => a.session_output(&context),
+            None => context,
+        };
+        print!("{output}");
         let _ = std::io::stdout().flush();
     }
     let Ok(c) = connect(false) else { return };
@@ -619,13 +628,18 @@ fn hooks_cmd(action: &str, only: Option<&str>, json: bool) -> R {
         None => hooks::AGENTS.iter().collect(),
     };
     if agents.is_empty() {
-        return Err(format!("unknown agent {:?} (claude, codex)", only.unwrap_or("")).into());
+        let known = hooks::AGENTS
+            .iter()
+            .map(|a| a.kind)
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(format!("unknown agent {:?} ({known})", only.unwrap_or("")).into());
     }
     let mut ok = true;
     let mut report = Vec::new();
     let mut seen = 0;
     for agent in agents {
-        let path = hooks::settings_path(agent);
+        let path = agent.settings_path();
         let present = path.parent().is_some_and(|d| d.is_dir());
         // Without --agent, skip agents that aren't installed (no config directory).
         if only.is_none() && !present && !(json && action == "status") {
@@ -1455,6 +1469,7 @@ fn run_connected(c: &Client, cmd: Cmd, json: bool) -> R {
             }
         }
         Cmd::NewTab {
+            pane,
             cwd,
             window,
             hold,
@@ -1463,21 +1478,21 @@ fn run_connected(c: &Client, cmd: Cmd, json: bool) -> R {
             wait,
             command,
         } => {
-            let inherit = current_pane(None).ok();
+            let inherit = current_pane(pane).ok();
             // `--wait` reads the exit status from the held pane, then closes it.
             let pane = create(c, command, cwd, inherit, hold || wait, None)?;
             let plain = UiCommand::NewTab {
                 pane,
                 new_window: window,
             };
-            if background && !window {
+            if !window {
                 open(
                     c,
                     plain,
                     UiCommand::Open {
                         pane,
                         split: None,
-                        target: None,
+                        target: inherit,
                         new_window: false,
                         percent: None,
                         background,
@@ -1785,11 +1800,19 @@ fn run_connected(c: &Client, cmd: Cmd, json: bool) -> R {
                         dir: d.into(),
                     },
                 ),
-                None => show(
+                None => open(
                     c,
                     UiCommand::NewTab {
                         pane: new,
                         new_window: false,
+                    },
+                    UiCommand::Open {
+                        pane: new,
+                        split: None,
+                        target: Some(src),
+                        new_window: false,
+                        percent: None,
+                        background: false,
                     },
                 ),
             }
@@ -1807,11 +1830,19 @@ fn run_connected(c: &Client, cmd: Cmd, json: bool) -> R {
                         dir: d.into(),
                     },
                 ),
-                None => show(
+                None => open(
                     c,
                     UiCommand::NewTab {
                         pane: new,
                         new_window: false,
+                    },
+                    UiCommand::Open {
+                        pane: new,
+                        split: None,
+                        target,
+                        new_window: false,
+                        percent: None,
+                        background: false,
                     },
                 ),
             }
@@ -2346,6 +2377,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn new_tab_accepts_a_source_pane() {
+        let cli = Cli::try_parse_from([
+            "thurm",
+            "new-tab",
+            "--pane",
+            "42",
+            "--background",
+            "--",
+            "cargo",
+            "test",
+        ])
+        .unwrap();
+        assert!(
+            matches!(cli.cmd, Cmd::NewTab { pane: Some(42), background: true, command, .. }
+            if command == ["cargo", "test"])
+        );
+    }
+
+    #[test]
     fn systemd_unit_quotes_paths() {
         let daemon = std::path::Path::new("/opt/My Apps/thurm \"x\"/thurmd");
         let socket = std::path::Path::new("/run/a b/100%$HOME\\.sock");
@@ -2568,6 +2618,7 @@ mod tests {
                     frame: [0.1, 0.1, 0.4, 0.4],
                     zoomed: false,
                     cells: None,
+                    minimized: false,
                 })
                 .collect(),
             floating_hidden: false,

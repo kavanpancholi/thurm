@@ -118,7 +118,7 @@ impl AgentTracker {
         let next = if self.public_report_active()
             && foreground.is_some_and(|p| !crate::procinfo::is_shell(&p.name))
         {
-            self.hook_state().map(|state| self.with_hook(state))
+            self.hook_state().map(|state| self.with_hook(state, None))
         } else {
             None
         };

@@ -30,7 +30,24 @@
         s:
         import nixpkgs {
           system = s;
-          overlays = [ rust-overlay.overlays.default ];
+          overlays = [
+            rust-overlay.overlays.default
+            # tailscale.com v1.104.7 needs Go 1.27.4, still in nixpkgs staging. A no-op once
+            # nixpkgs-unstable has it; drop it then.
+            (final: prev: {
+              go_1_27 =
+                if prev.lib.versionOlder prev.go_1_27.version "1.27.4" then
+                  prev.go_1_27.overrideAttrs (_: rec {
+                    version = "1.27.4";
+                    src = prev.fetchurl {
+                      url = "https://go.dev/dl/go${version}.src.tar.gz";
+                      hash = "sha256-c8+4VxrsDAEXdofbhxY9Rqog6XeWcncokaoXZU2aYJk=";
+                    };
+                  })
+                else
+                  prev.go_1_27;
+            })
+          ];
         };
       pkgs = pkgsFor system;
       rustVersion = (nixpkgs.lib.importTOML ./rust-toolchain.toml).toolchain.channel;
@@ -75,7 +92,7 @@
             pname = "thurm-tailnet";
             inherit version;
             src = ./tailnet;
-            vendorHash = "sha256-fCZdoJ0fvVwK83nR7uEqHvdjRTIPnoHDZUBDY6WGp50=";
+            vendorHash = "sha256-RqYAefEvKxTKDNiAu+oIWZhEC070VwY1YZ3urACCLXU=";
             subPackages = [ "cmd/thurm-tailnet" ];
             env.CGO_ENABLED = 0;
             ldflags = [

@@ -213,7 +213,7 @@ extension SessionManager {
                 t.content.setRoot(r.root)
                 t.content.addFloating(r.floating, hidden: r.origin.tab.floatingHidden ?? false)
                 let key = r.origin.tab.focusedKey
-                if t.content.contains(key) && !(t.content.floatingHidden && t.content.isFloating(key)) {
+                if t.content.contains(key) && !t.content.isCardHidden(key) {
                     t.content.setFocusedPane(key)
                 }
                 if let z = r.origin.tab.zoomedKey, r.root.contains(z) { t.content.zoom(z, true) }

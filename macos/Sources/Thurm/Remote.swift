@@ -480,11 +480,15 @@ extension SessionManager {
             ?? makeWorkspace(host: host)
         let handoffs = Remotes.shared.handoffs.values
         if let shownIn = controllerShowing(ws) {
+            var previous = group(of: shownIn).last ?? shownIn
+            let selected = shownIn.window?.tabGroup?.selectedWindow ?? shownIn.window
             for key in keys {
                 let c = makeController(root: .leaf(key), focused: key, zoomed: nil, title: nil, frame: nil)
                 c.handoffID = handoffs.first { $0.host == host && $0.pane == key.id }?.id
-                attachAsTab(c, to: shownIn)
+                attachAsTab(c, to: previous)
+                previous = c
             }
+            if let selected { selected.tabGroup?.selectedWindow = selected }
         } else {
             for key in keys {
                 ws.hiddenTabs.append(TabLayout(title: nil, root: .pane(key), focused: key.id, zoomed: nil,

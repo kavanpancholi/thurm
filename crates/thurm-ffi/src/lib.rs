@@ -512,6 +512,8 @@ unsafe fn connect_to(
     let name = unsafe { opt_str(client_name) }
         .unwrap_or("Thurm.app")
         .to_owned();
+    let mut capabilities = capabilities.to_vec();
+    capabilities.push(thurm_proto::CAP_AGENT_ACTIVITY);
     let connected = new_connection(on_event, on_frame, ctx, |on_ev, on_disc| {
         Client::connect_with(
             ConnectOptions {
@@ -520,7 +522,7 @@ unsafe fn connect_to(
                 client_name: &name,
                 ui: true,
             },
-            capabilities,
+            &capabilities,
             on_ev,
             on_disc,
         )

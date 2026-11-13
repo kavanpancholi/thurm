@@ -305,6 +305,8 @@ enum MainMenu {
                           name: "switch_workspace"))
         menu.addItem(item("Switch to Agent…", #selector(AppDelegate.switchAgent(_:)), "a", [.command, .shift],
                           name: "switch_agent"))
+        menu.addItem(item("Go to Anything…", #selector(AppDelegate.goToAnything(_:)), "p",
+                          name: "go_to_anything"))
         menu.addItem(item("Agent Wall", #selector(TerminalWindowController.toggleAgentWall(_:)), "a",
                           [.command, .control], name: "agent_wall"))
         menu.addItem(item("Rename Workspace…", #selector(AppDelegate.renameWorkspace(_:)), name: "rename_workspace"))
@@ -334,6 +336,8 @@ enum MainMenu {
         let menu = NSMenu(title: "Edit")
         menu.addItem(item("Copy", #selector(TerminalView.copy(_:)), "c", name: "copy"))
         menu.addItem(item("Paste", #selector(TerminalView.paste(_:)), "v", name: "paste"))
+        menu.addItem(item("Insert Path…", #selector(TerminalView.insertPath(_:)), "p", [.command, .option],
+                          name: "insert_path"))
         menu.addItem(item("Select All", #selector(TerminalView.selectAll(_:)), "a", name: "select_all"))
         menu.addItem(.separator())
         menu.addItem(item("Clear Screen", #selector(TerminalView.clearScreen(_:)), "k", name: "clear_screen"))
@@ -406,6 +410,8 @@ enum MainMenu {
         let edgeItem = item("Move Pane to Edge", nil)
         edgeItem.submenu = edgeMenu
         menu.addItem(edgeItem)
+        menu.addItem(item("Minimize Floating Pane", #selector(TerminalWindowController.minimizeFloatingPane(_:)),
+                          name: "minimize_floating_pane"))
         menu.addItem(item("Move Floating Pane to New Tab",
                           #selector(TerminalWindowController.moveFloatingPaneToNewTab(_:)), name: "float_pane_to_tab"))
         let floatTab = NSMenu(title: "Float Tab Here")

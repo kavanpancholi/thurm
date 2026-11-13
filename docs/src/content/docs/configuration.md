@@ -83,6 +83,22 @@ settings override theme colors.
 Shell and environment changes apply to new processes. They do not change the
 environment of shells that are already running.
 
+## Search workspaces, tabs, panes, and agents
+
+Press **Cmd+P** or select **Shell > Go to Anything…** to open one search picker.
+Search by title, agent name, repository, directory, branch, or host. The picker
+includes tabs and panes in hidden workspaces. Each result shows its type and
+location. Local targets use the host name `local`.
+
+Use **Up** and **Down** to select a result. Press **Return** to activate it, or
+**Escape** to cancel. You can also double-click a result. A tab result keeps the
+current pane selection in that tab. A pane or agent result selects that pane.
+
+**Cmd+Shift+P** still opens the command palette. **Cmd+Shift+O** still opens the
+workspace picker, and **Cmd+Shift+A** still opens the agent picker. To add another
+shortcut for the search picker, bind it to `go_to_anything`. To release Cmd+P for
+a terminal program, bind `"cmd+p"` to `"none"`.
+
 ## Key bindings
 
 `[keybindings]` maps a key combination to an action, the name of a menu item
@@ -120,6 +136,7 @@ the defaults alone.
 | `new_workspace` | Shell > New Workspace |
 | `switch_workspace` | Shell > Switch Workspace… |
 | `switch_agent` | Shell > Switch to Agent… |
+| `go_to_anything` | Shell > Go to Anything… |
 | `agent_wall` | Shell > Agent Wall |
 | `rename_workspace` | Shell > Rename Workspace… |
 | `close_workspace` | Shell > Close Workspace… |
@@ -132,6 +149,7 @@ the defaults alone.
 | `close_tab` | Shell > Close Tab |
 | `copy` | Edit > Copy |
 | `paste` | Edit > Paste |
+| `insert_path` | Edit > Insert Path… |
 | `select_all` | Edit > Select All |
 | `clear_screen` | Edit > Clear Screen |
 | `clear_scrollback` | Edit > Clear Scrollback |
@@ -160,6 +178,7 @@ the defaults alone.
 | `move_pane_to_right_edge` | View > Move Pane to Edge > Right Edge |
 | `move_pane_to_top_edge` | View > Move Pane to Edge > Top Edge |
 | `move_pane_to_bottom_edge` | View > Move Pane to Edge > Bottom Edge |
+| `minimize_floating_pane` | View > Minimize Floating Pane |
 | `float_pane_to_tab` | View > Move Floating Pane to New Tab |
 | `equalize_splits` | View > Equalize Splits |
 | `focus_left` | View > Select Split Left |

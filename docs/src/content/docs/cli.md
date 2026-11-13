@@ -44,7 +44,7 @@ Use `thurm COMMAND --help` for the full argument list.
 | `list` (alias `ls`) | List panes |
 | `pane-id` | Print the current pane ID |
 | `info --pane ID` | Show pane details, including `alt_screen` (a full-screen program has the screen) and `focused` |
-| `new-tab [COMMAND...]` | Open a tab; `--window` (in a new workspace, in the background), `--cwd PATH`, `--hold`, `--title NAME`, `--background` (keep the focus and the selected tab), `--wait` (exit with the command's status) |
+| `new-tab [COMMAND...]` | Append a tab in the source pane's workspace; `--pane ID` (default: current pane), `--window` (in a new workspace, in the background), `--cwd PATH`, `--hold`, `--title NAME`, `--background` (keep the focus and the selected tab), `--wait` (exit with the command's status) |
 | `split [COMMAND...]` | Split a pane; `--dir right\|down\|left\|up`, `--pane ID`, `--cwd PATH`, `--hold`, `--size PERCENT` (the new pane's share), `--background`, `--wait` |
 | `focus ID` | Focus a pane in the app |
 | `focused` | Print the pane with keyboard focus in the app, or the last one that had it; `--history` lists them, most recent first |

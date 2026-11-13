@@ -10,6 +10,8 @@ import CThurm
 /// The font settings shaping needs, from the app's config (`AppConfig` on the Mac).
 protocol FontSettings {
     var fontFamily: String { get }
+    /// A face of `fontFamily` by its style name ("Semi-Condensed"); nil = the regular face.
+    var fontStyle: String? { get }
     var fontFallback: [String] { get }
     var fontFamilyBold: String? { get }
     var fontFamilyItalic: String? { get }
@@ -21,6 +23,10 @@ protocol FontSettings {
     var thickenStrength: CGFloat { get }
     var nerdFontSymbols: Bool { get }
     var fontFeatures: [String] { get }
+}
+
+extension FontSettings {
+    var fontStyle: String? { nil }
 }
 
 /// One positioned glyph of a shaped row.
@@ -126,15 +132,20 @@ final class FontShaper {
         self.scale = scale
         let pixelSize = max(4, fontSize) * scale
 
-        let (regular, descriptor) = FontShaper.makeBaseFont(config: config, pixelSize: pixelSize)
+        let (regular, descriptor, styled) = FontShaper.makeBaseFont(config: config, pixelSize: pixelSize)
         let extras = FontShaper.extraAttributes(config: config)
-        func styled(_ name: String?, _ traits: CTFontSymbolicTraits) -> CTFont {
+        func face(_ name: String?, _ traits: CTFontSymbolicTraits) -> CTFont {
             if let name, let font = FontShaper.resolve(name, size: pixelSize, extra: extras) { return font }
+            // Only beside the chosen style: a style the family lacks changes nothing.
+            if styled,
+               let font = FontShaper.sibling(of: regular, traits: traits, size: pixelSize, extra: extras) {
+                return font
+            }
             return FontShaper.variant(of: regular, descriptor: descriptor, traits: traits, size: pixelSize)
         }
-        let bold = styled(config.fontFamilyBold, .traitBold)
-        let italic = styled(config.fontFamilyItalic, .traitItalic)
-        let boldItalic = styled(config.fontFamilyBoldItalic ?? config.fontFamilyBold, [.traitBold, .traitItalic])
+        let bold = face(config.fontFamilyBold, .traitBold)
+        let italic = face(config.fontFamilyItalic, .traitItalic)
+        let boldItalic = face(config.fontFamilyBoldItalic ?? config.fontFamilyBold, [.traitBold, .traitItalic])
         styleFonts = [regular, bold, italic, boldItalic]
 
         // Cell metrics from the primary font.
@@ -239,20 +250,27 @@ final class FontShaper {
     #if canImport(AppKit)
     /// The terminal font as an NSFont (point size), for UI that should match the grid.
     static func terminalFont(config: any FontSettings, size: CGFloat) -> NSFont {
-        let (font, _) = makeBaseFont(config: config, pixelSize: size)
+        let (font, _, _) = makeBaseFont(config: config, pixelSize: size)
         return font as NSFont
     }
     #endif
 
     /// Resolves the configured font (then the fallbacks, then Menlo), with features and the
-    /// fallback cascade list applied.
-    private static func makeBaseFont(config: any FontSettings, pixelSize: CGFloat) -> (CTFont, CTFontDescriptor) {
+    /// fallback cascade list applied, and whether it is the face `fontStyle` names.
+    private static func makeBaseFont(config: any FontSettings,
+                                     pixelSize: CGFloat) -> (CTFont, CTFontDescriptor, styled: Bool) {
         let extra = extraAttributes(config: config)
+        if let style = config.fontStyle,
+           let (font, desc) = face(config.fontFamily, style: style, size: pixelSize, extra: extra) {
+            return (font, desc, true)
+        }
         var candidates = [config.fontFamily]
         candidates.append(contentsOf: config.fontFallback)
         candidates.append("Menlo")
         for name in candidates where !name.isEmpty {
-            if let found = resolveWithDescriptor(name, size: pixelSize, extra: extra) { return found }
+            if let (font, desc) = resolveWithDescriptor(name, size: pixelSize, extra: extra) {
+                return (font, desc, false)
+            }
             tlog("font \"\(name)\" not available")
         }
         #if canImport(AppKit)
@@ -260,7 +278,7 @@ final class FontShaper {
         #else
         let system = UIFont.monospacedSystemFont(ofSize: pixelSize, weight: .regular) as CTFont
         #endif
-        return (system, CTFontCopyFontDescriptor(system))
+        return (system, CTFontCopyFontDescriptor(system), false)
     }
 
     /// The traits that pick a style face: italic alone must not come out bold.
@@ -276,6 +294,86 @@ final class FontShaper {
             return font
         }
         return base
+    }
+
+    /// The faces of an installed family.
+    static func faces(ofFamily family: String) -> [CTFontDescriptor] {
+        let desc = CTFontDescriptorCreateWithAttributes([kCTFontFamilyNameAttribute as String: family] as CFDictionary)
+        let mandatory = Set([kCTFontFamilyNameAttribute as String]) as CFSet
+        return CTFontDescriptorCreateMatchingFontDescriptors(desc, mandatory) as? [CTFontDescriptor] ?? []
+    }
+
+    static func styleName(_ desc: CTFontDescriptor) -> String {
+        CTFontDescriptorCopyAttribute(desc, kCTFontStyleNameAttribute) as? String ?? ""
+    }
+
+    private static func traitValue(_ desc: CTFontDescriptor, _ key: CFString) -> Double {
+        let traits = CTFontDescriptorCopyAttribute(desc, kCTFontTraitsAttribute) as? [String: Any]
+        return (traits?[key as String] as? NSNumber)?.doubleValue ?? 0
+    }
+
+    private static func symbolicTraits(_ desc: CTFontDescriptor) -> CTFontSymbolicTraits {
+        let traits = CTFontDescriptorCopyAttribute(desc, kCTFontTraitsAttribute) as? [String: Any]
+        return CTFontSymbolicTraits(rawValue: (traits?[kCTFontSymbolicTrait as String] as? NSNumber)?.uint32Value ?? 0)
+    }
+
+    /// The words of a style name that tell faces of one weight and slant apart ("Retina
+    /// ExtraCondensed Oblique" → retina, extracondensed).
+    private static func styleWords(_ desc: CTFontDescriptor) -> Set<String> {
+        let words = styleName(desc).lowercased().split(whereSeparator: \.isWhitespace).map(String.init)
+        return Set(words).subtracting(["italic", "oblique", "regular"])
+    }
+
+    /// A face by its PostScript name, with the features and the fallback cascade.
+    private static func named(_ desc: CTFontDescriptor, size: CGFloat, extra: [String: Any]) -> (CTFont, CTFontDescriptor)? {
+        guard let name = CTFontDescriptorCopyAttribute(desc, kCTFontNameAttribute) as? String else { return nil }
+        var attrs = extra
+        attrs[kCTFontNameAttribute as String] = name
+        let named = CTFontDescriptorCreateWithAttributes(attrs as CFDictionary)
+        return (CTFontCreateWithFontDescriptor(named, size, nil), named)
+    }
+
+    /// The face of `family` whose style name is `style`. Nil when the family has none (or
+    /// `family` names a single face).
+    private static func face(_ family: String, style: String, size: CGFloat,
+                             extra: [String: Any]) -> (CTFont, CTFontDescriptor)? {
+        let match = faces(ofFamily: family).first {
+            styleName($0).caseInsensitiveCompare(style) == .orderedSame
+        }
+        guard let match else {
+            tlog("font style \"\(style)\" not in \"\(family)\"")
+            return nil
+        }
+        return named(match, size: size, extra: extra)
+    }
+
+    /// Core Text's weight trait of a Bold face (`NSFont.Weight.bold`).
+    private static let boldWeight = 0.4
+
+    /// The face of `base`'s family with `traits` most like `base`: the same width (by its trait,
+    /// then by the words of its style name, as TX-02's Condensed and ExtraCondensed share one
+    /// width trait), then the weight nearest to `base`'s, or to bold for bold. Italic must match;
+    /// a face asked for bold must be bold. Nil when the family has no such face.
+    static func sibling(of base: CTFont, traits: CTFontSymbolicTraits, size: CGFloat,
+                        extra: [String: Any]) -> CTFont? {
+        let baseDesc = CTFontCopyFontDescriptor(base)
+        let words = styleWords(baseDesc)
+        let width = traitValue(baseDesc, kCTFontWidthTrait)
+        let baseWeight = traitValue(baseDesc, kCTFontWeightTrait)
+        let weight = traits.contains(.traitBold) ? max(baseWeight, boldWeight) : baseWeight
+        let italic = traits.contains(.traitItalic)
+        let family = CTFontCopyFamilyName(base) as String
+        let ranked = faces(ofFamily: family).compactMap { desc -> (CTFontDescriptor, (Int, Int, Int, Double))? in
+            let sym = symbolicTraits(desc)
+            guard sym.contains(.traitItalic) == italic, sym.contains(traits) else { return nil }
+            let own = styleWords(desc)
+            let shared = own.intersection(words).count
+            let widthOff = Int((abs(traitValue(desc, kCTFontWidthTrait) - width) * 100).rounded())
+            let weightOff = abs(traitValue(desc, kCTFontWeightTrait) - weight)
+            return (desc, (widthOff, -shared, own.count - shared, weightOff))
+        }
+        guard let best = ranked.min(by: { $0.1 < $1.1 }) else { return nil }
+        return named(best.0, size: size, extra: extra)?.0
     }
 
     // MARK: Font registry

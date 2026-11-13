@@ -15,6 +15,13 @@ pub struct HookAgent {
     pub name: &'static str,
     /// Hook events it supports → our event names.
     pub events: &'static [(&'static str, &'static str)],
+    /// Resolves the file that holds this agent's hooks.
+    pub settings: fn() -> PathBuf,
+    /// Recognizes a permission prompt among a notification's payload fields.
+    pub permission: fn(&Value) -> bool,
+    /// Whether the SessionStart hook injects its context as JSON (`additionalContext`)
+    /// instead of plain text.
+    pub context_json: bool,
 }
 
 pub const AGENTS: &[HookAgent] = &[
@@ -22,11 +29,17 @@ pub const AGENTS: &[HookAgent] = &[
         kind: "claude",
         name: "Claude Code",
         events: CLAUDE_EVENTS,
+        settings: claude_settings,
+        permission: claude_permission,
+        context_json: false,
     },
     HookAgent {
         kind: "codex",
         name: "Codex",
         events: CODEX_EVENTS,
+        settings: codex_settings,
+        permission: no_permission,
+        context_json: false,
     },
 ];
 
@@ -47,42 +60,81 @@ pub const CLAUDE_EVENTS: &[(&str, &str)] = &[
     ("SessionEnd", "session-end"),
 ];
 
-/// Our event name for a Claude hook event name (either spelling is accepted).
-pub fn normalize_event(e: &str) -> String {
-    CLAUDE_EVENTS
+impl HookAgent {
+    /// Our event name for this agent's native event (either spelling is accepted).
+    pub fn normalize(&self, e: &str) -> String {
+        self.events
+            .iter()
+            .find(|(native, ours)| native.eq_ignore_ascii_case(e) || ours.eq_ignore_ascii_case(e))
+            .map(|(_, ours)| (*ours).to_owned())
+            .unwrap_or_else(|| e.to_ascii_lowercase())
+    }
+
+    /// Our event name for a native event and its payload: a notification that names a
+    /// permission prompt is `permission-prompt`.
+    pub fn hook_event(&self, event: &str, payload: &Value) -> String {
+        let event = self.normalize(event);
+        if event == "notification" && (self.permission)(payload) {
+            "permission-prompt".into()
+        } else {
+            event
+        }
+    }
+
+    /// The file holding this agent's hooks.
+    pub fn settings_path(&self) -> PathBuf {
+        (self.settings)()
+    }
+
+    /// What the SessionStart hook prints for the agent to add `context` to the session.
+    pub fn session_output(&self, context: &str) -> String {
+        if self.context_json {
+            json!({ "hookSpecificOutput": { "additionalContext": context } }).to_string()
+        } else {
+            context.to_owned()
+        }
+    }
+
+    /// Whether its hooks see a turn start (`prompt-submit`), and so can be trusted for the
+    /// whole status. Without one, the screen still tells when it works or asks.
+    pub fn reports_turns(&self) -> bool {
+        self.events.iter().any(|(_, ours)| *ours == "prompt-submit")
+    }
+}
+
+/// Whether the hooks of agent `kind` report its whole status (see [`HookAgent::reports_turns`]).
+/// Agents without managed hooks report through hooks of their own making: trusted.
+pub fn reports_turns(kind: &str) -> bool {
+    AGENTS
         .iter()
-        .find(|(claude, ours)| claude.eq_ignore_ascii_case(e) || ours.eq_ignore_ascii_case(e))
-        .map(|(_, ours)| (*ours).to_owned())
-        .unwrap_or_else(|| e.to_ascii_lowercase())
+        .find(|a| a.kind == kind)
+        .is_none_or(HookAgent::reports_turns)
 }
 
-/// Our event name for a hook event and the JSON payload the agent sent with it: Claude Code's
-/// permission dialog (a notification the notification can answer) is `permission-prompt`.
-pub fn hook_event(event: &str, payload: &Value) -> String {
-    let event = normalize_event(event);
-    let permission =
-        payload.get("notification_type").and_then(Value::as_str) == Some("permission_prompt");
-    if event == "notification" && permission {
-        "permission-prompt".into()
-    } else {
-        event
-    }
+/// A config directory under an optional env-var override, else `~/<dir>`.
+fn config_dir(env: &str, dir: &str) -> PathBuf {
+    std::env::var_os(env)
+        .filter(|d| !d.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| dirs_home().join(dir))
 }
 
-/// The file holding `agent`'s hooks.
-pub fn settings_path(agent: &HookAgent) -> PathBuf {
-    match agent.kind {
-        "codex" => std::env::var_os("CODEX_HOME")
-            .filter(|d| !d.is_empty())
-            .map(PathBuf::from)
-            .unwrap_or_else(|| dirs_home().join(".codex"))
-            .join("hooks.json"),
-        _ => std::env::var_os("CLAUDE_CONFIG_DIR")
-            .filter(|d| !d.is_empty())
-            .map(PathBuf::from)
-            .unwrap_or_else(|| dirs_home().join(".claude"))
-            .join("settings.json"),
-    }
+fn claude_settings() -> PathBuf {
+    config_dir("CLAUDE_CONFIG_DIR", ".claude").join("settings.json")
+}
+
+fn codex_settings() -> PathBuf {
+    config_dir("CODEX_HOME", ".codex").join("hooks.json")
+}
+
+/// Claude Code signals a permission prompt as a notification with this type.
+fn claude_permission(payload: &Value) -> bool {
+    payload.get("notification_type").and_then(Value::as_str) == Some("permission_prompt")
+}
+
+/// Default: a notification is never a permission prompt.
+fn no_permission(_: &Value) -> bool {
+    false
 }
 
 fn dirs_home() -> PathBuf {
@@ -367,23 +419,78 @@ mod tests {
         let c = command("claude", "stop");
         assert!(c.starts_with(r#"[ -n "$THURM_PANE_ID" ]"#));
         assert!(c.ends_with("; true"));
-        assert_eq!(normalize_event("UserPromptSubmit"), "prompt-submit");
-        assert_eq!(normalize_event("stop"), "stop");
+        assert_eq!(AGENTS[0].normalize("UserPromptSubmit"), "prompt-submit");
+        assert_eq!(AGENTS[0].normalize("stop"), "stop");
     }
 
     #[test]
     fn permission_prompts_are_told_apart() {
+        let claude = &AGENTS[0];
         let payload = |t: &str| json!({ "notification_type": t, "message": "…" });
         assert_eq!(
-            hook_event("Notification", &payload("permission_prompt")),
+            claude.hook_event("Notification", &payload("permission_prompt")),
             "permission-prompt"
         );
         assert_eq!(
-            hook_event("notification", &payload("idle_prompt")),
+            claude.hook_event("notification", &payload("idle_prompt")),
             "notification"
         );
-        assert_eq!(hook_event("Notification", &json!({})), "notification");
+        assert_eq!(
+            claude.hook_event("Notification", &json!({})),
+            "notification"
+        );
         // Only notifications are reclassified.
-        assert_eq!(hook_event("Stop", &payload("permission_prompt")), "stop");
+        assert_eq!(
+            claude.hook_event("Stop", &payload("permission_prompt")),
+            "stop"
+        );
+    }
+
+    #[test]
+    fn an_agent_brings_its_own_settings_and_classifier() {
+        fn settings() -> PathBuf {
+            PathBuf::from("/tmp/example/hooks.json")
+        }
+        fn permission(payload: &Value) -> bool {
+            payload.get("kind") == Some(&json!("ask"))
+        }
+        const EVENTS: &[(&str, &str)] =
+            &[("SessionStart", "session-start"), ("Ask", "notification")];
+        let agent = HookAgent {
+            kind: "example",
+            name: "Example",
+            events: EVENTS,
+            settings,
+            permission,
+            context_json: false,
+        };
+        assert_eq!(
+            agent.settings_path(),
+            PathBuf::from("/tmp/example/hooks.json")
+        );
+        assert_eq!(agent.normalize("session-start"), "session-start");
+        assert_eq!(agent.normalize("Ask"), "notification");
+        assert_eq!(
+            agent.hook_event("Ask", &json!({ "kind": "ask" })),
+            "permission-prompt"
+        );
+        assert_eq!(
+            agent.hook_event("Ask", &json!({ "kind": "note" })),
+            "notification"
+        );
+        assert!(!agent.reports_turns());
+        assert_eq!(agent.session_output("in pane 7"), "in pane 7");
+        let agent = HookAgent {
+            context_json: true,
+            ..agent
+        };
+        let out: Value = serde_json::from_str(&agent.session_output("in \"pane\" 7")).unwrap();
+        assert_eq!(
+            out.pointer("/hookSpecificOutput/additionalContext"),
+            Some(&json!("in \"pane\" 7"))
+        );
+        assert!(reports_turns("claude"));
+        assert!(reports_turns("codex"));
+        assert!(reports_turns("pi"));
     }
 }

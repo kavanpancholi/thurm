@@ -9,12 +9,14 @@ struct FloatingCard: Equatable {
     var zoomed = false
     /// Placed in cells: its terminal keeps this size, below the size of a card made by hand.
     var cells: CardCells?
+    var minimized = false
 
-    init(pane: PaneKey, frame: CGRect, zoomed: Bool = false, cells: CardCells? = nil) {
+    init(pane: PaneKey, frame: CGRect, zoomed: Bool = false, cells: CardCells? = nil, minimized: Bool = false) {
         self.pane = pane
         self.frame = frame
         self.zoomed = zoomed
         self.cells = cells
+        self.minimized = minimized
     }
 
     var minSize: CGSize { cells == nil ? FloatingGeometry.minSize : FloatingGeometry.exactMinSize }
@@ -25,12 +27,12 @@ struct FloatingCard: Equatable {
             return [d.minX, d.minY, d.width, d.height]
         }()
         self.init(pane: saved.pane, frame: CGRect(x: f[0], y: f[1], width: f[2], height: f[3]), zoomed: saved.zoomed,
-                  cells: saved.cells)
+                  cells: saved.cells, minimized: saved.minimized)
     }
 
     var saved: FloatingPane {
         FloatingPane(pane: pane, frame: [frame.minX, frame.minY, frame.width, frame.height].map(Double.init),
-                     zoomed: zoomed, cells: cells)
+                     zoomed: zoomed, cells: cells, minimized: minimized)
     }
 }
 
@@ -306,5 +308,213 @@ final class DockIndicator: NSView {
         layer?.borderColor = accent.withAlphaComponent(0.7).cgColor
         frame = rect
         isHidden = false
+    }
+}
+
+final class MinimizedCardsBar: NSView {
+    static let spacing: CGFloat = 6
+
+    var onRestore: ((PaneKey) -> Void)?
+    var panes: [PaneKey] = [] {
+        didSet { if panes != oldValue { rebuild() } }
+    }
+    private(set) var chips: [MinimizedCardChip] = []
+    let overflow = NSButton(title: "", target: nil, action: nil)
+    private(set) var overflowPanes: [PaneKey] = []
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        isHidden = true
+        overflow.bezelStyle = .inline
+        overflow.font = .systemFont(ofSize: 11, weight: .medium)
+        overflow.target = self
+        overflow.action = #selector(showOverflow)
+        overflow.isHidden = true
+        addSubview(overflow)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is not supported")
+    }
+
+    override var isFlipped: Bool { true }
+
+    private func rebuild() {
+        chips.forEach { $0.removeFromSuperview() }
+        chips = panes.map { pane in
+            let chip = MinimizedCardChip(pane: pane)
+            chip.onClick = { [weak self] in self?.onRestore?(pane) }
+            addSubview(chip)
+            return chip
+        }
+    }
+
+    func refresh() {
+        chips.forEach { $0.refresh() }
+    }
+
+    func fit(maxWidth: CGFloat) -> CGSize {
+        let height = MinimizedCardChip.height
+        let widths = chips.map { min($0.fittingSize.width, maxWidth) }
+        func rowWidth(_ widths: [CGFloat]) -> CGFloat {
+            widths.reduce(0, +) + Self.spacing * CGFloat(max(0, widths.count - 1))
+        }
+        var shown = chips.count
+        var visibleWidths = widths
+        while rowWidth(visibleWidths) > maxWidth && shown > 0 {
+            shown -= 1
+            overflow.title = "+\(chips.count - shown)"
+            let more = min(overflow.fittingSize.width + 8, maxWidth)
+            visibleWidths = Array(widths.prefix(shown)) + [more]
+        }
+        overflowPanes = chips[shown...].map(\.pane)
+        overflow.isHidden = overflowPanes.isEmpty
+        overflow.setAccessibilityLabel("\(overflowPanes.count) more minimized panes")
+        let views: [NSView] = Array(chips.prefix(shown)) + (overflowPanes.isEmpty ? [] : [overflow])
+        for chip in chips[shown...] { chip.isHidden = true }
+        for chip in chips.prefix(shown) { chip.isHidden = false }
+        var x: CGFloat = 0
+        for (view, width) in zip(views, visibleWidths) {
+            view.frame = NSRect(x: x, y: 0, width: width, height: height)
+            x += width + Self.spacing
+        }
+        return CGSize(width: rowWidth(visibleWidths), height: views.isEmpty ? 0 : height)
+    }
+
+    func overflowMenu() -> NSMenu {
+        let menu = NSMenu()
+        for pane in overflowPanes {
+            let item = NSMenuItem(title: PaneHeader.title(of: pane, info: SessionManager.shared.panes[pane]),
+                                  action: #selector(restoreFromMenu(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = pane
+            menu.addItem(item)
+        }
+        return menu
+    }
+
+    @objc private func showOverflow() {
+        overflowMenu().popUp(positioning: nil, at: NSPoint(x: overflow.frame.minX, y: overflow.frame.maxY), in: self)
+    }
+
+    @objc func restoreFromMenu(_ sender: NSMenuItem) {
+        if let pane = sender.representedObject as? PaneKey { onRestore?(pane) }
+    }
+}
+
+final class MinimizedCardChip: NSView {
+    static let height: CGFloat = 26
+    static let maxTitleWidth: CGFloat = 180
+
+    let pane: PaneKey
+    var onClick: (() -> Void)?
+    private let icon = NSImageView()
+    private let dot = NSView()
+    private let title = NSTextField(labelWithString: "")
+    private var iconKind: PaneIcon?
+    private var status: AgentStatus?
+    private var hovering = false {
+        didSet { if hovering != oldValue { refresh() } }
+    }
+
+    init(pane: PaneKey) {
+        self.pane = pane
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.cornerRadius = Self.height / 2
+        layer?.cornerCurve = .continuous
+        layer?.borderWidth = ChromeStroke.width
+        icon.imageScaling = .scaleProportionallyDown
+        dot.wantsLayer = true
+        dot.layer?.cornerRadius = 3
+        title.font = .systemFont(ofSize: 11, weight: .medium)
+        title.lineBreakMode = .byTruncatingTail
+        title.maximumNumberOfLines = 1
+        for v in [icon, dot, title] as [NSView] {
+            v.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(v)
+        }
+        NSLayoutConstraint.activate([
+            heightAnchor.constraint(equalToConstant: Self.height),
+            icon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 9),
+            icon.centerYAnchor.constraint(equalTo: centerYAnchor),
+            icon.widthAnchor.constraint(equalToConstant: 13),
+            icon.heightAnchor.constraint(equalToConstant: 13),
+            dot.widthAnchor.constraint(equalToConstant: 6),
+            dot.heightAnchor.constraint(equalToConstant: 6),
+            dot.trailingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 2),
+            dot.bottomAnchor.constraint(equalTo: icon.bottomAnchor, constant: 1),
+            title.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 6),
+            title.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
+            title.centerYAnchor.constraint(equalTo: centerYAnchor),
+            title.widthAnchor.constraint(lessThanOrEqualToConstant: Self.maxTitleWidth),
+        ])
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect],
+                                       owner: self))
+        refresh()
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is not supported")
+    }
+
+    func refresh() {
+        let chrome = SessionManager.shared.config.chrome
+        let info = SessionManager.shared.panes[pane]
+        let kind = PaneIcon(info)
+        if kind != iconKind {
+            iconKind = kind
+            icon.image = kind.glyph(size: 13)
+        }
+        let text = PaneHeader.title(of: pane, info: info)
+        if title.stringValue != text { title.stringValue = text }
+        toolTip = "\(text)\nClick to restore"
+        title.textColor = hovering ? chrome.contentPrimary : chrome.contentSecondary
+        icon.contentTintColor = hovering ? chrome.contentPrimary : chrome.contentSecondary
+        layer?.backgroundColor = chrome.surfaceRaised.cgColor
+        layer?.borderColor = (hovering ? chrome.strokeStrong : chrome.stroke).cgColor
+        status = info?.agent?.status
+        dot.isHidden = status == nil || status == .idle
+        dot.layer?.backgroundColor = status?.color.cgColor
+    }
+
+    override func isAccessibilityElement() -> Bool { true }
+    override func accessibilityRole() -> NSAccessibility.Role? { .button }
+    override func accessibilityLabel() -> String? { "Restore \(title.stringValue)" }
+    override func accessibilityValue() -> Any? { status?.rawValue }
+
+    override func accessibilityPerformPress() -> Bool {
+        onClick?()
+        return true
+    }
+
+    override var acceptsFirstResponder: Bool { true }
+    override var canBecomeKeyView: Bool { true }
+
+    override func keyDown(with event: NSEvent) {
+        if event.charactersIgnoringModifiers == " " || event.keyCode == 36 || event.keyCode == 76 {
+            onClick?()
+        } else {
+            super.keyDown(with: event)
+        }
+    }
+
+    override func drawFocusRingMask() {
+        NSBezierPath(roundedRect: bounds, xRadius: Self.height / 2, yRadius: Self.height / 2).fill()
+    }
+
+    override var focusRingMaskBounds: NSRect { bounds }
+
+    override func mouseEntered(with event: NSEvent) { hovering = true }
+    override func mouseExited(with event: NSEvent) { hovering = false }
+
+    override func mouseDown(with event: NSEvent) {}
+
+    override func mouseUp(with event: NSEvent) {
+        if bounds.contains(convert(event.locationInWindow, from: nil)) { onClick?() }
+    }
+
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: .pointingHand)
     }
 }

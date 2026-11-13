@@ -195,6 +195,7 @@ enum AgentStatus: String {
 }
 
 struct AgentState: Equatable {
+    var updatedAtMs: UInt64? = nil
     var name: String
     var kind: String
     var status: AgentStatus
@@ -260,7 +261,9 @@ struct PaneInfo {
     var git: GitInfo?
 
     init?(json: Any?, host: HostId = localHost) {
-        guard let d = json as? [String: Any], let id = jsonUInt64(d["id"]) else { return nil }
+        guard let payload = json as? [String: Any] else { return nil }
+        let d = payload["info"] as? [String: Any] ?? payload
+        guard let id = jsonUInt64(d["id"]) else { return nil }
         self.id = id
         self.host = host
         title = jsonString(d["title"]) ?? ""
@@ -281,7 +284,7 @@ struct PaneInfo {
         if let a = d["agent"] as? [String: Any],
            let statusName = jsonString(a["status"]),
            let status = AgentStatus(rawValue: statusName) {
-            agent = AgentState(name: jsonString(a["name"]) ?? "Agent",
+            agent = AgentState(updatedAtMs: Self.activityTimestamp(payload["updated_at_ms"]), name: jsonString(a["name"]) ?? "Agent",
                                kind: jsonString(a["kind"]) ?? "",
                                status: status,
                                sessionId: jsonString(a["session_id"]),
@@ -313,6 +316,12 @@ struct PaneInfo {
     }
 
     var key: PaneKey { PaneKey(host, id) }
+
+    private static func activityTimestamp(_ value: Any?) -> UInt64? {
+        guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
+              let timestamp = UInt64(number.stringValue), timestamp > 0 else { return nil }
+        return timestamp
+    }
 
     /// Title for tabs: program title, else the cwd's last path component.
     var displayTitle: String {
@@ -460,16 +469,18 @@ struct FloatingPane: Codable, Equatable {
     /// Its terminal's size, for a card placed in cells: the card keeps it whatever the tab's size
     /// (only its position follows `frame`), stored as `[cols, rows]`.
     var cells: CardCells? = nil
+    var minimized = false
 
     private enum CodingKeys: String, CodingKey {
-        case id, host, frame, zoomed, cells
+        case id, host, frame, zoomed, cells, minimized
     }
 
-    init(pane: PaneKey, frame: [Double], zoomed: Bool = false, cells: CardCells? = nil) {
+    init(pane: PaneKey, frame: [Double], zoomed: Bool = false, cells: CardCells? = nil, minimized: Bool = false) {
         self.pane = pane
         self.frame = frame
         self.zoomed = zoomed
         self.cells = cells
+        self.minimized = minimized
     }
 
     init(from decoder: Decoder) throws {
@@ -479,6 +490,7 @@ struct FloatingPane: Codable, Equatable {
         frame = try c.decode([Double].self, forKey: .frame)
         zoomed = try c.decodeIfPresent(Bool.self, forKey: .zoomed) ?? false
         cells = try c.decodeIfPresent([Int].self, forKey: .cells).flatMap(CardCells.init(array:))
+        minimized = try c.decodeIfPresent(Bool.self, forKey: .minimized) ?? false
     }
 
     func encode(to encoder: Encoder) throws {
@@ -488,6 +500,7 @@ struct FloatingPane: Codable, Equatable {
         try c.encode(frame, forKey: .frame)
         if zoomed { try c.encode(true, forKey: .zoomed) }
         if let cells { try c.encode([cells.cols, cells.rows], forKey: .cells) }
+        if minimized { try c.encode(true, forKey: .minimized) }
     }
 }
 

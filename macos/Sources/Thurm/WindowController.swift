@@ -492,6 +492,10 @@ final class TerminalWindowController: NSWindowController, NSWindowDelegate {
         content.focus(pane)
     }
 
+    @objc func minimizeFloatingPane(_ sender: Any?) {
+        content.setMinimized(content.focusedPane, true)
+    }
+
     @objc func newFloatingPane(_ sender: Any?) {
         SessionManager.shared.newFloatingPane(in: self)
     }
@@ -591,6 +595,8 @@ extension TerminalWindowController: NSMenuItemValidation {
             return !isQuick && SessionManager.shared.config.sidebarTabs
         case #selector(movePaneToEdge(_:)):
             return content.isFloating(content.focusedPane) || content.canMoveByHeader(content.focusedPane)
+        case #selector(minimizeFloatingPane(_:)):
+            return content.isFloating(content.focusedPane)
         case #selector(moveFloatingPaneToNewTab(_:)):
             return SessionManager.shared.canMoveCards(self) && content.isFloating(content.focusedPane)
         default:

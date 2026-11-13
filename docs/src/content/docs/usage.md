@@ -22,6 +22,7 @@ of tabs.
 | Show / hide floating panes | Cmd+Option+Return |
 | Equalize split sizes | Cmd+Control+= |
 | Command palette | Cmd+Shift+P |
+| Insert path | Cmd+Option+P |
 | Workspace switcher | Cmd+Shift+O |
 | Agent switcher | Cmd+Shift+A |
 
@@ -42,6 +43,13 @@ tab; the tab shows where it goes before you let go. Drop a split's title on anot
 pane to split that pane on the side under the pointer. Esc cancels. **View › Move
 Pane to Edge** moves the current pane to an edge from the keyboard.
 
+The minimize button in a card's header (or **View › Minimize Floating Pane**) puts
+the card away as a chip in the bottom right of the tab; its program keeps running,
+and the chip shows its agent's status. Chips stay in one row; use the **+N** menu
+to restore cards whose chips do not fit. Click a chip to bring the card back where
+it was. Focusing the pane another way (the agent wall, a notification, `thurm
+focus`) brings it back too.
+
 Drag a tab's row from the sidebar onto the terminal area to float that tab as a
 card in the tab you're looking at; its programs keep running and its own floating
 panes come along. Only a tab with one pane in its splits can float, and only into
@@ -61,6 +69,25 @@ to the program instead.
 
 Closing a pane stops its process. Quitting the app keeps processes running by
 default. See [Sessions](/sessions/).
+
+## Insert a path
+
+Choose **Edit > Insert Path…**, press **Cmd+Option+P**, or use **Insert Path** in
+the command palette or terminal context menu. Search starts in the terminal's
+working folder. An empty search lists that folder and recent selections.
+Type a name to search its subfolders, or use a path such as `../`, `src/`,
+`~/`, or `/tmp/`. Type a leading dot to include hidden names.
+
+Use the arrow keys to select a path. **Return** inserts it as one shell word
+with the required escapes and a space. It does not send Enter to the terminal.
+**Tab** opens the selected folder in the picker. **Esc** closes the picker.
+Recent selections are kept for each host and working folder.
+
+Remote workspaces search on their own host. For a terminal running a separate
+`ssh` or `mosh` command, use a Thurm remote workspace instead. Update Thurm on
+an older host if the picker asks for it. Large searches have a limit; add a
+folder or a more specific name when the picker shows that more paths exist.
+Paths with control characters cannot be inserted.
 
 ## Workspaces and sidebar
 
@@ -121,6 +148,7 @@ Showing the sidebar restores the filter button, with its setting preserved.
 | Delete to line start / go to line start / end | Cmd+Backspace / Cmd+Left / Cmd+Right |
 | Increase / decrease / reset font size | Cmd++ / Cmd+- / Cmd+0 |
 | Open a URL | Cmd+click |
+| Preview a file | Right-click its path, then select Quick Look |
 | Open / reload configuration | Cmd+, / Cmd+Shift+, |
 | Secure Keyboard Entry | Cmd+Option+I |
 | Full screen | Cmd+Control+F |
@@ -133,6 +161,28 @@ combination maps to an action name, or to `none` to remove it. See
 Shell integration adds prompt marks and working directory tracking for zsh,
 bash, and fish. It also supports completion choices at a shell prompt. Use
 `thurm scroll prev-prompt` or `thurm scroll next-prompt` to move between marks.
+
+On Mac, **Quick Look** opens a native preview panel for images, PDFs, and other
+files that macOS can preview. Press Escape to close the panel. If macOS has no
+preview provider for the file type, the panel shows basic file information.
+
+Use an absolute path, a `~/` path, a relative path such as `./report.pdf`, or a
+`file://` link. Filenames with an extension, such as `report.pdf`, also work.
+Put paths with spaces in quotes or use shell escapes. A path must fit on one
+terminal row. OSC 8 file links can span rows. A `:line` or `:line:column` suffix
+is removed only if the full filename does not exist. This rule also applies to
+validated local file URLs. References such as `server:report.pdf` are remote
+paths, even if a local file has that name. To preview that local file, use
+`./server:report.pdf`, an absolute path, or a local file URL. Numeric suffixes
+such as `report.pdf:42` keep the full filename check.
+
+Relative paths use the clicked pane's current reported directory when the menu
+opens. Old output does not retain its original directory. Use an absolute path
+if the pane has since changed directory or its directory is unknown.
+Remote panes and file links to other hosts cannot use Quick Look. Copy the file
+to this Mac first. Missing files, unreadable files, folders, and special files
+show a message. In programs that use the mouse, hold Shift when you right-click
+to open the Thurm context menu.
 
 Completion choices for a command come from a spec named `<command>.json`. Thurm
 reads it from `~/.config/thurm/completions` first, then from the specs bundled with

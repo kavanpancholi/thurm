@@ -100,10 +100,13 @@ fn state(path: &Path) -> State {
     if std::fs::symlink_metadata(path).is_err() {
         return State::Missing;
     }
+    // Replace app links even when their contents match. An app move or removal breaks them.
+    if app_link(path) {
+        return State::Outdated;
+    }
     match std::fs::read_to_string(path.join("SKILL.md")) {
         Ok(text) if text == STUB => State::Current,
         Ok(text) if text.contains("thurm-stub:") => State::Outdated,
-        _ if app_link(path) => State::Outdated,
         _ => State::Other,
     }
 }
@@ -124,11 +127,18 @@ fn install(path: &Path) -> Result<Change, String> {
                 path.display()
             ));
         }
-        State::Outdated if app_link(path) => std::fs::remove_file(path).map_err(io)?,
+        State::Outdated if std::fs::read_link(path).is_ok() => {
+            std::fs::remove_file(path).map_err(io)?;
+        }
         State::Outdated | State::Missing => {}
     }
+    // Do not write through a linked skill file into another directory or an app bundle.
+    let file = path.join("SKILL.md");
+    if std::fs::read_link(&file).is_ok() {
+        std::fs::remove_file(&file).map_err(io)?;
+    }
     std::fs::create_dir_all(path).map_err(io)?;
-    std::fs::write(path.join("SKILL.md"), STUB).map_err(io)?;
+    std::fs::write(file, STUB).map_err(io)?;
     Ok(Change::Changed)
 }
 
@@ -250,7 +260,7 @@ pub fn run(cmd: SkillCmd, json: bool) -> crate::R {
 /// An installed agent lacks some of Thurm's hooks.
 fn hooks_missing() -> bool {
     hooks::AGENTS.iter().any(|a| {
-        let path = hooks::settings_path(a);
+        let path = a.settings_path();
         path.parent().is_some_and(Path::is_dir)
             && hooks::installed(a, &std::fs::read_to_string(&path).unwrap_or_default())
                 < a.events.len()
@@ -365,6 +375,53 @@ mod tests {
         assert_eq!(remove(&path), Ok(Change::Changed));
         assert!(path.join("notes.md").is_file());
         assert!(!path.join("SKILL.md").exists());
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn setup_replaces_current_and_broken_app_links() {
+        let home = scratch("app-links");
+        let app = home.join("Thurm.app/Contents/Resources/skills/thurm");
+        let path = home.join("skill");
+        std::fs::create_dir_all(&app).unwrap();
+        std::fs::write(app.join("SKILL.md"), STUB).unwrap();
+        for broken in [false, true] {
+            if broken {
+                std::fs::remove_dir_all(&app).unwrap();
+            }
+            std::os::unix::fs::symlink(&app, &path).unwrap();
+            assert_eq!(state(&path), State::Outdated);
+            assert_eq!(install(&path), Ok(Change::Changed));
+            assert!(std::fs::read_link(&path).is_err());
+            assert_eq!(state(&path), State::Current);
+            std::fs::remove_dir_all(&path).unwrap();
+        }
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn setup_does_not_change_the_target_of_an_outdated_link() {
+        let home = scratch("linked-stub");
+        let source = home.join("source");
+        let path = home.join("skill");
+        let old = "metadata:\n  thurm-stub: \"0\"\n";
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(source.join("SKILL.md"), old).unwrap();
+        for directory in [true, false] {
+            if directory {
+                std::os::unix::fs::symlink(&source, &path).unwrap();
+            } else {
+                std::fs::create_dir_all(&path).unwrap();
+                std::os::unix::fs::symlink(source.join("SKILL.md"), path.join("SKILL.md")).unwrap();
+            }
+            assert_eq!(install(&path), Ok(Change::Changed));
+            assert_eq!(state(&path), State::Current);
+            assert_eq!(
+                std::fs::read_to_string(source.join("SKILL.md")).unwrap(),
+                old
+            );
+            std::fs::remove_dir_all(&path).unwrap();
+        }
         let _ = std::fs::remove_dir_all(&home);
     }
 
