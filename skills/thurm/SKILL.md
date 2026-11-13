@@ -10,5 +10,9 @@ Run `thurm skill show` and follow the guide it prints. The guide comes from the 
 `thurm` CLI, so it describes the commands that version has. If `thurm` isn't on PATH, run
 `"$THURM_BIN_DIR/thurm" skill show`.
 
+Use your command tool for short checks. For long commands that need a terminal, use one
+background split for related checks. Check the results, then close the pane. Open a new tab
+when the user asks for one or the task needs a separate workspace.
+
 If the command fails, the installed Thurm predates the guide: start with `thurm info`, then
 `thurm --help` and `thurm COMMAND --help`.

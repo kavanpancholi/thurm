@@ -688,7 +688,8 @@ final class SessionManager: NSObject, CoreDelegate {
     @discardableResult
     func newTab(from hostIn: TerminalWindowController?, pane existing: PaneKey? = nil, preset: String? = nil,
                 cwd: String? = nil, host daemonIn: HostId? = nil, handoff: String? = nil,
-                reveal: Bool = false, background: Bool = false, ordered: NSWindow.OrderingMode = .above) -> PaneKey? {
+                reveal: Bool = false, background: Bool = false, append: Bool = false,
+                ordered: NSWindow.OrderingMode = .above) -> PaneKey? {
         // The quick terminal has one tab: new ones go to the last regular window.
         var host = hostIn ?? currentController
         if host?.isQuick ?? false { host = currentRegularController }
@@ -705,13 +706,14 @@ final class SessionManager: NSObject, CoreDelegate {
             if (workspace(host.workspaceID)?.host ?? host.host) == pane.host {
                 let c = makeController(root: .leaf(pane), focused: pane, zoomed: nil, title: nil, frame: nil)
                 c.handoffID = handoff
+                let anchor = append || background ? group(of: host).last ?? host : host
                 if background {
-                    // Behind the selected tab, which stays selected.
-                    let selected = host.window?.tabGroup?.selectedWindow
-                    attachAsTab(c, to: host)
+                    // Append in creation order and keep the selected tab.
+                    let selected = host.window?.tabGroup?.selectedWindow ?? host.window
+                    attachAsTab(c, to: anchor)
                     if let selected { selected.tabGroup?.selectedWindow = selected }
                 } else {
-                    attachAsTab(c, to: host, ordered: ordered)
+                    attachAsTab(c, to: anchor, ordered: ordered)
                     c.window?.makeKeyAndOrderFront(nil)
                 }
             } else {
@@ -729,11 +731,13 @@ final class SessionManager: NSObject, CoreDelegate {
                 // Its hidden tabs come along.
                 let frame = currentRegularController?.window?.frame
                 showAsNewWindow(c, frame: frame)
+                var previous = c
                 for tab in ws.hiddenTabs {
                     let t = makeController(root: SplitNode(layout: tab.root), focused: tab.focusedKey,
                                            zoomed: tab.zoomedKey, title: tab.title, frame: nil, floating: tab.floating)
                     t.adopt(tab)
-                    attachAsTab(t, to: c)
+                    attachAsTab(t, to: previous)
+                    previous = t
                 }
                 ws.hiddenTabs = []
                 c.window?.makeKeyAndOrderFront(nil)
@@ -743,6 +747,16 @@ final class SessionManager: NSObject, CoreDelegate {
         }
         scheduleLayoutSave()
         return pane
+    }
+
+    /// CLI tabs follow the source pane's workspace and keep creation order.
+    func newCommandTab(_ pane: PaneKey, target: PaneKey?, background: Bool) {
+        if let target, let ws = workspace(containing: target), !isShown(ws) {
+            addHiddenTab(pane, handoff: nil, to: ws, in: currentRegularController, reveal: !background)
+            return
+        }
+        newTab(from: target.flatMap { controller(for: $0) } ?? currentController,
+               pane: pane, background: background, append: true)
     }
 
     /// Cmd+D / Cmd+Shift+D.
@@ -1600,7 +1614,7 @@ final class SessionManager: NSObject, CoreDelegate {
             } else if jsonBool(d["new_window"]) ?? false {
                 newWindow(pane: pane, background: true)
             } else {
-                newTab(from: currentController, pane: pane, background: background)
+                newCommandTab(pane, target: key("target"), background: background)
             }
             if !background { NSApp.activate() }
         case "Zoom":

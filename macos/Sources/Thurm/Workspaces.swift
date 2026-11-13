@@ -235,17 +235,21 @@ extension SessionManager {
         scheduleLayoutSave()
     }
 
-    /// Adds `pane` as a tab of `ws` (not shown). With `reveal`, `c`'s window switches to `ws` on
-    /// that tab; else the window says where it went.
-    func addHiddenTab(_ pane: PaneKey, handoff: String?, to ws: Workspace, in c: TerminalWindowController,
+    /// Adds `pane` to hidden workspace `ws`. With `reveal`, select the new tab in `c`'s window,
+    /// or open a window if there is none. Otherwise, keep the workspace hidden.
+    func addHiddenTab(_ pane: PaneKey, handoff: String?, to ws: Workspace, in c: TerminalWindowController?,
                       reveal: Bool) {
         ws.hiddenTabs.append(TabLayout(title: nil, root: .pane(pane), focused: pane.id, zoomed: nil, handoff: handoff))
         if reveal {
             ws.hiddenSelectedTab = ws.hiddenTabs.count - 1
-            switchWorkspace(in: c, to: ws)
+            if let c {
+                switchWorkspace(in: c, to: ws)
+            } else {
+                openWorkspaceInNewWindow(ws)
+            }
         } else {
             let label = ws.isRemote ? "\(ws.name) (\(ws.host))" : ws.name
-            (currentRegularController ?? c).content.focusedView?.showToast(
+            (currentRegularController ?? c)?.content.focusedView?.showToast(
                 "New tab in workspace \(label) · ⇧⌘O to switch", duration: 5)
             refreshSidebars()
             scheduleLayoutSave()
