@@ -18,6 +18,7 @@ struct SidebarTab {
     var removed: UInt32 = 0
     var status: AgentStatus?
     var shortcut: Int?
+    var trailingDetail: String? = nil
     var selected: Bool
     var icon: PaneIcon = .shell
     /// The tab's other panes, stacked behind its icon.
@@ -41,7 +42,7 @@ extension SidebarTab: Equatable {
     static func == (a: SidebarTab, b: SidebarTab) -> Bool {
         a.controller === b.controller && a.title == b.title && a.subtitle == b.subtitle && a.branch == b.branch
             && a.added == b.added && a.removed == b.removed && a.status == b.status
-            && a.shortcut == b.shortcut && a.selected == b.selected && a.icon == b.icon
+            && a.shortcut == b.shortcut && a.trailingDetail == b.trailingDetail && a.selected == b.selected && a.icon == b.icon
             && a.behind == b.behind && a.progress == b.progress && a.hidden == b.hidden && a.active == b.active
     }
 }
@@ -1010,6 +1011,22 @@ final class SidebarRowView: NSTableRowView {
 final class AgentsPanel: NSView, NSTableViewDataSource, NSTableViewDelegate {
     weak var controller: TerminalWindowController?
 
+    private var ageTimer: Timer?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        ageTimer?.invalidate()
+        ageTimer = nil
+        guard window != nil else { return }
+        ageTimer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
+            guard let self, !self.isHidden, !Self.collapsed else { return }
+            self.reload()
+        }
+        if let ageTimer { RunLoop.main.add(ageTimer, forMode: .common) }
+    }
+
+    deinit { ageTimer?.invalidate() }
+
     private let separator = NSBox()
     private let header = NSTextField(labelWithString: "Agents")
     private let chevron = NSImageView()
@@ -1131,6 +1148,7 @@ final class AgentsPanel: NSView, NSTableViewDataSource, NSTableViewDelegate {
 
     @objc private func collapsedChanged() {
         showCollapsed()
+        if !Self.collapsed { reload() }
         updateSummary()
         updateHeight(duration: window?.isKeyWindow == true ? Motion.duration(Motion.standard) : 0)
     }
@@ -1266,7 +1284,7 @@ final class AgentsPanel: NSView, NSTableViewDataSource, NSTableViewDelegate {
                                  subtitle: [a.statusDetail, a.hostLabel, a.place, a.hidden?.name].compactMap { $0 }
                                      .joined(separator: " · "),
                                  status: a.agent.status,
-                                 shortcut: nil,
+                                 shortcut: nil, trailingDetail: a.activityAge(),
                                  selected: a.controller != nil && a.controller === key
                                      && a.controller?.focusedPane == a.pane,
                                  icon: PaneIcon(SessionManager.shared.panes[a.pane]))
@@ -1338,6 +1356,7 @@ final class TabRowView: NSTableCellView {
     private let title = NSTextField(labelWithString: "")
     private let subtitle = NSTextField(labelWithString: "")
     private let shortcut = NSTextField(labelWithString: "")
+    private var trailingDetail: String?
     private var shortcutHint = ""
     private let hold: CommandHold
     private var subtitleEnd: NSLayoutConstraint!
@@ -1409,7 +1428,7 @@ final class TabRowView: NSTableCellView {
     }
 
     @objc private func commandHeldChanged() {
-        shortcut.stringValue = hold.held ? shortcutHint : ""
+        shortcut.stringValue = trailingDetail ?? (hold.held ? shortcutHint : "")
         subtitleEnd.constant = shortcut.stringValue.isEmpty ? 0 : -4
     }
 
@@ -1425,6 +1444,7 @@ final class TabRowView: NSTableCellView {
         subtitle.lineBreakMode = truncateTail ? .byTruncatingTail : .byTruncatingMiddle
         title.stringValue = tab.title
         title.font = .systemFont(ofSize: 13, weight: tab.selected ? .medium : .regular)
+        trailingDetail = tab.trailingDetail
         shortcutHint = tab.shortcut.map { "⌘\($0)" } ?? ""
         commandHeldChanged()
         if let branch = tab.branch {

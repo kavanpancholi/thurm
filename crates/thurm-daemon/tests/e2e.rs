@@ -15,6 +15,9 @@ mod program_status;
 #[path = "e2e/mobile.rs"]
 mod mobile;
 
+#[path = "e2e/activity_age.rs"]
+mod activity_age;
+
 #[path = "e2e/state_events.rs"]
 mod state_events;
 

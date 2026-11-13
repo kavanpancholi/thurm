@@ -22,6 +22,8 @@ final class CommandPalette: NSObject, NSTableViewDataSource, NSTableViewDelegate
         let detail: String
         /// Shown right-aligned ("⇧⌘D").
         let shortcut: String
+        /// Text that changes with time while the picker is open.
+        let liveShortcut: ((Date) -> String)?
         /// ⌘R on the item (the workspace switcher: rename).
         let rename: (() -> Void)?
         /// Runs when the item becomes the selected row (the theme picker: show it live).
@@ -29,10 +31,11 @@ final class CommandPalette: NSObject, NSTableViewDataSource, NSTableViewDelegate
         let action: () -> Void
 
         init(title: String, detail: String, shortcut: String = "", rename: (() -> Void)? = nil,
-             preview: (() -> Void)? = nil, action: @escaping () -> Void) {
+             preview: (() -> Void)? = nil, liveShortcut: ((Date) -> String)? = nil, action: @escaping () -> Void) {
             self.title = title
             self.detail = detail
             self.shortcut = shortcut
+            self.liveShortcut = liveShortcut
             self.rename = rename
             self.preview = preview
             self.action = action
@@ -91,6 +94,7 @@ final class CommandPalette: NSObject, NSTableViewDataSource, NSTableViewDelegate
         return s + (named[key] ?? key.uppercased())
     }
 
+    private var liveTimer: Timer?
     private var panel: PalettePanel?
     private var field: NSTextField?
     private var background: NSView?
@@ -106,6 +110,8 @@ final class CommandPalette: NSObject, NSTableViewDataSource, NSTableViewDelegate
     private var filtered: [Item] = []
     private weak var targetWindow: NSWindow?
 
+    deinit { liveTimer?.invalidate() }
+
     var isVisible: Bool { panel?.isVisible ?? false }
 
     // MARK: Showing
@@ -113,6 +119,8 @@ final class CommandPalette: NSObject, NSTableViewDataSource, NSTableViewDelegate
     func show(items: [Item], over window: NSWindow?, placeholder: String = "Type a command…",
               footer hint: String? = nil, initialRow: Int = 0, onCancel: (() -> Void)? = nil) {
         cancelIfOpen()
+        liveTimer?.invalidate()
+        liveTimer = nil
         allItems = items
         filtered = items
         targetWindow = window
@@ -134,9 +142,18 @@ final class CommandPalette: NSObject, NSTableViewDataSource, NSTableViewDelegate
         panel.setFrameOrigin(origin)
         panel.makeKeyAndOrderFront(nil)
         if let field = field { panel.makeFirstResponder(field) }
+        if items.contains(where: { $0.liveShortcut != nil }) {
+            let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
+                self?.refreshLiveShortcuts()
+            }
+            liveTimer = timer
+            RunLoop.main.add(timer, forMode: .common)
+        }
     }
 
     func close() {
+        liveTimer?.invalidate()
+        liveTimer = nil
         panel?.orderOut(nil)
     }
 
@@ -351,9 +368,20 @@ final class CommandPalette: NSObject, NSTableViewDataSource, NSTableViewDelegate
         cell.identifier = id
         cell.title.stringValue = item.title
         cell.detail.stringValue = item.detail
-        cell.shortcut.stringValue = item.shortcut
+        cell.shortcut.stringValue = item.liveShortcut?(Date()) ?? item.shortcut
         cell.apply(style, selected: row == tableView.selectedRow)
         return cell
+    }
+
+    /// Update visible text without changing the filter, selection, or scroll position.
+    func refreshLiveShortcuts(now: Date = Date()) {
+        guard isVisible, let table else { return }
+        table.enumerateAvailableRowViews { _, row in
+            guard self.filtered.indices.contains(row), let live = self.filtered[row].liveShortcut,
+                  let cell = table.view(atColumn: 0, row: row, makeIfNecessary: false) as? PaletteCell else { return }
+            cell.shortcut.stringValue = live(now)
+            cell.apply(self.style, selected: row == table.selectedRow)
+        }
     }
 
     // MARK: Field delegate

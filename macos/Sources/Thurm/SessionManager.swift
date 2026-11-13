@@ -344,7 +344,7 @@ final class SessionManager: NSObject, CoreDelegate {
 
     /// `host`'s panes; nil when it did not answer.
     func fetchPanes(host: HostId = localHost) -> [PaneInfo]? {
-        guard let v = JSON.variant(Core.shared.request("\"ListPanes\"", host: host)), v.name == "Panes",
+        guard let v = JSON.variant(Core.shared.request("\"ListPanes\"", host: host)), ["Panes", "PanesWithActivity"].contains(v.name),
               let list = v.payload as? [Any]
         else { return nil }
         return list.compactMap { PaneInfo(json: $0, host: host) }
@@ -352,7 +352,7 @@ final class SessionManager: NSObject, CoreDelegate {
 
     func fetchPaneInfo(_ key: PaneKey) -> PaneInfo? {
         guard let v = JSON.variant(Core.shared.request(object: ["PaneInfo": ["pane": key.number]], host: key.host)),
-              v.name == "PaneInfo"
+              ["PaneInfo", "PaneActivity"].contains(v.name)
         else { return nil }
         return PaneInfo(json: v.payload, host: key.host)
     }
@@ -1329,7 +1329,7 @@ final class SessionManager: NSObject, CoreDelegate {
         let dict = payload as? [String: Any]
         let key = jsonUInt64(dict?["pane"]).map { PaneKey(host, $0) }
         switch name {
-        case "PaneInfo":
+        case "PaneInfo", "PaneActivity":
             if let info = PaneInfo(json: payload, host: host) { paneInfoUpdated(info) }
         case "PaneExited", "PaneClosed":
             if let id = key {
