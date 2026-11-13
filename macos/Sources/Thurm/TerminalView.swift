@@ -1280,6 +1280,25 @@ final class TerminalView: NSView, NSTextInputClient {
         pb.setString(text, forType: .string)
     }
 
+    @objc func insertPath(_ sender: Any?) {
+        completion.close()
+        InsertPathPicker.shared.show(for: self)
+    }
+
+    @discardableResult
+    func insertPickedPath(_ path: String, cwd: String) -> Bool {
+        guard !isOffline, window != nil, let info = SessionManager.shared.panes[pane],
+              info.alive, !info.passwordInput, info.cwd == cwd,
+              !["ssh", "mosh", "mosh-client"].contains(info.foregroundName ?? ""),
+              let text = InsertPathPicker.shellText(path) else {
+            showToast("The terminal changed. Open Insert Path again.")
+            return false
+        }
+        window?.makeFirstResponder(self)
+        Core.shared.paste(pane, text: text)
+        return true
+    }
+
     @objc func paste(_ sender: Any?) {
         if isOffline { return }
         let pb = NSPasteboard.general
@@ -1731,6 +1750,8 @@ final class TerminalView: NSView, NSTextInputClient {
         copyItem.target = self
         let pasteItem = menu.addItem(withTitle: "Paste", action: #selector(paste(_:)), keyEquivalent: "")
         pasteItem.target = self
+        let pathItem = menu.addItem(withTitle: "Insert Path…", action: #selector(insertPath(_:)), keyEquivalent: "")
+        pathItem.target = self
         menu.addItem(NSMenuItem.separator())
         menu.addItem(withTitle: "Split Right", action: #selector(TerminalWindowController.splitRight(_:)),
                      keyEquivalent: "")

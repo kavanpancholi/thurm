@@ -2445,6 +2445,7 @@ impl Daemon {
             // Slow queries and layout confirmation must not block later requests,
             // including the desktop client's reply. Responses carry their request ID.
             slow @ (Request::Complete { .. }
+            | Request::SearchPaths { .. }
             | Request::Processes { .. }
             | Request::ApplyLayout { .. }) => {
                 let daemon = self.clone();
@@ -2689,6 +2690,33 @@ impl Daemon {
                 } else {
                     Err(format!("no such pane: {pane}"))
                 }
+            }
+            Request::SearchPaths { pane, query } => {
+                let (cwd, pid, foreground, alive) = self.with_pane(pane, |_, st| {
+                    (
+                        st.info.cwd.clone(),
+                        st.info.pid,
+                        st.info.foreground.clone(),
+                        st.info.alive,
+                    )
+                })?;
+                if !alive {
+                    return Err("This terminal has closed.".into());
+                }
+                if foreground
+                    .as_ref()
+                    .is_some_and(|p| matches!(p.name.as_str(), "ssh" | "mosh" | "mosh-client"))
+                {
+                    return Err("Use a Thurm remote workspace to search this host.".into());
+                }
+                let cwd = cwd
+                    .filter(|s| Path::new(s).is_absolute())
+                    .ok_or("The terminal's working folder is not available.")?;
+                let home = pid
+                    .and_then(|pid| procinfo::env_var(pid, "HOME"))
+                    .or_else(|| std::env::var("HOME").ok());
+                crate::path_search::search(&query, Path::new(&cwd), home.as_deref())
+                    .map(Response::PathMatches)
             }
             Request::Complete { pane } => {
                 let (line, cwd, at_prompt, path, pid) = self.with_pane(pane, |_, st| {

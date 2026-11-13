@@ -149,6 +149,7 @@ the defaults alone.
 | `close_tab` | Shell > Close Tab |
 | `copy` | Edit > Copy |
 | `paste` | Edit > Paste |
+| `insert_path` | Edit > Insert Path… |
 | `select_all` | Edit > Select All |
 | `clear_screen` | Edit > Clear Screen |
 | `clear_scrollback` | Edit > Clear Scrollback |

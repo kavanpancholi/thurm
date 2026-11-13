@@ -77,7 +77,11 @@ pub const CAPABILITIES: &[&str] = &[
     CAP_FLOATING_NEW,
     CAP_FLOATING_PLACE,
     CAP_PANE_OWNER,
+    CAP_PATH_SEARCH,
 ];
+
+/// The daemon accepts `SearchPaths` and returns `PathMatches` only for that request.
+pub const CAP_PATH_SEARCH: &str = "path-search";
 
 /// The pane takes the size of the client that used it last (see the daemon's `active_size`)
 /// instead of the last `Resize`.
@@ -472,6 +476,11 @@ pub enum Request {
         #[serde(default)]
         panes: Vec<PaneId>,
     },
+    /// Search files and folders on the pane's host. Requires `CAP_PATH_SEARCH`.
+    SearchPaths {
+        pane: PaneId,
+        query: String,
+    },
 }
 
 /// How [`Request::OwnPanes`] treats a pane another client holds.
@@ -574,6 +583,7 @@ pub enum Response {
     PaneModes(PaneModes),
     PanesWithActivity(Vec<PaneActivity>),
     PaneActivity(PaneActivity),
+    PathMatches(PathMatches),
 }
 
 /// A pane that had keyboard focus in a UI (the Mac app, the iOS app).
@@ -840,6 +850,14 @@ pub enum ProgressState {
     /// Busy without a known percentage.
     Indeterminate,
     Paused,
+}
+
+/// Results for an explicit path search. Existing completion messages keep their wire layout.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+pub struct PathMatches {
+    pub cwd: String,
+    pub items: Vec<CompletionItem>,
+    pub truncated: bool,
 }
 
 /// Completion candidates for the word before the cursor.

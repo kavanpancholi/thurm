@@ -336,6 +336,8 @@ enum MainMenu {
         let menu = NSMenu(title: "Edit")
         menu.addItem(item("Copy", #selector(TerminalView.copy(_:)), "c", name: "copy"))
         menu.addItem(item("Paste", #selector(TerminalView.paste(_:)), "v", name: "paste"))
+        menu.addItem(item("Insert Path…", #selector(TerminalView.insertPath(_:)), "p", [.command, .option],
+                          name: "insert_path"))
         menu.addItem(item("Select All", #selector(TerminalView.selectAll(_:)), "a", name: "select_all"))
         menu.addItem(.separator())
         menu.addItem(item("Clear Screen", #selector(TerminalView.clearScreen(_:)), "k", name: "clear_screen"))

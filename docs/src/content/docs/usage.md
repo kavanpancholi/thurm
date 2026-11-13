@@ -22,6 +22,7 @@ of tabs.
 | Show / hide floating panes | Cmd+Option+Return |
 | Equalize split sizes | Cmd+Control+= |
 | Command palette | Cmd+Shift+P |
+| Insert path | Cmd+Option+P |
 | Workspace switcher | Cmd+Shift+O |
 | Agent switcher | Cmd+Shift+A |
 
@@ -56,6 +57,25 @@ to the program instead.
 
 Closing a pane stops its process. Quitting the app keeps processes running by
 default. See [Sessions](/sessions/).
+
+## Insert a path
+
+Choose **Edit > Insert Path…**, press **Cmd+Option+P**, or use **Insert Path** in
+the command palette or terminal context menu. Search starts in the terminal's
+working folder. An empty search lists that folder and recent selections.
+Type a name to search its subfolders, or use a path such as `../`, `src/`,
+`~/`, or `/tmp/`. Type a leading dot to include hidden names.
+
+Use the arrow keys to select a path. **Return** inserts it as one shell word
+with the required escapes and a space. It does not send Enter to the terminal.
+**Tab** opens the selected folder in the picker. **Esc** closes the picker.
+Recent selections are kept for each host and working folder.
+
+Remote workspaces search on their own host. For a terminal running a separate
+`ssh` or `mosh` command, use a Thurm remote workspace instead. Update Thurm on
+an older host if the picker asks for it. Large searches have a limit; add a
+folder or a more specific name when the picker shows that more paths exist.
+Paths with control characters cannot be inserted.
 
 ## Workspaces and sidebar
 

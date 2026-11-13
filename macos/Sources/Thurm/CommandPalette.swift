@@ -29,10 +29,12 @@ final class CommandPalette: NSObject, NSTableViewDataSource, NSTableViewDelegate
         let rename: (() -> Void)?
         /// Runs when the item becomes the selected row (the theme picker: show it live).
         let preview: (() -> Void)?
+        let navigate: (() -> Void)?
         let action: () -> Void
 
         init(title: String, detail: String, searchText: String? = nil, shortcut: String = "", rename: (() -> Void)? = nil,
-             preview: (() -> Void)? = nil, liveShortcut: ((Date) -> String)? = nil, action: @escaping () -> Void) {
+             preview: (() -> Void)? = nil, liveShortcut: ((Date) -> String)? = nil,
+             navigate: (() -> Void)? = nil, action: @escaping () -> Void) {
             self.title = title
             self.detail = detail
             self.searchText = searchText ?? title
@@ -40,6 +42,7 @@ final class CommandPalette: NSObject, NSTableViewDataSource, NSTableViewDelegate
             self.liveShortcut = liveShortcut
             self.rename = rename
             self.preview = preview
+            self.navigate = navigate
             self.action = action
         }
     }
@@ -105,6 +108,7 @@ final class CommandPalette: NSObject, NSTableViewDataSource, NSTableViewDelegate
     private var style = PopupStyle()
     private var table: NSTableView?
     private var allItems: [Item] = []
+    private var onQuery: ((String) -> Void)?
     /// Called when the palette closes without running an item (Escape, clicking away).
     private var onCancel: (() -> Void)?
     /// The item whose preview ran last, so selecting it again doesn't rerun it.
@@ -119,7 +123,7 @@ final class CommandPalette: NSObject, NSTableViewDataSource, NSTableViewDelegate
     // MARK: Showing
 
     func show(items: [Item], over window: NSWindow?, placeholder: String = "Type a command…",
-              footer hint: String? = nil, initialRow: Int = 0, onCancel: (() -> Void)? = nil) {
+              footer hint: String? = nil, initialRow: Int = 0, onQuery: ((String) -> Void)? = nil, onCancel: (() -> Void)? = nil) {
         cancelIfOpen()
         liveTimer?.invalidate()
         liveTimer = nil
@@ -127,9 +131,12 @@ final class CommandPalette: NSObject, NSTableViewDataSource, NSTableViewDelegate
         filtered = items
         targetWindow = window
         self.onCancel = onCancel
+        self.onQuery = onQuery
         previewed = items.indices.contains(initialRow) ? items[initialRow].title : nil
         let panel = self.panel ?? buildPanel()
         applyStyle(placeholder: placeholder, footer: hint)
+        panel.setAccessibilityLabel(placeholder)
+        field?.setAccessibilityLabel(placeholder)
         field?.stringValue = ""
         table?.reloadData()
         selectRow(initialRow)
@@ -156,7 +163,24 @@ final class CommandPalette: NSObject, NSTableViewDataSource, NSTableViewDelegate
     func close() {
         liveTimer?.invalidate()
         liveTimer = nil
+        onQuery = nil
         panel?.orderOut(nil)
+    }
+
+    /// Replace asynchronous search results without changing the field or keyboard focus.
+    func updateSearch(items: [Item], hint: String) {
+        guard isVisible, onQuery != nil else { return }
+        allItems = items
+        filtered = items
+        footer?.stringValue = hint
+        table?.reloadData()
+        selectRow(0)
+    }
+
+    func setSearchQuery(_ query: String) {
+        field?.stringValue = query
+        onQuery?(query)
+        if let field { panel?.makeFirstResponder(field) }
     }
 
     /// A click in another window closes the palette, and the click goes no further: it must not
@@ -389,6 +413,7 @@ final class CommandPalette: NSObject, NSTableViewDataSource, NSTableViewDelegate
     // MARK: Field delegate
 
     func controlTextDidChange(_ obj: Notification) {
+        if let onQuery { onQuery(field?.stringValue ?? ""); return }
         applyFilter()
     }
 
@@ -403,6 +428,9 @@ final class CommandPalette: NSObject, NSTableViewDataSource, NSTableViewDelegate
             return true
         case #selector(NSResponder.insertNewline(_:)):
             runSelected()
+            return true
+        case #selector(NSResponder.insertTab(_:)) where onQuery != nil:
+            if filtered.indices.contains(table.selectedRow) { filtered[table.selectedRow].navigate?() }
             return true
         case #selector(NSResponder.cancelOperation(_:)):
             close()

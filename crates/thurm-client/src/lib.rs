@@ -488,6 +488,14 @@ impl Client {
         if !self.is_alive() {
             return Err(ClientError::Disconnected);
         }
+        if matches!(env.request, Request::SearchPaths { .. })
+            && !matches!(&*self.hello.lock(), Some(Response::Hello { capabilities, .. })
+                if capabilities.iter().any(|c| c == thurm_proto::CAP_PATH_SEARCH))
+        {
+            return Err(ClientError::Daemon(
+                "Update Thurm on this host to use Insert Path.".into(),
+            ));
+        }
         let buf = codec::encode(env)?;
         let mut w = match deadline {
             Some(d) => self.writer.try_lock_until(d).ok_or(ClientError::Timeout)?,
@@ -662,6 +670,89 @@ mod tests {
         assert_eq!(mismatched_protocol(&e), Some(PROTOCOL_VERSION));
         assert_eq!(probe_daemon(&sock).unwrap(), (PROTOCOL_VERSION, None));
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn path_search_requires_peer_support_and_keeps_old_connections_usable() {
+        for supported in [false, true] {
+            let (stream, mut peer) = UnixStream::pair().unwrap();
+            let server = std::thread::spawn(move || {
+                let hello: Envelope = codec::read_message(&mut peer).unwrap().unwrap();
+                let mut capabilities = vec![thurm_proto::CAP_ACTIVE_SIZE.to_owned()];
+                if supported {
+                    capabilities.push(thurm_proto::CAP_PATH_SEARCH.to_owned());
+                }
+                codec::write_message(
+                    &mut peer,
+                    &ServerMessage::Response {
+                        id: hello.id,
+                        result: Ok(Response::Hello {
+                            version: PROTOCOL_VERSION,
+                            daemon_pid: 1,
+                            restored: false,
+                            build: "fixture".into(),
+                            capabilities,
+                        }),
+                    },
+                )
+                .unwrap();
+                if supported {
+                    let env: Envelope = codec::read_message(&mut peer).unwrap().unwrap();
+                    assert!(matches!(env.request, Request::SearchPaths { pane: 2, .. }));
+                    codec::write_message(
+                        &mut peer,
+                        &ServerMessage::Response {
+                            id: env.id,
+                            result: Ok(Response::PathMatches(thurm_proto::PathMatches {
+                                cwd: "/remote".into(),
+                                ..Default::default()
+                            })),
+                        },
+                    )
+                    .unwrap();
+                }
+                // A peer without support must receive Complete next, never SearchPaths.
+                let frame = codec::read_frame(&mut peer).unwrap().unwrap();
+                let (id, tag, pane): (u64, u32, u64) = codec::decode(&frame).unwrap();
+                assert_eq!((tag, pane), (35, 2));
+                assert_eq!(frame, codec::encode(&(id, tag, pane)).unwrap()[4..]);
+                codec::write_message(
+                    &mut peer,
+                    &(0u32, id, Ok::<_, String>((11u32, "", Vec::<u8>::new()))),
+                )
+                .unwrap();
+            });
+            let client = Client::from_stream(stream, "test", false, &[], |_| {}, || {}).unwrap();
+            let result = client.request_timeout(
+                Request::SearchPaths {
+                    pane: 2,
+                    query: "".into(),
+                },
+                Some(Duration::from_secs(2)),
+            );
+            if supported {
+                assert!(
+                    matches!(result, Ok(Response::PathMatches(paths)) if paths.cwd == "/remote")
+                );
+            } else {
+                assert!(
+                    matches!(result, Err(ClientError::Daemon(e)) if e.contains("Update Thurm"))
+                );
+                assert!(
+                    client
+                        .send(Request::SearchPaths {
+                            pane: 2,
+                            query: "".into()
+                        })
+                        .is_err()
+                );
+            }
+            assert!(matches!(
+                client.request(Request::Complete { pane: 2 }),
+                Ok(Response::Completions(_))
+            ));
+            server.join().unwrap();
+        }
     }
 
     #[test]
