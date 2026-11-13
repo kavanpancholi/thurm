@@ -20,21 +20,29 @@ final class CommandPalette: NSObject, NSTableViewDataSource, NSTableViewDelegate
     struct Item {
         let title: String
         let detail: String
+        let searchText: String
         /// Shown right-aligned ("⇧⌘D").
         let shortcut: String
+        /// Text that changes with time while the picker is open.
+        let liveShortcut: ((Date) -> String)?
         /// ⌘R on the item (the workspace switcher: rename).
         let rename: (() -> Void)?
         /// Runs when the item becomes the selected row (the theme picker: show it live).
         let preview: (() -> Void)?
+        let navigate: (() -> Void)?
         let action: () -> Void
 
-        init(title: String, detail: String, shortcut: String = "", rename: (() -> Void)? = nil,
-             preview: (() -> Void)? = nil, action: @escaping () -> Void) {
+        init(title: String, detail: String, searchText: String? = nil, shortcut: String = "", rename: (() -> Void)? = nil,
+             preview: (() -> Void)? = nil, liveShortcut: ((Date) -> String)? = nil,
+             navigate: (() -> Void)? = nil, action: @escaping () -> Void) {
             self.title = title
             self.detail = detail
+            self.searchText = searchText ?? title
             self.shortcut = shortcut
+            self.liveShortcut = liveShortcut
             self.rename = rename
             self.preview = preview
+            self.navigate = navigate
             self.action = action
         }
     }
@@ -91,6 +99,7 @@ final class CommandPalette: NSObject, NSTableViewDataSource, NSTableViewDelegate
         return s + (named[key] ?? key.uppercased())
     }
 
+    private var liveTimer: Timer?
     private var panel: PalettePanel?
     private var field: NSTextField?
     private var background: NSView?
@@ -99,6 +108,7 @@ final class CommandPalette: NSObject, NSTableViewDataSource, NSTableViewDelegate
     private var style = PopupStyle()
     private var table: NSTableView?
     private var allItems: [Item] = []
+    private var onQuery: ((String) -> Void)?
     /// Called when the palette closes without running an item (Escape, clicking away).
     private var onCancel: (() -> Void)?
     /// The item whose preview ran last, so selecting it again doesn't rerun it.
@@ -106,20 +116,27 @@ final class CommandPalette: NSObject, NSTableViewDataSource, NSTableViewDelegate
     private var filtered: [Item] = []
     private weak var targetWindow: NSWindow?
 
+    deinit { liveTimer?.invalidate() }
+
     var isVisible: Bool { panel?.isVisible ?? false }
 
     // MARK: Showing
 
     func show(items: [Item], over window: NSWindow?, placeholder: String = "Type a command…",
-              footer hint: String? = nil, initialRow: Int = 0, onCancel: (() -> Void)? = nil) {
+              footer hint: String? = nil, initialRow: Int = 0, onQuery: ((String) -> Void)? = nil, onCancel: (() -> Void)? = nil) {
         cancelIfOpen()
+        liveTimer?.invalidate()
+        liveTimer = nil
         allItems = items
         filtered = items
         targetWindow = window
         self.onCancel = onCancel
+        self.onQuery = onQuery
         previewed = items.indices.contains(initialRow) ? items[initialRow].title : nil
         let panel = self.panel ?? buildPanel()
         applyStyle(placeholder: placeholder, footer: hint)
+        panel.setAccessibilityLabel(placeholder)
+        field?.setAccessibilityLabel(placeholder)
         field?.stringValue = ""
         table?.reloadData()
         selectRow(initialRow)
@@ -134,10 +151,36 @@ final class CommandPalette: NSObject, NSTableViewDataSource, NSTableViewDelegate
         panel.setFrameOrigin(origin)
         panel.makeKeyAndOrderFront(nil)
         if let field = field { panel.makeFirstResponder(field) }
+        if items.contains(where: { $0.liveShortcut != nil }) {
+            let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
+                self?.refreshLiveShortcuts()
+            }
+            liveTimer = timer
+            RunLoop.main.add(timer, forMode: .common)
+        }
     }
 
     func close() {
+        liveTimer?.invalidate()
+        liveTimer = nil
+        onQuery = nil
         panel?.orderOut(nil)
+    }
+
+    /// Replace asynchronous search results without changing the field or keyboard focus.
+    func updateSearch(items: [Item], hint: String) {
+        guard isVisible, onQuery != nil else { return }
+        allItems = items
+        filtered = items
+        footer?.stringValue = hint
+        table?.reloadData()
+        selectRow(0)
+    }
+
+    func setSearchQuery(_ query: String) {
+        field?.stringValue = query
+        onQuery?(query)
+        if let field { panel?.makeFirstResponder(field) }
     }
 
     /// A click in another window closes the palette, and the click goes no further: it must not
@@ -285,7 +328,7 @@ final class CommandPalette: NSObject, NSTableViewDataSource, NSTableViewDelegate
     private func applyFilter() {
         let query = field?.stringValue.trimmingCharacters(in: .whitespaces) ?? ""
         let scored: [(Int, Int, Item)] = allItems.enumerated().compactMap { entry in
-            guard let s = CommandPalette.score(entry.element.title, query) else { return nil }
+            guard let s = CommandPalette.score(entry.element.searchText, query) else { return nil }
             return (s, entry.offset, entry.element)
         }
         filtered = scored.sorted { a, b in a.0 != b.0 ? a.0 < b.0 : a.1 < b.1 }.map { $0.2 }
@@ -351,14 +394,26 @@ final class CommandPalette: NSObject, NSTableViewDataSource, NSTableViewDelegate
         cell.identifier = id
         cell.title.stringValue = item.title
         cell.detail.stringValue = item.detail
-        cell.shortcut.stringValue = item.shortcut
+        cell.shortcut.stringValue = item.liveShortcut?(Date()) ?? item.shortcut
         cell.apply(style, selected: row == tableView.selectedRow)
         return cell
+    }
+
+    /// Update visible text without changing the filter, selection, or scroll position.
+    func refreshLiveShortcuts(now: Date = Date()) {
+        guard isVisible, let table else { return }
+        table.enumerateAvailableRowViews { _, row in
+            guard self.filtered.indices.contains(row), let live = self.filtered[row].liveShortcut,
+                  let cell = table.view(atColumn: 0, row: row, makeIfNecessary: false) as? PaletteCell else { return }
+            cell.shortcut.stringValue = live(now)
+            cell.apply(self.style, selected: row == table.selectedRow)
+        }
     }
 
     // MARK: Field delegate
 
     func controlTextDidChange(_ obj: Notification) {
+        if let onQuery { onQuery(field?.stringValue ?? ""); return }
         applyFilter()
     }
 
@@ -373,6 +428,9 @@ final class CommandPalette: NSObject, NSTableViewDataSource, NSTableViewDelegate
             return true
         case #selector(NSResponder.insertNewline(_:)):
             runSelected()
+            return true
+        case #selector(NSResponder.insertTab(_:)) where onQuery != nil:
+            if filtered.indices.contains(table.selectedRow) { filtered[table.selectedRow].navigate?() }
             return true
         case #selector(NSResponder.cancelOperation(_:)):
             close()

@@ -14,6 +14,17 @@ struct AgentPane {
         agent.topic ?? Self.programTopic(info.title, agent: agent.name) ?? agent.name
     }
 
+    /// The age of the daemon's last reported change. Missing timestamps show no age.
+    func activityAge(now: Date = Date()) -> String? {
+        guard let updated = agent.updatedAtMs, updated > 0 else { return nil }
+        let seconds = max(0, now.timeIntervalSince1970 - Double(updated) / 1000)
+        if seconds < 1 { return "updated now" }
+        if seconds < 60 { return "updated \(Int(seconds))s ago" }
+        if seconds < 3600 { return "updated \(Int(seconds / 60))m ago" }
+        if seconds < 86400 { return "updated \(Int(seconds / 3600))h ago" }
+        return "updated \(Int(seconds / 86400))d ago"
+    }
+
     /// The remote host it runs on (nil on this Mac).
     var hostLabel: String? { pane.isRemote ? pane.host : nil }
 
@@ -107,7 +118,11 @@ extension SessionManager {
             let detail = [a.hostLabel, a.agent.name, a.place, a.hidden?.name, here ? "this pane" : a.statusDetail]
                 .compactMap { $0 }
                 .joined(separator: " · ")
-            return CommandPalette.Item(title: a.title, detail: detail) {
+            return CommandPalette.Item(title: a.title, detail: detail, liveShortcut: { now in
+                guard let info = SessionManager.shared.panes[a.pane], let agent = info.agent else { return "" }
+                return AgentPane(pane: a.pane, info: info, agent: agent, controller: a.controller, hidden: a.hidden)
+                    .activityAge(now: now) ?? ""
+            }) {
                 SessionManager.shared.focusAgent(a, from: host)
             }
         }

@@ -283,6 +283,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         SessionManager.shared.goForwardInTabHistory()
     }
 
+    @objc func goToAnything(_ sender: Any?) {
+        SessionManager.shared.showNavigationPicker()
+    }
+
     @objc func switchAgent(_ sender: Any?) {
         SessionManager.shared.showAgentPicker()
     }

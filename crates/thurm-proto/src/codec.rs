@@ -173,6 +173,91 @@ mod tests {
     use super::*;
     use crate::*;
 
+    // Frozen wire layouts from before Insert Path. Tuples keep the old field order and
+    // enum tags independent of the current protocol types.
+    #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
+    struct LegacyCompletions {
+        word: String,
+        items: Vec<(String, u32, Option<String>)>,
+    }
+
+    #[test]
+    fn insert_path_keeps_old_completion_frames_in_both_directions() {
+        let old_request = (7u64, 35u32, 3u64);
+        let old_frame = encode(&old_request).unwrap();
+        let current: Envelope = read_message(&mut old_frame.as_slice()).unwrap().unwrap();
+        assert_eq!(current.id, 7);
+        assert!(matches!(current.request, Request::Complete { pane: 3 }));
+        let new_frame = encode(&current).unwrap();
+        assert_eq!(old_frame, new_frame);
+        let (old_again, rest) =
+            postcard::take_from_bytes::<(u64, u32, u64)>(payload(&new_frame)).unwrap();
+        assert_eq!(old_again, old_request);
+        assert!(rest.is_empty());
+
+        let old_response = (
+            0u32,
+            7u64,
+            Ok::<_, String>((
+                11u32,
+                LegacyCompletions {
+                    word: "folder/".into(),
+                    items: vec![("folder/a 'quote\"/".into(), 5, Some("directory".into()))],
+                },
+            )),
+        );
+        let old_frame = encode(&old_response).unwrap();
+        let current = decode_message(payload(&old_frame)).unwrap();
+        assert!(
+            matches!(&current, ServerMessage::Response { id: 7, result: Ok(Response::Completions(c)) }
+            if c.word == "folder/" && c.items.len() == 1 && c.items[0].kind == CompletionKind::Directory)
+        );
+        let new_frame = encode(&current).unwrap();
+        assert_eq!(old_frame, new_frame);
+        type OldResponse = (u32, u64, Result<(u32, LegacyCompletions), String>);
+        let (old_again, rest) =
+            postcard::take_from_bytes::<OldResponse>(payload(&new_frame)).unwrap();
+        assert_eq!(old_again, old_response);
+        assert!(rest.is_empty());
+    }
+
+    #[test]
+    fn path_search_uses_new_tags_and_round_trips() {
+        let request = Envelope {
+            id: 9,
+            request: Request::SearchPaths {
+                pane: 3,
+                query: "../a b".into(),
+            },
+        };
+        let frame = encode(&request).unwrap();
+        assert_eq!(&payload(&frame)[..3], &[9, 68, 3]);
+        let back: Envelope = read_message(&mut frame.as_slice()).unwrap().unwrap();
+        assert!(
+            matches!(back.request, Request::SearchPaths { pane: 3, query } if query == "../a b")
+        );
+        let matches = PathMatches {
+            cwd: "/remote/work".into(),
+            items: vec![CompletionItem {
+                text: "../a b/".into(),
+                kind: CompletionKind::Directory,
+                description: None,
+            }],
+            truncated: true,
+        };
+        let response = ServerMessage::Response {
+            id: 9,
+            result: Ok(Response::PathMatches(matches.clone())),
+        };
+        let frame = encode(&response).unwrap();
+        assert_eq!(&payload(&frame)[..4], &[0, 9, 0, 21]);
+        assert!(
+            matches!(decode_message(payload(&frame)).unwrap(), ServerMessage::Response {
+            id: 9, result: Ok(Response::PathMatches(back))
+        } if back == matches)
+        );
+    }
+
     #[test]
     fn roundtrip_request_and_frame() {
         let env = Envelope {

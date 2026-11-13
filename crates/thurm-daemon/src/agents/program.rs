@@ -99,6 +99,7 @@ impl AgentTracker {
     pub(super) fn program_state(&self) -> Option<AgentState> {
         let p = self.program.as_ref()?;
         Some(AgentState {
+            updated_at_ms: None,
             name: p.name.clone(),
             kind: p.kind.clone(),
             status: p.status,

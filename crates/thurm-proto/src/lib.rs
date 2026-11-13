@@ -77,7 +77,11 @@ pub const CAPABILITIES: &[&str] = &[
     CAP_FLOATING_NEW,
     CAP_FLOATING_PLACE,
     CAP_PANE_OWNER,
+    CAP_PATH_SEARCH,
 ];
+
+/// The daemon accepts `SearchPaths` and returns `PathMatches` only for that request.
+pub const CAP_PATH_SEARCH: &str = "path-search";
 
 /// The pane takes the size of the client that used it last (see the daemon's `active_size`)
 /// instead of the last `Resize`.
@@ -125,6 +129,10 @@ pub const CAP_PANE_OWNER: &str = "pane-owner";
 /// changes that come from a pane's output (prompt, cwd, progress), which otherwise go only to
 /// UI clients.
 pub const CAP_STATE_EVENTS: &str = "state-events";
+
+/// The client accepts `PaneActivity` events and responses in place of `PaneInfo`.
+/// Older daemons ignore this capability and send the original messages.
+pub const CAP_AGENT_ACTIVITY: &str = "agent-activity";
 
 /// Sent only by remote clients (the iOS app over ssh or the tailnet, the web client): the daemon
 /// deflates the events it sends them, as [`Event::Compressed`] (see [`codec::encode_frame`]).
@@ -468,6 +476,11 @@ pub enum Request {
         #[serde(default)]
         panes: Vec<PaneId>,
     },
+    /// Search files and folders on the pane's host. Requires `CAP_PATH_SEARCH`.
+    SearchPaths {
+        pane: PaneId,
+        query: String,
+    },
 }
 
 /// How [`Request::OwnPanes`] treats a pane another client holds.
@@ -568,6 +581,9 @@ pub enum Response {
     Whoami(Principal),
     FocusHistory(Vec<FocusRecord>),
     PaneModes(PaneModes),
+    PanesWithActivity(Vec<PaneActivity>),
+    PaneActivity(PaneActivity),
+    PathMatches(PathMatches),
 }
 
 /// A pane that had keyboard focus in a UI (the Mac app, the iOS app).
@@ -708,6 +724,25 @@ pub enum Event {
         pane: PaneId,
         yours: bool,
     },
+    /// Pane state and its activity time, for clients with `CAP_AGENT_ACTIVITY`.
+    PaneActivity(PaneActivity),
+}
+
+/// An extended pane snapshot. The original `PaneInfo` binary format stays unchanged.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct PaneActivity {
+    pub info: PaneInfo,
+    pub updated_at_ms: Option<u64>,
+}
+
+impl From<PaneInfo> for PaneActivity {
+    fn from(info: PaneInfo) -> Self {
+        let updated_at_ms = info.agent.as_ref().and_then(|a| a.updated_at_ms);
+        Self {
+            info,
+            updated_at_ms,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
@@ -817,6 +852,14 @@ pub enum ProgressState {
     Paused,
 }
 
+/// Results for an explicit path search. Existing completion messages keep their wire layout.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+pub struct PathMatches {
+    pub cwd: String,
+    pub items: Vec<CompletionItem>,
+    pub truncated: bool,
+}
+
 /// Completion candidates for the word before the cursor.
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 pub struct Completions {
@@ -880,6 +923,9 @@ pub struct ProcessInfo {
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct AgentState {
+    /// Unix milliseconds of the last state change. Sent through `PaneActivity` only.
+    #[serde(skip)]
+    pub updated_at_ms: Option<u64>,
     /// Display name, e.g. "Claude Code".
     pub name: String,
     /// Stable identifier, e.g. "claude".
@@ -1541,6 +1587,53 @@ pub enum AgentPromptOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn activity_keeps_the_original_agent_wire_format() {
+        let mut state: AgentState = serde_json::from_str(
+            r#"{"name":"Agent","kind":"test","status":"Working","session_id":null,"message":null}"#,
+        )
+        .unwrap();
+        assert_eq!(state.updated_at_ms, None);
+        state.updated_at_ms = Some(1_800_000_000_123);
+        // The original fields, followed by another field to detect shifted bytes.
+        let old = (
+            "Agent",
+            "test",
+            AgentStatus::Working,
+            None::<String>,
+            None::<String>,
+            None::<u64>,
+            0u64,
+            false,
+            None::<String>,
+            None::<u64>,
+        );
+        let bytes = postcard::to_allocvec(&(state.clone(), 42u64)).unwrap();
+        assert_eq!(bytes, postcard::to_allocvec(&(old, 42u64)).unwrap());
+        let (decoded, tail): (AgentState, u64) = postcard::from_bytes(&bytes).unwrap();
+        assert_eq!(decoded.updated_at_ms, None);
+        assert_eq!(decoded.status, state.status);
+        assert_eq!(tail, 42);
+
+        let activity = PaneActivity::from(PaneInfo {
+            id: 7,
+            agent: Some(state),
+            ..Default::default()
+        });
+        let message = ServerMessage::Event(Event::PaneActivity(activity));
+        let bytes = postcard::to_allocvec(&message).unwrap();
+        let ServerMessage::Event(Event::PaneActivity(decoded)) =
+            codec::decode_message(&bytes).unwrap()
+        else {
+            panic!("expected activity");
+        };
+        assert_eq!(decoded.info.id, 7);
+        assert_eq!(decoded.updated_at_ms, Some(1_800_000_000_123));
+        let json = serde_json::to_value(decoded).unwrap();
+        assert_eq!(json["updated_at_ms"], 1_800_000_000_123u64);
+        assert_eq!(json["info"]["agent"]["status"], "Working");
+    }
 
     #[test]
     fn own_panes_json() {

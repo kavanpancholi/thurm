@@ -106,6 +106,7 @@ mod tests {
 
     fn agent(status: AgentStatus, session: &str) -> AgentState {
         AgentState {
+            updated_at_ms: None,
             name: "Test".into(),
             kind: "test".into(),
             status,

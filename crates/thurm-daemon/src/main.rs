@@ -9,6 +9,7 @@ mod ai;
 mod complete;
 mod daemon;
 mod git;
+mod path_search;
 mod persist;
 mod procinfo;
 mod pty;

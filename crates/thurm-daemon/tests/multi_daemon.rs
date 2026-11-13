@@ -190,7 +190,10 @@ fn two_daemons_one_app() {
         "the local pane {pa} is still open"
     );
     let panes = request(a, r#""ListPanes""#);
-    assert_eq!(panes["Panes"].as_array().unwrap().len(), 1);
+    let panes = panes["PanesWithActivity"].as_array().unwrap();
+    assert_eq!(panes.len(), 1);
+    assert_eq!(panes[0]["info"]["id"], pa);
+    assert!(panes[0]["updated_at_ms"].is_null());
 
     // The layout lives in the local daemon, remote leaves included (they survive its
     // pruning of panes it doesn't have); an unknown local pane is dropped as before.

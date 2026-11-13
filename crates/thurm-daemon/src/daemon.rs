@@ -341,6 +341,8 @@ pub struct Client {
     pub pane_owner: AtomicBool,
     /// `thurm events` ([`thurm_proto::CAP_STATE_EVENTS`]): gets every `PaneInfo`.
     pub state_events: AtomicBool,
+    /// Accepts pane snapshots with activity times.
+    pub agent_activity: AtomicBool,
     /// A UI that carries out the newer UI commands ([`thurm_proto::CAP_UI_LAYOUT`]).
     pub ui_layout: AtomicBool,
     /// A UI that gathers agents into a wall ([`thurm_proto::CAP_AGENT_WALL`]).
@@ -369,6 +371,32 @@ pub struct Client {
 
 impl Client {
     pub fn send(&self, msg: ServerMessage) {
+        let msg = if self.agent_activity.load(Ordering::Relaxed) {
+            match msg {
+                ServerMessage::Event(Event::PaneInfo(info)) => {
+                    ServerMessage::Event(Event::PaneActivity(info.into()))
+                }
+                ServerMessage::Response {
+                    id,
+                    result: Ok(Response::PaneInfo(info)),
+                } => ServerMessage::Response {
+                    id,
+                    result: Ok(Response::PaneActivity(info.into())),
+                },
+                ServerMessage::Response {
+                    id,
+                    result: Ok(Response::Panes(panes)),
+                } => ServerMessage::Response {
+                    id,
+                    result: Ok(Response::PanesWithActivity(
+                        panes.into_iter().map(Into::into).collect(),
+                    )),
+                },
+                other => other,
+            }
+        } else {
+            msg
+        };
         self.queued
             .fetch_add(message_weight(&msg), Ordering::Relaxed);
         self.unflushed.fetch_add(1, Ordering::AcqRel);
@@ -752,6 +780,7 @@ impl Daemon {
             pane_pager: AtomicBool::new(false),
             pane_owner: AtomicBool::new(false),
             state_events: AtomicBool::new(false),
+            agent_activity: AtomicBool::new(false),
             ui_layout: AtomicBool::new(false),
             agent_wall: AtomicBool::new(false),
             floating: AtomicBool::new(false),
@@ -2416,6 +2445,7 @@ impl Daemon {
             // Slow queries and layout confirmation must not block later requests,
             // including the desktop client's reply. Responses carry their request ID.
             slow @ (Request::Complete { .. }
+            | Request::SearchPaths { .. }
             | Request::Processes { .. }
             | Request::ApplyLayout { .. }) => {
                 let daemon = self.clone();
@@ -2588,6 +2618,9 @@ impl Daemon {
                 if has(thurm_proto::CAP_STATE_EVENTS) {
                     client.state_events.store(true, Ordering::Relaxed);
                 }
+                if has(thurm_proto::CAP_AGENT_ACTIVITY) {
+                    client.agent_activity.store(true, Ordering::Relaxed);
+                }
                 if has(thurm_proto::CAP_UI_LAYOUT) {
                     client.ui_layout.store(true, Ordering::Relaxed);
                 }
@@ -2657,6 +2690,33 @@ impl Daemon {
                 } else {
                     Err(format!("no such pane: {pane}"))
                 }
+            }
+            Request::SearchPaths { pane, query } => {
+                let (cwd, pid, foreground, alive) = self.with_pane(pane, |_, st| {
+                    (
+                        st.info.cwd.clone(),
+                        st.info.pid,
+                        st.info.foreground.clone(),
+                        st.info.alive,
+                    )
+                })?;
+                if !alive {
+                    return Err("This terminal has closed.".into());
+                }
+                if foreground
+                    .as_ref()
+                    .is_some_and(|p| matches!(p.name.as_str(), "ssh" | "mosh" | "mosh-client"))
+                {
+                    return Err("Use a Thurm remote workspace to search this host.".into());
+                }
+                let cwd = cwd
+                    .filter(|s| Path::new(s).is_absolute())
+                    .ok_or("The terminal's working folder is not available.")?;
+                let home = pid
+                    .and_then(|pid| procinfo::env_var(pid, "HOME"))
+                    .or_else(|| std::env::var("HOME").ok());
+                crate::path_search::search(&query, Path::new(&cwd), home.as_deref())
+                    .map(Response::PathMatches)
             }
             Request::Complete { pane } => {
                 let (line, cwd, at_prompt, path, pid) = self.with_pane(pane, |_, st| {
@@ -3779,6 +3839,7 @@ mod tests {
 
     fn agent(status: AgentStatus, permission: Option<u64>) -> AgentState {
         AgentState {
+            updated_at_ms: None,
             name: "Claude Code".into(),
             kind: "claude".into(),
             status,
@@ -4227,6 +4288,7 @@ mod tests {
             pane_pager: AtomicBool::new(false),
             pane_owner: AtomicBool::new(false),
             state_events: AtomicBool::new(false),
+            agent_activity: AtomicBool::new(false),
             ui_layout: AtomicBool::new(false),
             agent_wall: AtomicBool::new(false),
             floating: AtomicBool::new(false),
