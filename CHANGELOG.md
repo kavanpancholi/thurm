@@ -1,5 +1,34 @@
 # Changelog
 
+## v0.20.0 - 2026-11-13
+
+This release gives you new ways to move, minimize and find panes. It also groups agents by status in the sidebar.
+
+### New features
+
+- You can minimize a floating pane to a chip from its header. Click the chip to restore the pane where it was.
+- Hold Command and Option, then drag a pane. Drop it at a tab edge to give it half the tab. Press Esc to cancel. View > Move Pane to Edge gives the same moves in the menu.
+- Set `font.style` to a face name, such as `Semi-Condensed`, for regular text. Bold and italic text then keep the same width. An unknown style leaves the font faces unchanged.
+- Only Active Tabs groups agents by status: Needs input, Failed, Done and Working. Each agent that is not idle gets its own row.
+- The Agents panel is removed. Old `window.sidebar_agents` settings still load. The `toggle_sidebar_agents` actions now toggle Only Active Tabs.
+- Each agent row shows the activity text that the agent reports. The row also shows how long ago the agent last reported.
+- Use the search picker to find workspaces, tabs, panes and agents.
+- Use the Insert Path picker to add a file path to the terminal.
+- Preview a file path in the terminal with Quick Look.
+
+### Fixes
+
+- Tabs from the CLI open in the workspace of their source pane.
+- Background tabs and restored tabs keep their creation order.
+- For agents whose hooks miss turns, the screen now sets the agent status.
+- A finished turn's prompt no longer returns after Stop.
+- Skill setup now copies skill files into place. Broken links are replaced by local copies.
+- Split titles no longer start pane drags on hover. The titlebar still moves the window.
+
+### Other changes
+
+- The documentation covers minimized panes, edge moves and the activity list.
+
 ## v0.19.4 - 2026-11-10
 
 Thurm now clears the Dock badge for a pane that you close. This release fixes a bug that kept a finished agent in the badge count.
