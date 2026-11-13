@@ -12,6 +12,8 @@ config_version = 9
 [font]
 # Use a font family or face name. Sizes and spacing are in points.
 family = "JetBrains Mono"
+# A face of the family for regular text; bold and italic follow its width.
+# style = "Semi-Condensed"
 size = 16.0
 # These faces are selected from the font family when not set.
 # family_bold = "JetBrains Mono Bold"

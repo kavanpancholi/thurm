@@ -6,9 +6,26 @@ import Foundation
 /// How a setting is shown and edited (`kind`).
 enum SettingKind: String {
     case bool, int, float, text, font, color, theme, list
+    /// A face of the font family, by its style name.
+    case fontStyle = "font_style"
     case `enum`
     /// A table or a list of tables: shown as a summary, edited in the file.
     case table
+}
+
+/// The rules of the font style setting (`font.style`), which names a face of the family.
+enum FontStyleRule {
+    /// Whether the family offers `style`, matched as the renderer matches it (any case).
+    static func offers(_ styles: [String], _ style: String) -> Bool {
+        styles.contains { $0.caseInsensitiveCompare(style) == .orderedSame }
+    }
+
+    /// What to save for "the family's regular face": a reset of settings.toml, or an empty
+    /// style there when config.toml sets one (a reset would bring that back).
+    static func defaultValue(fileValue: Any?) -> Any {
+        if let file = fileValue as? String, !file.isEmpty { return "" }
+        return NSNull()
+    }
 }
 
 /// Where a setting's value comes from (`source`).

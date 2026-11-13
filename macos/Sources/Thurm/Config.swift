@@ -107,6 +107,7 @@ extension AppConfig: FontSettings {}
 final class AppConfig {
     // [font]
     var fontFamily = "JetBrains Mono"
+    var fontStyle: String?
     var fontSize: CGFloat = 16
     var lineHeight: CGFloat = 1
     var letterSpacing: CGFloat = 0
@@ -319,6 +320,7 @@ final class AppConfig {
 
         if let font = c["font"] as? [String: Any] {
             fontFamily = jsonString(font["family"]) ?? fontFamily
+            fontStyle = jsonString(font["style"]).flatMap { $0.isEmpty ? nil : $0 }
             // Clamped as the daemon validates them: sizes become pixel counts (`Int(...)`).
             fontSize = CGFloat(clamped(font["size"], 4, 200) ?? Double(fontSize))
             lineHeight = CGFloat(clamped(font["line_height"], 0.5, 4) ?? Double(lineHeight))

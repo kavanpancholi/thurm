@@ -23,6 +23,8 @@ pub enum Kind {
     Text,
     /// A font family or a face name.
     Font,
+    /// A face of the font family, by its style name.
+    FontStyle,
     /// `#rrggbb`; unset means the theme's.
     Color,
     /// A theme name, or `light:NAME,dark:NAME`.
@@ -43,6 +45,7 @@ impl Kind {
             Kind::Float(_) => "float",
             Kind::Text => "text",
             Kind::Font => "font",
+            Kind::FontStyle => "font_style",
             Kind::Color => "color",
             Kind::Theme => "theme",
             Kind::List => "list",
@@ -108,6 +111,7 @@ const QUICK_SCREEN: &[&str] = &["mouse", "main"];
 /// `notifications.bell_badge`.
 const OPTIONS: &[(&str, &str, Kind)] = &[
     ("font.family", "Family", Kind::Font),
+    ("font.style", "Style", Kind::FontStyle),
     ("font.size", "Size", Kind::Float(Some((4.0, 200.0)))),
     ("font.ligatures", "Ligatures", Kind::Bool),
     ("font.features", "OpenType features", Kind::List),
@@ -670,7 +674,9 @@ fn literal(kind: Kind, value: &Json) -> Result<String, String> {
             within(x, range)?;
             Ok(format!("{x:?}"))
         }
-        Kind::Text | Kind::Font => Ok(toml_edit::Value::from(text()?).to_string()),
+        Kind::Text | Kind::Font | Kind::FontStyle => {
+            Ok(toml_edit::Value::from(text()?).to_string())
+        }
         Kind::Color => {
             let color = text()?;
             parse_color(color).ok_or("expected a color such as #1b2029")?;
@@ -1025,6 +1031,33 @@ mod tests {
         assert_eq!(view["overlay_exists"], true);
         assert_eq!(view["config_read_only"], false);
         assert!(view["error"].is_null());
+        std::fs::remove_dir_all(config.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn font_style_is_saved_and_shown() {
+        let config = temp_config("style", "[font]\nfamily = \"Futura\"\n");
+        set_at(&config, "font.style", &json!("Condensed Medium")).unwrap();
+        let (cfg, warnings) = Config::load_with_warnings_from(&config).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(cfg.font.style.as_deref(), Some("Condensed Medium"));
+        let view = view_at(&config);
+        let style = view["settings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["key"] == "font.style")
+            .unwrap();
+        assert_eq!(style["kind"], "font_style");
+        assert_eq!(style["value"], "Condensed Medium");
+        assert!(style["default"].is_null());
+        assert!(!style["doc"].as_str().unwrap().is_empty());
+        std::fs::remove_dir_all(config.parent().unwrap()).unwrap();
+        // The window's "Default" over config.toml's style: an empty style in the overlay.
+        let config = temp_config("style_file", "[font]\nstyle = \"Condensed Medium\"\n");
+        set_at(&config, "font.style", &json!("")).unwrap();
+        let (cfg, _) = Config::load_with_warnings_from(&config).unwrap();
+        assert_eq!(cfg.font.style.as_deref(), Some(""));
         std::fs::remove_dir_all(config.parent().unwrap()).unwrap();
     }
 

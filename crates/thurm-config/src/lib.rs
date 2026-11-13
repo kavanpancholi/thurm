@@ -404,6 +404,9 @@ impl Config {
 #[serde(default)]
 pub struct FontConfig {
     pub family: String,
+    /// A face of `family` by its style name ("Semi-Condensed", "Retina ExtraCondensed") used
+    /// for regular text; bold and italic then come in the same width. Unset = the regular face.
+    pub style: Option<String>,
     pub size: f64,
     /// Render programming ligatures (`calt`/`liga`). Disabling also sets `-calt -liga`.
     pub ligatures: bool,
@@ -433,6 +436,7 @@ impl Default for FontConfig {
     fn default() -> Self {
         Self {
             family: "JetBrains Mono".into(),
+            style: None,
             size: 16.0,
             ligatures: true,
             features: Vec::new(),
