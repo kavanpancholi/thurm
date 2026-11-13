@@ -4,9 +4,10 @@ import AppKit
 // git repository (or by workspace, listing every workspace's tabs), each row showing the agent
 // status, the title and the branch with its diff size. Tabs are still native window tabs
 // underneath (one NSWindow per tab, with the native tab bar suppressed), so restore, Cmd+1…9
-// and "Move Tab to New Workspace" keep working; every window of a tab group shows the same list. Below the tabs, an agents panel lists every
-// pane running a coding agent (in any window or workspace), so an agent in an unfocused split
-// is one click away; it has its own selection: the focused agent pane.
+// and "Move Tab to New Workspace" keep working; every window of a tab group shows the same list.
+// With only active tabs listed (`window.sidebar_active_only`), the list shows every agent that
+// is not idle instead, in any window or workspace, one row per pane under its status, so an
+// agent in an unfocused split is one click away.
 
 /// One tab as the sidebar shows it.
 struct SidebarTab {
@@ -29,6 +30,8 @@ struct SidebarTab {
     var hidden: HiddenTab?
     /// Something is going on in it (see `TabSidebarViewController.isActive`).
     var active = false
+    /// The agent pane the row stands for, in the activity list; nil for a tab's row.
+    var pane: PaneKey?
 
     /// Whether the two differ in their progress only: the row then moves its bar and nothing else.
     func differsInProgressOnly(from other: SidebarTab) -> Bool {
@@ -44,6 +47,7 @@ extension SidebarTab: Equatable {
             && a.added == b.added && a.removed == b.removed && a.status == b.status
             && a.shortcut == b.shortcut && a.trailingDetail == b.trailingDetail && a.selected == b.selected && a.icon == b.icon
             && a.behind == b.behind && a.progress == b.progress && a.hidden == b.hidden && a.active == b.active
+            && a.pane == b.pane
     }
 }
 
@@ -74,21 +78,6 @@ final class SidebarGroup {
 final class TabBox {
     var tab: SidebarTab
     init(_ tab: SidebarTab) { self.tab = tab }
-}
-
-/// An agent pane or a group heading in the agents panel.
-final class AgentBox {
-    let pane: PaneKey?
-    let heading: String?
-    /// The pane's workspace when no window shows it.
-    let hiddenWorkspace: UInt64?
-    let row: SidebarTab
-    init(pane: PaneKey?, hiddenWorkspace: UInt64?, row: SidebarTab, heading: String? = nil) {
-        self.heading = heading
-        self.pane = pane
-        self.hiddenWorkspace = hiddenWorkspace
-        self.row = row
-    }
 }
 
 /// Split view hosting the sidebar next to the tab's split tree.
@@ -261,8 +250,9 @@ final class TabSidebarViewController: NSViewController, NSOutlineViewDataSource,
     private var showHeaders = false
     /// The window's workspace; click for the workspace picker.
     private let workspaceButton = NSButton(title: "", target: nil, action: nil)
-    private let agents = AgentsPanel()
     private let usage = UsagePanel()
+    /// Moves the agents' "updated 20s ago" on while the activity list shows.
+    private var ageTimer: Timer?
 
     /// Solid sidebar color from the theme (set by the window controller). The stock sidebar
     /// material is translucent, so its shade depended on whatever was behind the window.
@@ -318,9 +308,7 @@ final class TabSidebarViewController: NSViewController, NSOutlineViewDataSource,
         scroll.translatesAutoresizingMaskIntoConstraints = false
         root.addSubview(workspaceButton)
         root.addSubview(scroll)
-        root.addSubview(agents)
         root.addSubview(usage)
-        agents.translatesAutoresizingMaskIntoConstraints = false
         usage.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
             workspaceButton.topAnchor.constraint(equalTo: root.safeAreaLayoutGuide.topAnchor, constant: 2),
@@ -329,15 +317,37 @@ final class TabSidebarViewController: NSViewController, NSOutlineViewDataSource,
             scroll.topAnchor.constraint(equalTo: workspaceButton.bottomAnchor, constant: 4),
             scroll.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             scroll.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            scroll.bottomAnchor.constraint(equalTo: agents.topAnchor),
-            agents.leadingAnchor.constraint(equalTo: root.leadingAnchor),
-            agents.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            agents.bottomAnchor.constraint(equalTo: usage.topAnchor),
+            scroll.bottomAnchor.constraint(equalTo: usage.topAnchor),
             usage.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             usage.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             usage.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -8),
         ])
         view = root
+        let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
+            guard let self, SessionManager.shared.config.sidebarActiveOnly,
+                  self.view.window?.isVisible == true, !self.view.isHiddenOrHasHiddenAncestor else { return }
+            self.refreshAges()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        ageTimer = timer
+    }
+
+    deinit { ageTimer?.invalidate() }
+
+    /// Moves the agent rows' "updated 20s ago" on. Only the shown rows, and only their age:
+    /// a status or membership change comes with a full reload.
+    func refreshAges(now: Date = Date()) {
+        let panes = SessionManager.shared.panes
+        let visible = outline.rows(in: outline.visibleRect)
+        for row in visible.location..<NSMaxRange(visible) {
+            guard let box = outline.item(atRow: row) as? TabBox, let pane = box.tab.pane,
+                  let info = panes[pane], let agent = info.agent else { continue }
+            let age = AgentPane(pane: pane, info: info, agent: agent, controller: nil, hidden: nil).activityAge(now: now)
+            guard age != box.tab.trailingDetail else { continue }
+            box.tab.trailingDetail = age
+            (outline.view(atColumn: 0, row: row, makeIfNecessary: false) as? TabRowView)?
+                .configure(box.tab, truncateTail: true)
+        }
     }
 
     // MARK: Model
@@ -373,8 +383,100 @@ final class TabSidebarViewController: NSViewController, NSOutlineViewDataSource,
 
     static let pinnedKey = "pinned"
 
-    static func keepingActive(_ groups: [SidebarGroup]) {
-        for g in groups where g.key != pinnedKey { g.tabs.removeAll { !$0.selected && !$0.active } }
+    /// The activity list's statuses, most urgent first, with their headings.
+    static let activityStatuses: [(AgentStatus, String)] = [(.needsInput, "Needs input"), (.error, "Failed"),
+                                                            (.done, "Done"), (.working, "Working")]
+
+    /// The activity list's groups after the pinned tabs: the agents' rows under their status, in
+    /// the order given (so a status change moves only that row), then the tabs' rows. Empty
+    /// groups are left for the caller to drop.
+    static func activityGroups(agents: [SidebarTab], tabs: [SidebarTab]) -> [SidebarGroup] {
+        var groups = activityStatuses.map { status, name -> SidebarGroup in
+            let g = SidebarGroup(name: name, key: "activity:\(status.rawValue)")
+            g.tabs = agents.filter { $0.status == status }
+            return g
+        }
+        let rest = SidebarGroup(name: "Tabs", key: "activity:tabs")
+        rest.tabs = tabs
+        groups.append(rest)
+        return groups
+    }
+
+    /// An agent's row in the activity list: what it is doing before where it runs, so that stays
+    /// visible in a narrow sidebar. `workspace` names a workspace other than this window's.
+    static func agentRow(_ a: AgentPane, selected: Bool, workspace: String?) -> SidebarTab {
+        var row = SidebarTab(controller: a.controller,
+                             title: a.title,
+                             subtitle: [a.statusDetail, a.hostLabel, a.place, workspace].compactMap { $0 }
+                                 .joined(separator: " · "),
+                             status: a.agent.status,
+                             shortcut: nil,
+                             trailingDetail: a.activityAge(),
+                             selected: selected,
+                             icon: PaneIcon(a.info))
+        row.progress = TerminalView.shownProgress(a.info)
+        row.active = true
+        row.pane = a.pane
+        return row
+    }
+
+    /// A tab's own row in the activity list, besides its agents' rows: when a pane without an
+    /// agent row reports progress (the bar then is that pane's), or when it is the selected tab
+    /// and its focused pane has no agent row. Nil when it has no row.
+    static func activityTabRow(_ tab: SidebarTab, panes: [PaneKey], focused: PaneKey, listed: Set<PaneKey>,
+                               info: [PaneKey: PaneInfo]) -> SidebarTab? {
+        let rest = panes.filter { !listed.contains($0) }
+        var row = tab
+        row.progress = (rest.contains(focused) ? TerminalView.shownProgress(info[focused]) : nil)
+            ?? rest.lazy.compactMap { TerminalView.shownProgress(info[$0]) }.first
+        guard row.progress != nil || (tab.selected && !listed.contains(focused)) else { return nil }
+        return row
+    }
+
+    /// The panes of the tab a row shows, and its focused one.
+    private static func panes(of tab: SidebarTab) -> (ids: [PaneKey], focused: PaneKey)? {
+        if let c = tab.controller { return (c.content.paneIds, c.focusedPane) }
+        guard let h = tab.hidden, let ws = SessionManager.shared.workspace(h.workspace),
+              ws.hiddenTabs.indices.contains(h.index) else { return nil }
+        let t = ws.hiddenTabs[h.index]
+        return (t.panes, t.focusedKey)
+    }
+
+    /// `window.sidebar_active_only`: what needs a look. Every agent that isn't idle, in any
+    /// window or workspace, one row per pane under its status; then the tabs of `listed` that
+    /// `activityTabRow` keeps.
+    private func activityGroups(listed: [SidebarGroup], shown: Workspace?,
+                                panes info: [PaneKey: PaneInfo]) -> [SidebarGroup] {
+        let sm = SessionManager.shared
+        var agents = sm.agentPanes(first: controller).filter { $0.agent.status != .idle }
+        if sm.config.sidebarAllWorkspaces {
+            // By workspace in the tab list's order, so a switch moves none.
+            let rank = { (a: AgentPane) -> Int in
+                let ws = a.hidden?.id ?? a.controller?.workspaceID
+                return sm.workspaces.firstIndex { $0.id == ws } ?? sm.workspaces.count
+            }
+            agents = agents.enumerated()
+                .sorted { (rank($0.element), $0.offset) < (rank($1.element), $1.offset) }
+                .map(\.element)
+        }
+        let rows = agents.map { a -> SidebarTab in
+            let ws = a.hidden ?? a.controller.flatMap { sm.workspace($0.workspaceID) }
+            return Self.agentRow(a, selected: a.controller != nil && a.controller === controller
+                                     && controller?.focusedPane == a.pane,
+                                 workspace: ws.flatMap { $0.id == shown?.id ? nil : $0.name })
+        }
+        let listedPanes = Set(rows.compactMap(\.pane))
+        var tabs: [SidebarTab] = []
+        for g in listed {
+            for tab in g.tabs {
+                guard let (ids, focused) = Self.panes(of: tab),
+                      var row = Self.activityTabRow(tab, panes: ids, focused: focused, listed: listedPanes, info: info)
+                else { continue }
+                if g.elsewhere { row.subtitle = [row.subtitle, g.name].compactMap { $0 }.joined(separator: " · ") }
+                tabs.append(row)
+            }
+        }
+        return Self.activityGroups(agents: rows, tabs: tabs)
     }
 
     private static func pinnedElsewhere(_ tab: SidebarTab, of ws: Workspace) -> SidebarTab {
@@ -521,8 +623,6 @@ final class TabSidebarViewController: NSViewController, NSOutlineViewDataSource,
         let workspace = shownWorkspace?.name ?? ""
         if workspaceButton.title != workspace { workspaceButton.title = workspace }
         let config = sm.config
-        agents.controller = controller
-        agents.reload()
         usage.reload()
         let windows = controller?.orderedTabs ?? [window]
         let panes = sm.panes
@@ -589,7 +689,10 @@ final class TabSidebarViewController: NSViewController, NSOutlineViewDataSource,
             order.append(other)
         }
         order.insert(pinned, at: 0)
-        if config.sidebarActiveOnly { Self.keepingActive(order) }
+        if config.sidebarActiveOnly {
+            order = [pinned] + activityGroups(listed: order.filter { $0 !== pinned }, shown: shownWorkspace,
+                                              panes: panes)
+        }
         order.removeAll { $0.tabs.isEmpty }
         let names = order.map { [$0.key, $0.name] }, tabs = order.map(\.tabs)
         let theme = SessionManager.shared.config.theme
@@ -610,7 +713,11 @@ final class TabSidebarViewController: NSViewController, NSOutlineViewDataSource,
                         guard row >= 0,
                               let view = outline.view(atColumn: 0, row: row, makeIfNecessary: false) as? TabRowView
                         else { continue }
-                        if progressOnly { view.setProgress(tab.progress) } else { view.configure(tab) }
+                        if progressOnly {
+                            view.setProgress(tab.progress)
+                        } else {
+                            view.configure(tab, truncateTail: tab.pane != nil)
+                        }
                     }
                 }
             }
@@ -618,15 +725,18 @@ final class TabSidebarViewController: NSViewController, NSOutlineViewDataSource,
             shown = (names, tabs, theme)
             for g in order { g.boxes = g.tabs.map(TabBox.init) }
             groups = order
-            // Every workspace listed: each under its name, also when the others have no tabs to show.
-            showHeaders = config.sidebarAllWorkspaces || groups.count > 1 || groups.first?.key == Self.pinnedKey
+            // Every workspace listed: each under its name, also when the others have no tabs to
+            // show. The activity list: each status under its name, also when it is the only one.
+            showHeaders = config.sidebarActiveOnly || config.sidebarAllWorkspaces || groups.count > 1 || groups.first?.key == Self.pinnedKey
             outline.reloadData()
             let collapsed = Self.collapsed
             for g in groups where !collapsed.contains(g.key) { outline.expandItem(g) }
         }
         // Select the row of this window's tab, also when the rows are unchanged: a click on
         // another tab's row selected that row here, and this window's tab is the one shown again.
-        let current = (0..<outline.numberOfRows).first { (outline.item(atRow: $0) as? TabBox)?.tab.selected == true }
+        // An agent row goes before its tab's row (a pinned tab's, say): it is the pane in focus.
+        let selected = (0..<outline.numberOfRows).filter { (outline.item(atRow: $0) as? TabBox)?.tab.selected == true }
+        let current = selected.first { (outline.item(atRow: $0) as? TabBox)?.tab.pane != nil } ?? selected.first
         if let row = current, outline.selectedRow != row {
             outline.selectRowIndexes([row], byExtendingSelection: false)
         }
@@ -640,9 +750,16 @@ final class TabSidebarViewController: NSViewController, NSOutlineViewDataSource,
             ?? panes.lazy.compactMap { TerminalView.shownProgress(info[$0]) }.first
     }
 
-    /// The identity of each tab in a group: the window it shows.
-    private static func identities(_ group: [SidebarTab]) -> [ObjectIdentifier?] {
-        group.map { $0.controller.map(ObjectIdentifier.init) }
+    /// What a row stands for: the window it shows, the agent pane, or the hidden tab.
+    private struct RowID: Equatable {
+        let window: ObjectIdentifier?
+        let pane: PaneKey?
+        let hidden: HiddenTab?
+    }
+
+    /// The identity of each row in a group.
+    private static func identities(_ group: [SidebarTab]) -> [RowID] {
+        group.map { RowID(window: $0.controller.map(ObjectIdentifier.init), pane: $0.pane, hidden: $0.hidden) }
     }
 
     /// Whether two listings hold the same tabs in the same groups and order, whatever they show.
@@ -692,9 +809,13 @@ final class TabSidebarViewController: NSViewController, NSOutlineViewDataSource,
         return (own.tabGroup?.windows ?? [own]).contains { $0 === w }
     }
 
+    /// The rows follow the tab order, so a drag can reorder tabs: not in the activity list,
+    /// whose rows go by status.
+    private var reorders: Bool { !SessionManager.shared.config.sidebarActiveOnly }
+
     /// The tab a drag carries, when it is one of this window's.
     private func draggedTab(_ info: NSDraggingInfo) -> NSWindow? {
-        guard let w = Self.draggedWindow(info), ownsTab(w) else { return nil }
+        guard reorders, let w = Self.draggedWindow(info), ownsTab(w) else { return nil }
         return w
     }
 
@@ -704,7 +825,8 @@ final class TabSidebarViewController: NSViewController, NSOutlineViewDataSource,
     }
 
     func outlineView(_ outlineView: NSOutlineView, pasteboardWriterForItem item: Any) -> NSPasteboardWriting? {
-        guard let box = item as? TabBox, let w = box.tab.controller?.window, ownsTab(w) else { return nil }
+        guard reorders, let box = item as? TabBox, box.tab.pane == nil, let w = box.tab.controller?.window, ownsTab(w)
+        else { return nil }
         let pb = NSPasteboardItem()
         pb.setString(String(w.windowNumber), forType: Self.dragType)
         return pb
@@ -794,23 +916,18 @@ final class TabSidebarViewController: NSViewController, NSOutlineViewDataSource,
     }
 
     func outlineView(_ outlineView: NSOutlineView, heightOfRowByItem item: Any) -> CGFloat {
-        if item is SidebarGroup { return 24 }
+        if item is SidebarGroup { return SidebarHeadingView.height }
         return 40
     }
 
     func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any) -> NSView? {
-        if let g = item as? SidebarGroup {
-            let label = NSTextField(labelWithString: g.name)
-            label.font = .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold)
-            label.textColor = SessionManager.shared.config.chrome.contentSecondary
-            label.lineBreakMode = .byTruncatingTail
-            return label
-        }
+        if let g = item as? SidebarGroup { return SidebarHeadingView(g.name) }
         guard let box = item as? TabBox else { return nil }
         let cell = outlineView.makeView(withIdentifier: TabRowView.identifier, owner: nil) as? TabRowView
             ?? TabRowView()
-        cell.showsHoverCard = box.tab.hidden == nil
-        cell.configure(box.tab)
+        // A tab's card previews the tab, not an agent's pane.
+        cell.showsHoverCard = box.tab.pane == nil && box.tab.controller != nil
+        cell.configure(box.tab, truncateTail: box.tab.pane != nil)
         return cell
     }
 
@@ -820,6 +937,10 @@ final class TabSidebarViewController: NSViewController, NSOutlineViewDataSource,
         TabHoverCard.shared.dismiss()
         let row = outline.clickedRow >= 0 ? outline.clickedRow : outline.selectedRow
         guard row >= 0, let box = outline.item(atRow: row) as? TabBox else { return }
+        if let pane = box.tab.pane {
+            focusAgent(pane)
+            return
+        }
         if let hidden = box.tab.hidden {
             SessionManager.shared.showHiddenTab(hidden, from: controller)
             return
@@ -829,6 +950,16 @@ final class TabSidebarViewController: NSViewController, NSOutlineViewDataSource,
         if let view = box.tab.controller?.content.focusedView {
             w.makeFirstResponder(view)
         }
+    }
+
+    /// Brings an agent's pane forward: its window and tab, its split, its workspace.
+    private func focusAgent(_ pane: PaneKey) {
+        let sm = SessionManager.shared
+        guard let a = sm.agentPanes(first: controller).first(where: { $0.pane == pane }) else { return }
+        sm.focusAgent(a, from: controller)
+        // Its tab came forward with another split focused: the list there selects this agent
+        // before it is drawn, not a refresh later.
+        sm.controller(for: pane)?.sidebar?.reload()
     }
 
     private func rowMenu() -> NSMenu {
@@ -893,7 +1024,7 @@ final class TabSidebarViewController: NSViewController, NSOutlineViewDataSource,
     }
 
     func cardDrop(at windowPoint: NSPoint, for pane: PaneKey) -> (gap: TabGap, line: CGRect)? {
-        guard !view.isHiddenOrHasHiddenAncestor, view.window != nil else { return nil }
+        guard reorders, !view.isHiddenOrHasHiddenAncestor, view.window != nil else { return nil }
         let p = outline.convert(windowPoint, from: nil)
         guard outline.visibleRect.contains(p), !overOtherTabs(outline.row(at: p)) else { return nil }
         let rows = cardDropRows()
@@ -984,6 +1115,38 @@ extension TabSidebarViewController: NSMenuItemValidation {
     }
 }
 
+/// A group's heading in the tab list. Its label starts where the workspace title above it does,
+/// wherever the outline places the row.
+final class SidebarHeadingView: NSView {
+    static let height: CGFloat = 22
+    static let inset: CGFloat = 16
+    let label: NSTextField
+
+    init(_ title: String) {
+        label = NSTextField(labelWithString: title)
+        super.init(frame: .zero)
+        label.font = .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold)
+        label.textColor = SessionManager.shared.config.chrome.contentSecondary
+        label.lineBreakMode = .byTruncatingTail
+        addSubview(label)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is not supported")
+    }
+
+    override func layout() {
+        super.layout()
+        var table = superview
+        while let v = table, !(v is NSTableView) { table = v.superview }
+        let x = table.map { convert(NSPoint.zero, to: $0).x } ?? 0
+        let left = max(0, Self.inset - x)
+        let size = label.intrinsicContentSize
+        label.frame = NSRect(x: left, y: ((bounds.height - size.height) / 2).rounded(),
+                             width: max(0, bounds.width - left), height: size.height)
+    }
+}
+
 /// A sidebar row whose selection is a capsule in the chrome's colors, like the tab strip's
 /// selected tab. Its table highlights nothing itself (`selectionHighlightStyle = .none`).
 final class SidebarRowView: NSTableRowView {
@@ -1006,374 +1169,6 @@ final class SidebarRowView: NSTableRowView {
     }
 
     override var interiorBackgroundStyle: NSView.BackgroundStyle { .normal }
-}
-
-/// The agents panel at the bottom of the sidebar: every pane running an agent, wherever it is.
-/// Its selection is the focused agent pane, independent of the tab list's selection.
-final class AgentsPanel: NSView, NSTableViewDataSource, NSTableViewDelegate {
-    weak var controller: TerminalWindowController?
-
-    private var ageTimer: Timer?
-
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        ageTimer?.invalidate()
-        ageTimer = nil
-        guard window != nil else { return }
-        ageTimer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
-            guard let self, !self.isHidden, !Self.collapsed else { return }
-            self.reload()
-        }
-        if let ageTimer { RunLoop.main.add(ageTimer, forMode: .common) }
-    }
-
-    deinit { ageTimer?.invalidate() }
-
-    private let separator = NSBox()
-    private let header = NSTextField(labelWithString: "Agents")
-    private let chevron = NSImageView()
-    private let summary = NSTextField(labelWithString: "")
-    private let scroll = NSScrollView()
-    private let table = NSTableView()
-    private var rows: [AgentBox] = []
-    private let handle = DragHandle()
-    private var height: NSLayoutConstraint!
-    private var listHeight: NSLayoutConstraint!
-    private static let rowHeight: CGFloat = 40
-    private static let groupHeight: CGFloat = 24
-    static let headerHeight: CGFloat = 30
-    static let collapsedChanged = Notification.Name("ThurmAgentsPanelCollapsedChanged")
-    static var defaults = UserDefaults.standard
-    static var collapsed: Bool {
-        get { defaults.bool(forKey: "SidebarAgentsCollapsed") }
-        set {
-            guard newValue != collapsed else { return }
-            defaults.set(newValue, forKey: "SidebarAgentsCollapsed")
-            NotificationCenter.default.post(name: collapsedChanged, object: nil)
-        }
-    }
-    /// Kept for the tab list when the panel is dragged taller.
-    private static let minTabsHeight: CGFloat = 160
-    /// Rows shown before the panel scrolls: `window.sidebar_agent_rows`, or where the header
-    /// is being dragged to.
-    private var visibleRows: Int { draggedRows ?? SessionManager.shared.config.sidebarAgentRows }
-    private var draggedRows: Int?
-    private var shownLimit = 0
-    /// The theme the header and rows were colored with; a reload with another one repaints them.
-    private var themed: Theme?
-
-    init() {
-        super.init(frame: .zero)
-        separator.boxType = .separator
-        header.font = .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold)
-        summary.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
-        summary.alignment = .right
-        chevron.symbolConfiguration = .init(pointSize: 9, weight: .semibold)
-
-        let column = NSTableColumn(identifier: .init("agent"))
-        table.addTableColumn(column)
-        table.headerView = nil
-        table.style = .sourceList
-        table.selectionHighlightStyle = .none
-        table.rowSizeStyle = .custom
-        table.rowHeight = Self.rowHeight
-        table.floatsGroupRows = false
-        table.intercellSpacing = NSSize(width: 0, height: 0)
-        table.backgroundColor = .clear
-        table.dataSource = self
-        table.delegate = self
-        table.target = self
-        table.action = #selector(rowClicked(_:))
-        scroll.documentView = table
-        scroll.drawsBackground = false
-        scroll.hasVerticalScroller = true
-        scroll.autohidesScrollers = true
-
-        var start = 0
-        handle.began = { [weak self] in start = self?.visibleRows ?? 0 }
-        handle.dragged = { [weak self] dy in
-            guard let self else { return }
-            let available = (self.superview?.bounds.height ?? 0) - Self.headerHeight - Self.minTabsHeight
-            let fit = max(1, Self.agentLimit(self.rows, available: available), start)
-            self.draggedRows = min(fit, max(1, start + Int((dy / Self.rowHeight).rounded())))
-            self.updateHeight()
-        }
-        handle.ended = { [weak self] in
-            guard let self, let rows = self.draggedRows else { return }
-            if rows != SessionManager.shared.config.sidebarAgentRows {
-                _ = Core.shared.request(object: ["SetSetting": ["key": "window.sidebar_agent_rows", "value": String(rows)]])
-            }
-            // The setting takes over when the config reloads.
-            SessionManager.shared.config.sidebarAgentRows = rows
-            self.draggedRows = nil
-        }
-        handle.clicked = { Self.collapsed.toggle() }
-        handle.setAccessibilityElement(true)
-        handle.setAccessibilityRole(.button)
-        handle.setAccessibilityLabel("Agents")
-
-        for v in [separator, header, chevron, summary, scroll, handle] as [NSView] {
-            v.translatesAutoresizingMaskIntoConstraints = false
-            addSubview(v)
-        }
-        clipsToBounds = true
-        height = heightAnchor.constraint(equalToConstant: 0)
-        listHeight = scroll.heightAnchor.constraint(equalToConstant: 0)
-        NSLayoutConstraint.activate([
-            height,
-            listHeight,
-            separator.topAnchor.constraint(equalTo: topAnchor),
-            separator.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
-            separator.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
-            header.topAnchor.constraint(equalTo: separator.bottomAnchor, constant: 8),
-            header.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
-            summary.firstBaselineAnchor.constraint(equalTo: header.firstBaselineAnchor),
-            chevron.leadingAnchor.constraint(equalTo: header.trailingAnchor, constant: 4),
-            chevron.centerYAnchor.constraint(equalTo: header.centerYAnchor),
-            summary.leadingAnchor.constraint(greaterThanOrEqualTo: chevron.trailingAnchor, constant: 8),
-            summary.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
-            scroll.topAnchor.constraint(equalTo: topAnchor, constant: Self.headerHeight),
-            scroll.leadingAnchor.constraint(equalTo: leadingAnchor),
-            scroll.trailingAnchor.constraint(equalTo: trailingAnchor),
-            handle.topAnchor.constraint(equalTo: topAnchor),
-            handle.leadingAnchor.constraint(equalTo: leadingAnchor),
-            handle.trailingAnchor.constraint(equalTo: trailingAnchor),
-            handle.heightAnchor.constraint(equalToConstant: Self.headerHeight),
-        ])
-        isHidden = true
-        showCollapsed()
-        NotificationCenter.default.addObserver(self, selector: #selector(collapsedChanged),
-                                               name: Self.collapsedChanged, object: nil)
-    }
-
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) is not supported")
-    }
-
-    @objc private func collapsedChanged() {
-        showCollapsed()
-        if !Self.collapsed { reload() }
-        updateSummary()
-        updateHeight(duration: window?.isKeyWindow == true ? Motion.duration(Motion.standard) : 0)
-    }
-
-    private func showCollapsed() {
-        let collapsed = Self.collapsed
-        chevron.image = NSImage(systemSymbolName: collapsed ? "chevron.up" : "chevron.down",
-                                accessibilityDescription: nil)
-        handle.resizable = !collapsed
-        handle.toolTip = collapsed ? "Click to show agents" : "Click to hide agents, drag to show more or fewer"
-        handle.setAccessibilityValue(collapsed ? "collapsed" : "expanded")
-    }
-
-    func reload() {
-        let theme = SessionManager.shared.config.theme
-        let repaint = theme != themed
-        if repaint {
-            themed = theme
-            header.textColor = SessionManager.shared.config.chrome.contentSecondary
-            chevron.contentTintColor = SessionManager.shared.config.chrome.contentSecondary
-            summary.textColor = SessionManager.shared.config.chrome.contentTertiary
-        }
-        let next = agentRows()
-        if !repaint, next.count == rows.count, shownLimit == visibleRows,
-           zip(next, rows).allSatisfy({ $0.pane == $1.pane && $0.hiddenWorkspace == $1.hiddenWorkspace && $0.heading == $1.heading }) {
-            // The same agents in the same places: reconfigure the rows that changed instead of
-            // rebuilding them all for every status or title change.
-            for (i, box) in next.enumerated() where box.row != rows[i].row {
-                rows[i] = box
-                (table.view(atColumn: 0, row: i, makeIfNecessary: false) as? TabRowView)?
-                    .configure(box.row, truncateTail: true)
-            }
-            updateSummary()
-            // A click selects its row even when it changes nothing shown: put the selection back.
-            let current = rows.firstIndex { $0.row.selected }
-            if table.selectedRow != (current ?? -1) {
-                if let i = current {
-                    table.selectRowIndexes([i], byExtendingSelection: false)
-                    table.scrollRowToVisible(i)
-                } else {
-                    table.deselectAll(nil)
-                }
-            }
-            return
-        }
-        rows = next
-        isHidden = rows.isEmpty
-        updateSummary()
-        table.reloadData()
-        updateHeight()
-        if let i = rows.firstIndex(where: { $0.row.selected }) {
-            table.selectRowIndexes([i], byExtendingSelection: false)
-            table.scrollRowToVisible(i)
-        } else {
-            table.deselectAll(nil)
-        }
-    }
-
-    private func updateSummary() {
-        let text = Self.summary(rows.compactMap(\.row.status), collapsed: Self.collapsed)
-        if summary.stringValue != text { summary.stringValue = text }
-    }
-
-    static func summary(_ statuses: [AgentStatus], collapsed: Bool) -> String {
-        let counted: [(AgentStatus, String)] = collapsed
-            ? [(.needsInput, "waiting"), (.error, "failed"), (.working, "working"), (.done, "done")]
-            : [(.needsInput, "waiting"), (.working, "working")]
-        let text = counted.compactMap { status, label in
-            let n = statuses.filter { $0 == status }.count
-            return n > 0 ? "\(n) \(label)" : nil
-        }.joined(separator: " · ")
-        guard text.isEmpty, collapsed, !statuses.isEmpty else { return text }
-        return statuses.count == 1 ? "1 agent" : "\(statuses.count) agents"
-    }
-
-    static func height(rows: Int, list: CGFloat, collapsed: Bool) -> CGFloat {
-        rows == 0 ? 0 : headerHeight + (collapsed ? 0 : list)
-    }
-
-    private func updateHeight(duration: TimeInterval = 0) {
-        shownLimit = visibleRows
-        // The source list style pads below the last row: size to the table itself, or the
-        // rows don't fit and scrolling to the selected one cuts off the first. Its intrinsic
-        // height, not its frame: the frame stretches to fill the scroll view, so after the panel
-        // had more agents it would count the empty space as padding and never shrink.
-        let visible = Self.visibleRowCount(rows, limit: shownLimit)
-        let padding = rows.isEmpty ? 0 : max(0, table.intrinsicContentSize.height - table.rect(ofRow: rows.count - 1).maxY)
-        let content = visible == 0 ? 0 : table.rect(ofRow: visible - 1).maxY + padding
-        listHeight.constant = content
-        let collapsed = Self.collapsed
-        let target = Self.height(rows: rows.count, list: content, collapsed: collapsed)
-        if !collapsed { scroll.isHidden = false }
-        let finish: () -> Void = { [weak self] in self?.scroll.isHidden = Self.collapsed }
-        guard duration > 0, !isHidden, let root = superview else {
-            height.constant = target
-            finish()
-            return
-        }
-        root.layoutSubtreeIfNeeded()
-        NSAnimationContext.runAnimationGroup({ ctx in
-            ctx.duration = duration
-            ctx.timingFunction = Motion.timingFunction
-            ctx.allowsImplicitAnimation = true
-            self.height.constant = target
-            root.layoutSubtreeIfNeeded()
-        }, completionHandler: finish)
-    }
-
-    /// Every agent pane: this window's tabs first, then other windows, then hidden workspaces.
-    /// With every workspace's tabs listed, by workspace in the tab list's order instead, so a
-    /// switch moves none.
-    private func agentRows() -> [AgentBox] {
-        let sm = SessionManager.shared
-        guard sm.config.sidebarAgents else { return [] }
-        var key = NSApp.keyWindow?.windowController as? TerminalWindowController
-        // The other tabs of the key window answer as if shown, so a tab's panel already has its
-        // selection when the tab comes forward.
-        if let group = key?.window?.tabGroup, group === controller?.window?.tabGroup { key = controller }
-        var agents = sm.agentPanes(first: controller)
-        if sm.config.sidebarAllWorkspaces {
-            let rank = { (a: AgentPane) -> Int in
-                let ws = a.hidden?.id ?? a.controller?.workspaceID
-                return sm.workspaces.firstIndex { $0.id == ws } ?? sm.workspaces.count
-            }
-            agents = agents.enumerated()
-                .sorted { (rank($0.element), $0.offset) < (rank($1.element), $1.offset) }
-                .map(\.element)
-        }
-        return Self.grouped(agents.map { a in
-            // Show the current activity before the location.
-            let row = SidebarTab(controller: a.controller,
-                                 title: a.title,
-                                 subtitle: [a.statusDetail, a.hostLabel, a.place, a.hidden?.name].compactMap { $0 }
-                                     .joined(separator: " · "),
-                                 status: a.agent.status,
-                                 shortcut: nil, trailingDetail: a.activityAge(),
-                                 selected: a.controller != nil && a.controller === key
-                                     && a.controller?.focusedPane == a.pane,
-                                 icon: PaneIcon(SessionManager.shared.panes[a.pane]))
-            return AgentBox(pane: a.pane, hiddenWorkspace: a.hidden?.id, row: row)
-        })
-    }
-
-    /// Group only the activity rows. Keep the input order within each group.
-    static func grouped(_ agents: [AgentBox]) -> [AgentBox] {
-        let groups: [(AgentStatus, String)] = [(.needsInput, "Needs input"), (.error, "Failed"),
-                                             (.done, "Done"), (.working, "Working"), (.idle, "Idle")]
-        return groups.flatMap { status, title -> [AgentBox] in
-            let members = agents.filter { $0.row.status == status }
-            guard !members.isEmpty else { return [] }
-            let heading = AgentBox(pane: nil, hiddenWorkspace: nil,
-                                   row: SidebarTab(controller: nil, title: title, selected: false), heading: title)
-            return [heading] + members
-        }
-    }
-
-    /// Include headings without counting them as agents.
-    static func visibleRowCount(_ rows: [AgentBox], limit: Int) -> Int {
-        guard limit > 0 else { return 0 }
-        return rows.indices.filter { rows[$0].heading == nil }.prefix(limit).last.map { $0 + 1 } ?? 0
-    }
-
-    /// Count the agents that fit, including the space for their headings.
-    static func agentLimit(_ rows: [AgentBox], available: CGFloat) -> Int {
-        var height: CGFloat = 0
-        var agents = 0
-        for row in rows {
-            height += row.heading == nil ? rowHeight : groupHeight
-            guard height <= available else { break }
-            if row.heading == nil { agents += 1 }
-        }
-        return agents
-    }
-
-    // MARK: NSTableViewDataSource / Delegate
-
-    func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
-
-    func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
-        rows[row].heading == nil ? SidebarRowView() : nil
-    }
-
-    func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool { rows[row].heading == nil }
-
-    func tableView(_ tableView: NSTableView, isGroupRow row: Int) -> Bool { rows[row].heading != nil }
-
-    func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
-        rows[row].heading == nil ? Self.rowHeight : Self.groupHeight
-    }
-
-    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        if let title = rows[row].heading {
-            let label = NSTextField(labelWithString: title)
-            label.font = .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold)
-            label.textColor = SessionManager.shared.config.chrome.contentSecondary
-            label.lineBreakMode = .byTruncatingTail
-            return label
-        }
-        let cell = tableView.makeView(withIdentifier: TabRowView.identifier, owner: nil) as? TabRowView
-            ?? TabRowView()
-        cell.configure(rows[row].row, truncateTail: true)
-        return cell
-    }
-
-    @objc private func rowClicked(_ sender: Any?) {
-        let row = table.clickedRow
-        guard row >= 0, row < rows.count, rows[row].heading == nil else { return }
-        focus(rows[row])
-    }
-
-    /// Brings the agent's pane forward: its window and tab, its split, its workspace.
-    private func focus(_ agent: AgentBox) {
-        guard let pane = agent.pane else { return }
-        let sm = SessionManager.shared
-        guard let a = sm.agentPanes(first: controller).first(where: { $0.pane == pane }) else { return }
-        sm.focusAgent(a, from: controller)
-        // Its tab came forward with another split focused: the panel there selects this agent
-        // before it is drawn, not a refresh later.
-        sm.controller(for: a.pane)?.sidebar?.reload()
-    }
-
 }
 
 /// The Cmd+N of the tab at `index` (in display order): 1…8, and 9 for the last tab.
@@ -1728,46 +1523,5 @@ final class WorkingDots: NSView {
             pulse.preferredFrameRateRange = CAFrameRateRange(minimum: 10, maximum: 30, preferred: 30)
             d.add(pulse, forKey: Self.key)
         }
-    }
-}
-
-/// The agents panel's header: a click folds or unfolds the panel; while unfolded, dragging it
-/// up shows more agents, down fewer.
-private final class DragHandle: NSView {
-    var began: () -> Void = {}
-    /// Points moved up since the drag began.
-    var dragged: (CGFloat) -> Void = { _ in }
-    var ended: () -> Void = {}
-    var clicked: () -> Void = {}
-    var resizable = true {
-        didSet { if resizable != oldValue { window?.invalidateCursorRects(for: self) } }
-    }
-    private var start: NSPoint = .zero
-    private var travel: CGFloat = 0
-
-    override func resetCursorRects() {
-        addCursorRect(bounds, cursor: resizable ? .resizeUpDown : .pointingHand)
-    }
-
-    override func mouseDown(with event: NSEvent) {
-        start = event.locationInWindow
-        travel = 0
-        if resizable { began() }
-    }
-
-    override func mouseDragged(with event: NSEvent) {
-        let p = event.locationInWindow
-        travel = max(travel, hypot(p.x - start.x, p.y - start.y))
-        if resizable { dragged(p.y - start.y) }
-    }
-
-    override func mouseUp(with event: NSEvent) {
-        if resizable { ended() }
-        if travel < 3, event.clickCount <= 1 { clicked() }
-    }
-
-    override func accessibilityPerformPress() -> Bool {
-        clicked()
-        return true
     }
 }

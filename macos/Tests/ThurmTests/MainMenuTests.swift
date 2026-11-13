@@ -150,6 +150,20 @@ final class MainMenuTests: XCTestCase {
         XCTAssertEqual(names, listed)
     }
 
+    /// The agents panel's actions became Only Active Tabs: bindings to them keep working.
+    func testRetiredAgentsPanelActionsToggleActiveTabs() {
+        _ = NSApplication.shared
+        let main = MainMenu.build()
+        let warnings = MainMenu.applyKeys(["cmd+ctrl+alt+j": "toggle_sidebar_agents",
+                                           "cmd+ctrl+alt+k": "toggle_sidebar_agents_collapsed"], commands: [], in: main)
+        XCTAssertEqual(warnings, [])
+        for key in ["j", "k"] {
+            XCTAssertEqual(MainMenu.keyedItem(key, [.command, .control, .option], in: main)?.action,
+                           #selector(AppDelegate.toggleSidebarActiveOnly(_:)))
+        }
+        MainMenu.applyKeys([:], commands: [], in: main)
+    }
+
     func testNavigationShortcutAndExistingPickers() {
         _ = NSApplication.shared
         let main = MainMenu.build()

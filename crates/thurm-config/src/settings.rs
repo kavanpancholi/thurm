@@ -206,16 +206,6 @@ const OPTIONS: &[(&str, &str, Kind)] = &[
     ),
     ("window.sidebar_active_only", "Only active tabs", Kind::Bool),
     (
-        "window.sidebar_agents",
-        "Agents panel in sidebar",
-        Kind::Bool,
-    ),
-    (
-        "window.sidebar_agent_rows",
-        "Agent rows before scrolling",
-        Kind::Int(Some((1.0, 100.0))),
-    ),
-    (
         "window.sidebar_usage_claude",
         "Claude Code usage limits in sidebar",
         Kind::Bool,

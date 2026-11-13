@@ -114,20 +114,17 @@ The View menu changes what the sidebar lists, as do the settings below:
   tabs show under a header for the workspace. Click a tab of another workspace to
   switch to it. Drag a tab onto another workspace to move it there.
 - **Only Active Tabs** (`window.sidebar_active_only`, or the filter button next to
-  the sidebar button in the titlebar). The sidebar lists only the tabs with an agent that isn't
-  idle or a program reporting progress, plus the selected tab.
+  the sidebar button in the titlebar). The sidebar lists what is going on, by status:
+  **Needs input**, **Failed**, **Done** and **Working**. Each agent that isn't idle gets its
+  own row, in any window or workspace, so an agent in another split or workspace is one click
+  away. Each row shows what the agent is doing and when it last reported. An agent keeps its
+  place within its status. Under **Tabs** come the tabs with a program reporting progress,
+  and the selected tab when its focused pane has no agent row. Dragging rows does not reorder tabs in this list.
 
 To keep a tab in sight whatever workspace the sidebar shows, right-click it and choose
 **Pin Tab**, or use **Window > Pin Tab**. Pinned tabs show under **Pinned** at the top of the
 sidebar, in every workspace, and not again in their own group. Click one from another workspace
 to switch to it. **Only Active Tabs** never hides a pinned tab. Pins are kept across restarts.
-
-The **Agents** panel at the bottom of the sidebar lists every pane running an agent,
-in any window or workspace. Drag its header to show more or fewer rows. Click the
-header, or use **View > Collapse Agents**, to fold the panel down to its header, which
-keeps showing how many agents are waiting or working. Click it again to bring the list
-back. The panel stays folded across restarts. To remove it entirely, turn off
-**View > Agents in Sidebar** (`window.sidebar_agents`).
 
 When the sidebar is hidden, the filter button beside its toggle becomes **+** (New Tab).
 Showing the sidebar restores the filter button, with its setting preserved.

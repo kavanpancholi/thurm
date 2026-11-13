@@ -153,11 +153,7 @@ final class AppConfig {
     /// `window.sidebar_active_only`: only the tabs where something is going on.
     var sidebarActiveOnly = false
     var mouseNavigationButtons = true
-    /// `window.sidebar_agents`: the agents panel below the sidebar's tabs.
-    var sidebarAgents = true
-    /// Agents the sidebar lists before its agents panel scrolls.
-    var sidebarAgentRows = 5
-    /// `window.sidebar_usage_claude` / `_codex`: whose subscription limits show below the agents.
+    /// `window.sidebar_usage_claude` / `_codex`: whose subscription limits show below the tabs.
     var sidebarUsage: Set<UsageProvider> = []
 
     // [cursor]
@@ -357,8 +353,6 @@ final class AppConfig {
             sidebarAllWorkspaces = jsonBool(w["sidebar_all_workspaces"]) ?? sidebarAllWorkspaces
             sidebarActiveOnly = jsonBool(w["sidebar_active_only"]) ?? sidebarActiveOnly
             mouseNavigationButtons = jsonBool(w["mouse_navigation_buttons"]) ?? mouseNavigationButtons
-            sidebarAgents = jsonBool(w["sidebar_agents"]) ?? sidebarAgents
-            sidebarAgentRows = min(100, max(1, jsonInt(w["sidebar_agent_rows"]) ?? sidebarAgentRows))
             for p in UsageProvider.allCases {
                 if let on = jsonBool(w["sidebar_usage_\(p.rawValue)"]) {
                     if on { sidebarUsage.insert(p) } else { sidebarUsage.remove(p) }

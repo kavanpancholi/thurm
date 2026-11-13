@@ -14,8 +14,6 @@ final class SessionManager: NSObject, CoreDelegate {
     /// View > Tabs in Sidebar when config.toml cannot record it (read-only, e.g. managed by Nix
     /// or Home Manager): the choice holds for this session, over reloads.
     private var sidebarTabsOverride: Bool?
-    /// View > Agents in Sidebar when config.toml cannot record it, as `sidebarTabsOverride`.
-    private var sidebarAgentsOverride: Bool?
     private var activePaneBorderOverride: Bool?
     /// View > Group Tabs by Repository, Tabs from All Workspaces and Only Active Tabs, as
     /// `sidebarTabsOverride`.
@@ -928,20 +926,10 @@ final class SessionManager: NSObject, CoreDelegate {
         }
     }
 
-    /// View > Agents in Sidebar: switch `window.sidebar_agents` (every window follows). Saved to
-    /// the config when it can be written; otherwise it switches for this session only.
-    func toggleSidebarAgents() {
-        let agents = !config.sidebarAgents
-        sidebarAgentsOverride = toggleSetting("window.sidebar_agents", to: agents)
-        if sidebarAgentsOverride != nil {
-            config.sidebarAgents = agents
-            applyConfigToUI()
-        }
-    }
-
     /// How the sidebar lists tabs (View > Group Tabs by Repository, Tabs from All Workspaces,
     /// Only Active Tabs, and the filter button next to the sidebar button): switch the setting `key` that `path`
-    /// reads, as `toggleSidebarAgents`.
+    /// reads. Saved to the config when it can be written; otherwise it switches for
+    /// this session only.
     func toggleSidebarListing(_ key: String, _ path: WritableKeyPath<AppConfig, Bool>) {
         let on = !config[keyPath: path]
         sidebarListingOverride[path] = toggleSetting(key, to: on)
@@ -952,7 +940,7 @@ final class SessionManager: NSObject, CoreDelegate {
     }
 
     /// View > Show Active Pane Border: switch `window.active_pane_border`, as
-    /// `toggleSidebarAgents`.
+    /// `toggleSidebarListing`.
     func toggleActivePaneBorder() {
         let on = !config.activePaneBorder
         activePaneBorderOverride = toggleSetting("window.active_pane_border", to: on)
@@ -963,7 +951,7 @@ final class SessionManager: NSObject, CoreDelegate {
     }
 
     /// View > Usage Limits in Sidebar: switch `window.sidebar_usage_<provider>`, as
-    /// `toggleSidebarAgents`.
+    /// `toggleSidebarListing`.
     func toggleSidebarUsage(_ provider: UsageProvider) {
         let on = !config.sidebarUsage.contains(provider)
         sidebarUsageOverride[provider] = toggleSetting("window.sidebar_usage_\(provider.rawValue)", to: on)
@@ -1046,7 +1034,6 @@ final class SessionManager: NSObject, CoreDelegate {
         config = AppConfig.load()
         config.loadWarnings += MainMenu.applyKeys(config.keybindings, commands: config.commands)
         if let o = sidebarTabsOverride { config.sidebarTabs = o }
-        if let o = sidebarAgentsOverride { config.sidebarAgents = o }
         if let o = activePaneBorderOverride { config.activePaneBorder = o }
         for (path, on) in sidebarListingOverride { config[keyPath: path] = on }
         for (p, on) in sidebarUsageOverride {
