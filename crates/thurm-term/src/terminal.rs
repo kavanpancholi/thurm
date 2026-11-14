@@ -714,7 +714,9 @@ impl Terminal {
 
     /// Feed PTY output.
     pub fn advance(&mut self, bytes: &[u8]) {
-        self.last_output = Instant::now();
+        if !crate::filter::only_titles(bytes) {
+            self.last_output = Instant::now();
+        }
         self.generation += 1;
         let mut chunks = Vec::new();
         self.filter.feed(bytes, &mut chunks);

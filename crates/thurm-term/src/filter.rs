@@ -31,6 +31,29 @@ pub fn osc_is_passed(body: &[u8]) -> bool {
     osc_number(body).is_some_and(|n| SHARED_OSC.contains(&n))
 }
 
+pub fn only_titles(bytes: &[u8]) -> bool {
+    let mut rest = bytes;
+    while !rest.is_empty() {
+        let Some(body) = rest.strip_prefix(b"\x1b]") else {
+            return false;
+        };
+        if !matches!(body, [b'0'..=b'2', b';', ..]) {
+            return false;
+        }
+        let Some(end) = body.iter().position(|&b| b == 0x07 || b == 0x1b) else {
+            return false;
+        };
+        rest = match body[end] {
+            0x07 => &body[end + 1..],
+            _ => match body[end..].strip_prefix(b"\x1b\\") {
+                Some(after) => after,
+                None => return false,
+            },
+        };
+    }
+    !bytes.is_empty()
+}
+
 /// Longest OSC we buffer before giving up and passing it through untouched.
 const MAX_OSC: usize = 8 * 1024 * 1024;
 /// Longest APC we accept (kitty chunks are ≤ 4 KiB, but be generous).
@@ -856,6 +879,17 @@ fn utf8_tail(bytes: &[u8], from: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_titles_is_true_for_title_sequences_alone() {
+        assert!(only_titles(b"\x1b]0;Command Code\x07"));
+        assert!(only_titles(b"\x1b]2;a\x1b\\\x1b]1;b\x07"));
+        assert!(!only_titles(b""));
+        assert!(!only_titles(b"\x1b]0;title\x07x"));
+        assert!(!only_titles(b"\x1b]7;file:///tmp\x07"));
+        assert!(!only_titles(b"\x1b]0;unterminated"));
+        assert!(!only_titles(b"\x1b[2J"));
+    }
 
     /// Feed `input` split at every possible position and in one piece; all must agree.
     fn run(input: &[u8]) -> (Vec<u8>, Vec<Chunk<'static>>) {
