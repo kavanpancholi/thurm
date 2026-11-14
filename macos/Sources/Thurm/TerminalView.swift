@@ -1841,9 +1841,13 @@ final class TerminalView: NSView, NSTextInputClient {
         quickLook(request)
     }
 
+    /// Takes the file Quick Look would open in place of the panel (tests).
+    var openPreview: ((URL) -> Void)?
+
     private func quickLook(_ request: FilePreviewRequest) {
         do {
             let url = try request.reference.localFile(cwd: request.cwd, isRemote: request.isRemote)
+            if let openPreview { return openPreview(url) }
             guard let window, let panel = QLPreviewPanel.shared() else { return }
             window.makeKeyAndOrderFront(nil)
             window.makeFirstResponder(self)
