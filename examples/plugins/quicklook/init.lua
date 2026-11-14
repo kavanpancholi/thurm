@@ -12,10 +12,10 @@
 --   thurm action run quicklook.preview '{"path":"report.pdf"}'
 --   thurm.run("quicklook.preview", { path = "~/Desktop/shot.png" })      -- from Lua
 --
--- A relative path is taken from the pane's directory. A file macOS has a Quick Look generator
--- for (images, PDFs, documents, fonts, ...) shows as the thumbnail Quick Look makes for it, in
--- a card shaped like it, drawn with the kitty graphics protocol; any key closes it. A text file
--- opens as text, in `bat` when it is installed, else in `less`; `q` closes it.
+-- A relative path is taken from the pane's directory. The file shows as the thumbnail Quick
+-- Look makes for it (an image, a PDF's or a document's first page, the start of a text file),
+-- in a card shaped like it, drawn with the kitty graphics protocol; any key closes it. A text
+-- file Quick Look has no generator for (no extension, `.toml`, `.yaml`) is drawn as plain text.
 --
 -- Settings, in config.toml:
 --
@@ -154,37 +154,59 @@ local function image_card(pane_size, w, h)
   return centered(pane_size, cols, rows)
 end
 
-local function show_text(pane, info, path)
-  local bat = trim(thurm.exec("command -v bat").stdout)
-  -- No quitting at once when the file fits the screen: the pane would close before you read it.
-  local less = { "less", "-R", "-+F", "-+E", "--", path }
-  local command = bat ~= "" and { bat, "--paging=always", "--", path } or less
-  return thurm.open{
-    command = command,
-    env = { BAT_PAGER = "less -R -+F -+E" },
-    cwd = info.cwd,
-    target = pane,
-    cells = centered(info.size, 100, info.size.rows - 4),
-  }
+-- Quick Look's thumbnail of `path`, written into `dir`: its PNG, or nil.
+local function thumbnail(path, name, dir)
+  -- -x: through quicklookd. Without it, qlmanage waits forever for a file it has no
+  -- generator for; with it, it exits and writes nothing.
+  local r = thurm.exec({ QLMANAGE, "-t", "-x", "-s", tostring(size), "-o", dir, path }, { timeout = 30 })
+  if r.timed_out then
+    thurm.exec({ "rm", "-rf", dir })
+    thurm.fail("Quick Look took too long on " .. name)
+  end
+  local png = dir .. "/" .. name .. ".png"
+  return r.ok and is_file(png) and png or nil
 end
 
-local function show_preview(pane, info, path, name)
-  local tmp = thurm.exec({ "mktemp", "-d", "-t", "thurm-quicklook" })
+-- The thumbnail of a text file Quick Look has no generator for (no extension, `.toml`,
+-- `.yaml`): made from a `.txt` copy of its start, which is all a thumbnail shows. Forcing
+-- plain text with `qlmanage -c` draws black text on a dark page, and quicklookd skips a
+-- `.txt` symlink.
+local function text_thumbnail(path, name, dir)
+  local src = io.open(path, "rb")
+  if not src then
+    return nil
+  end
+  local head = src:read(64 * 1024) or ""
+  src:close()
+  local copy = dir .. "/" .. name .. ".txt"
+  local dst = io.open(copy, "wb")
+  if not dst then
+    return nil
+  end
+  dst:write(head)
+  dst:close()
+  local png = thumbnail(copy, name .. ".txt", dir)
+  os.remove(copy)
+  return png
+end
+
+local function show_preview(pane, info, path, name, textual)
+  -- macOS's mktemp: GNU's, from Nix or Homebrew, wants X's in the template.
+  local tmp = thurm.exec({ "/usr/bin/mktemp", "-d", "-t", "thurm-quicklook" })
   if not tmp.ok then
     thurm.fail("cannot make a temporary directory: " .. trim(tmp.stderr))
   end
   local dir = trim(tmp.stdout)
-  -- -x: through quicklookd. Without it, qlmanage waits forever for a file it has no
-  -- generator for; with it, it exits and writes nothing.
-  local argv = { QLMANAGE, "-t", "-x", "-s", tostring(size), "-o", dir, path }
-  local r = thurm.exec(argv, { timeout = 30 })
-  local png = dir .. "/" .. name .. ".png"
-  local w, h = png_size(png)
-  if not (r.ok and w) then
+  local png = thumbnail(path, name, dir)
+  if not png and textual then
+    png = text_thumbnail(path, name, dir)
+  end
+  local w, h
+  if png then
+    w, h = png_size(png)
+  end
+  if not w then
     thurm.exec({ "rm", "-rf", dir })
-    if r.timed_out then
-      thurm.fail("Quick Look took too long on " .. name)
-    end
     thurm.fail("no Quick Look preview for " .. name)
   end
   -- The viewer deletes the PNG and the directory when it closes.
@@ -235,11 +257,8 @@ local function preview(ctx, args)
     thurm.fail(name .. " is not a regular file")
   end
 
-  -- Text as text; an SVG or RTF file reads better as Quick Look draws it.
-  local textual = mime:find("^inode/x%-empty")
-    or not (mime:find("charset=binary") or mime:find("^image/") or mime:find("^text/rtf"))
-  local opened = textual and show_text(pane, info, path) or show_preview(pane, info, path, name)
-  return { pane = opened, path = path }
+  local textual = mime:find("charset=binary") == nil or mime:find("^inode/x%-empty") ~= nil
+  return { pane = show_preview(pane, info, path, name, textual), path = path }
 end
 
 thurm.action{
