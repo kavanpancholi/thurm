@@ -127,8 +127,41 @@ final class ExtensionsTests: XCTestCase {
         XCTAssertEqual(over.maxY, window.maxY - 80)
     }
 
+    /// The main menu's named items are offered once each, but never secure keyboard entry.
     func testSecureKeyboardEntryIsNotOffered() {
-        XCTAssertTrue(Extensions.personalActions.contains("secure_keyboard_entry"))
+        func item(_ title: String, _ name: String) -> NSMenuItem {
+            let i = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+            i.identifier = NSUserInterfaceItemIdentifier("thurm.action.\(name)")
+            return i
+        }
+        let shell = NSMenu(title: "Shell")
+        shell.addItem(item("Split Down", "split_down"))
+        shell.addItem(item("Secure Keyboard Entry", "secure_keyboard_entry"))
+        shell.addItem(item("Split Down Again", "split_down"))
+        shell.addItem(NSMenuItem(title: "No Name", action: nil, keyEquivalent: ""))
+        let top = NSMenuItem(title: "Shell", action: nil, keyEquivalent: "")
+        top.submenu = shell
+        let main = NSMenu(title: "Main")
+        main.addItem(top)
+        let (names, list) = Extensions.offers(in: main)
+        XCTAssertEqual(names, ["split_down"])
+        XCTAssertEqual(list.count, 1)
+        XCTAssertEqual(list.first?["name"] as? String, "split_down")
+        XCTAssertEqual(list.first?["category"] as? String, "Shell")
+    }
+
+    /// A question goes over a terminal window, never over the palette (or another panel) that
+    /// happens to be key; with no terminal window, over none.
+    func testAQuestionGoesOverATerminalWindowNotThePalette() {
+        _ = NSApplication.shared
+        let palette = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 100, height: 100),
+                              styleMask: [.titled], backing: .buffered, defer: true)
+        let plain = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 100, height: 100),
+                             styleMask: [.titled], backing: .buffered, defer: true)
+        XCTAssertNil(Extensions.questionWindow(key: palette, current: nil))
+        XCTAssertNil(Extensions.questionWindow(key: palette, current: palette))
+        XCTAssertTrue(Extensions.questionWindow(key: palette, current: plain) === plain)
+        XCTAssertNil(Extensions.questionWindow(key: nil, current: nil))
     }
 
     /// An action for a pane goes to its window's responder chain, not the key window's; one

@@ -162,25 +162,7 @@ final class Extensions {
     /// Offers the main menu's named items to the daemon, so plugins, scripts and `thurm action
     /// run` can use them (`split_down`, `new_tab`...).
     private func registerAppActions(attempt: Int = 0) {
-        var seen = Set<String>()
-        var list: [[String: Any]] = []
-        func walk(_ menu: NSMenu, top: String) {
-            for item in menu.items {
-                if let sub = item.submenu {
-                    walk(sub, top: top.isEmpty ? item.title : top)
-                    continue
-                }
-                guard let name = MainMenu.actionName(item.identifier),
-                      !Extensions.personalActions.contains(name), seen.insert(name).inserted
-                else { continue }
-                list.append(["name": name, "title": item.title, "category": top])
-            }
-        }
-        if let main = NSApp.mainMenu {
-            for top in main.items {
-                if let sub = top.submenu { walk(sub, top: top.title.isEmpty ? "Thurm" : top.title) }
-            }
-        }
+        let (seen, list) = NSApp.mainMenu.map(Extensions.offers(in:)) ?? ([], [])
         menuActions = seen
         guard !list.isEmpty else {
             appActions = []
@@ -239,6 +221,29 @@ final class Extensions {
                 }
             }
         }
+    }
+
+    /// The actions `main` (the main menu) offers: every item with a `[keybindings]` name, once,
+    /// with its title and top menu as the category; never one only a person at the Mac may take.
+    static func offers(in main: NSMenu) -> (names: Set<String>, list: [[String: Any]]) {
+        var seen = Set<String>()
+        var list: [[String: Any]] = []
+        func walk(_ menu: NSMenu, top: String) {
+            for item in menu.items {
+                if let sub = item.submenu {
+                    walk(sub, top: top.isEmpty ? item.title : top)
+                    continue
+                }
+                guard let name = MainMenu.actionName(item.identifier),
+                      !Extensions.personalActions.contains(name), seen.insert(name).inserted
+                else { continue }
+                list.append(["name": name, "title": item.title, "category": top])
+            }
+        }
+        for top in main.items {
+            if let sub = top.submenu { walk(sub, top: top.title.isEmpty ? "Thurm" : top.title) }
+        }
+        return (seen, list)
     }
 
     /// What the menus are built from: `[keybindings]` with the daemon's bindings of the app's
@@ -460,7 +465,7 @@ final class Extensions {
             guard self?.connection == asked else { return }
             self?.call("ui.reply", q.reply(value))
         }
-        let window = NSApp.keyWindow ?? SessionManager.shared.currentController?.window
+        let window = Extensions.questionWindow()
         let title = q.title
         switch kind {
         case "pick":
@@ -520,6 +525,15 @@ final class Extensions {
         default:
             reply(NSNull())
         }
+    }
+
+    /// The terminal window a question goes over: the key one when it is a terminal window (not
+    /// the palette or another panel), else the current one; none when no terminal window is open.
+    static func questionWindow(key: NSWindow? = NSApp.keyWindow,
+                               current: NSWindow? = SessionManager.shared.currentController?.window) -> NSWindow? {
+        if let key, key.windowController is TerminalWindowController { return key }
+        if let current, current !== key, !(current is NSPanel) { return current }
+        return nil
     }
 
     /// Shows `alert` as a sheet on `window`, or on its own without one.
