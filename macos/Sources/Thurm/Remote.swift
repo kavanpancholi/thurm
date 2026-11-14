@@ -445,7 +445,10 @@ extension SessionManager {
             gone += before - ws.hiddenTabs.flatMap { $0.panes }.count
             ws.hiddenSelectedTab = min(ws.hiddenSelectedTab, max(0, ws.hiddenTabs.count - 1))
         }
-        for info in infos { paneInfoUpdated(info) }
+        for info in infos {
+            if panes[info.key] == nil { panes[info.key] = info }
+            paneInfoUpdated(info)
+        }
         for view in views(of: host) {
             view.setOffline(nil)
             view.resubscribe()
