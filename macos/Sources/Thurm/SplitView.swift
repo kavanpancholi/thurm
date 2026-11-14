@@ -1577,8 +1577,10 @@ final class TabContentView: NSView {
     func canMoveSplit(_ pane: PaneKey) -> Bool { root.contains(pane) && root.panes.count > 1 }
 
     /// Moves a split pane to an edge of the tab or to one side of another pane. Esc cancels.
-    func trackPaneDrag(_ pane: PaneKey, from event: NSEvent) {
-        guard let window, canMoveSplit(pane) else { return }
+    /// Returns whether the press became a drag (or was cancelled): false for a click.
+    @discardableResult
+    func trackPaneDrag(_ pane: PaneKey, from event: NSEvent) -> Bool {
+        guard let window, canMoveSplit(pane) else { return false }
         let origin = convert(event.locationInWindow, from: nil)
         var moved = false
         var cancelled = false
@@ -1608,16 +1610,17 @@ final class TabContentView: NSView {
             }
         }
         dockIndicator.show(nil)
-        guard moved, !cancelled else { return }
+        guard moved, !cancelled else { return moved || cancelled }
         if let edge {
             moveToEdge(pane, edge)
         } else if let target {
             move(pane, nextTo: target.pane, direction: target.side, share: nil)
         } else {
-            return
+            return true
         }
         focus(pane)
         SessionManager.shared.scheduleLayoutSave()
+        return true
     }
 
     func setMinimized(_ pane: PaneKey, _ on: Bool) {
@@ -1682,9 +1685,11 @@ final class TabContentView: NSView {
 
     /// Moves a card until the mouse button is released. Command docks it beside a split pane.
     /// A drag from the terminal body gives tab edges priority. Esc restores the card's position.
-    func trackCardDrag(_ pane: PaneKey, from event: NSEvent, preferEdges: Bool = false) {
+    /// Returns whether the press became a drag (or was cancelled): false for a click.
+    @discardableResult
+    func trackCardDrag(_ pane: PaneKey, from event: NSEvent, preferEdges: Bool = false) -> Bool {
         guard let window, let start = floating.first(where: { $0.pane == pane }), !start.zoomed,
-              let startRect = cardFrames.first(where: { $0.0 == pane })?.1 else { return }
+              let startRect = cardFrames.first(where: { $0.0 == pane })?.1 else { return false }
         let origin = convert(event.locationInWindow, from: nil)
         var moved = false
         var cancelled = false
@@ -1734,20 +1739,21 @@ final class TabContentView: NSView {
         if let target, !cancelled {
             dock(pane, nextTo: target.pane, direction: target.side, share: nil)
             focus(pane)
-            return
+            return true
         }
         if let tabGap, !cancelled, let controller {
             SessionManager.shared.moveCardToNewTab(pane, from: controller, next: tabGap)
-            return
+            return true
         }
         if let edge, moved, !cancelled {
             moveToEdge(pane, edge)
             focus(pane)
-            return
+            return true
         }
         needsLayout = true
         window.invalidateCursorRects(for: self)
         if moved && !cancelled { SessionManager.shared.scheduleLayoutSave() }
+        return moved || cancelled
     }
 
     private var sidebar: TabSidebarViewController? {
