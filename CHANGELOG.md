@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.23.0 - 2026-11-14
+
+This release lets you preview a file path in Quick Look with one click. It is available in the macOS app.
+
+### New features
+
+- Press `Cmd+Option` and click a file path to open it in Quick Look. This is the same panel as the context menu. It also works on `file:` links, and dragging panes or floating cards still moves them.
+
 ## v0.22.0 - 2026-11-14
 
 Thurm 0.21.0 lets plugins place the floating pane they open. Plugin actions also get more context, and a new example plugin previews files with Quick Look.
