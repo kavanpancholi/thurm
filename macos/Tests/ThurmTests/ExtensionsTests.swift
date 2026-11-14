@@ -75,6 +75,44 @@ final class ExtensionsTests: XCTestCase {
                               "cmd+n": "new_window"])
     }
 
+    /// The daemon's questions and the answers it takes, as `ui_contract.json` (which the
+    /// protocol's own tests check too) has them: the app reads every field and answers in kind.
+    func testPluginQuestionsAndAnswersMatchTheDaemon() throws {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("crates/thurm-proto/tests/ui_contract.json")
+        let contract = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        let requests = try XCTUnwrap(contract["requests"] as? [[String: Any]]).map { UIQuestion($0)! }
+        let replies = try XCTUnwrap(contract["replies"] as? [[String: Any]])
+
+        let (toast, pick, input, confirm) = (requests[0], requests[1], requests[2], requests[3])
+        XCTAssertEqual(toast.kind, "toast")
+        XCTAssertEqual(toast.text, "saved")
+        XCTAssertEqual(toast.pane, 4)
+        XCTAssertEqual(pick.kind, "pick")
+        XCTAssertEqual(pick.title, "Branch")
+        XCTAssertEqual(pick.items.map(\.title), ["main", "dev"])
+        XCTAssertEqual(pick.items.map(\.detail), ["origin", ""])
+        XCTAssertEqual(input.placeholder, "name")
+        XCTAssertEqual(input.value, "x")
+        XCTAssertEqual(confirm.body, "It goes.")
+        XCTAssertEqual(confirm.ok, "Delete")
+        XCTAssertEqual(confirm.cancel, "Cancel")
+
+        let sent: [[String: Any]] = [
+            pick.reply(pick.picked(1)),
+            input.reply("typed"),
+            confirm.reply(true),
+            input.reply(NSNull()),
+        ]
+        for (mine, theirs) in zip(sent, replies) {
+            // Through JSON, as the daemon gets them.
+            let encoded = try XCTUnwrap(JSON.decode(JSON.encode(mine)) as? NSDictionary)
+            XCTAssertEqual(encoded, theirs as NSDictionary)
+        }
+    }
+
     func testSecureKeyboardEntryIsNotOffered() {
         XCTAssertTrue(Extensions.personalActions.contains("secure_keyboard_entry"))
     }

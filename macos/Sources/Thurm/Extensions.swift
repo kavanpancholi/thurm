@@ -400,9 +400,10 @@ final class Extensions {
 
     /// Shows what a plugin asks for: a toast, a list to pick from, a line to type, or a yes/no.
     private func show(_ req: [String: Any]) {
-        guard let id = jsonUInt64(req["id"]) else { return }
-        let kind = jsonString(req["kind"]) ?? ""
-        let pane = jsonUInt64(req["pane"]).map { PaneKey(localHost, $0) }
+        guard let q = UIQuestion(req) else { return }
+        let id = q.id
+        let kind = q.kind
+        let pane = q.pane.map { PaneKey(localHost, $0) }
         if kind == "toast" {
             // Over the pane it names, if the app shows it; over the focused one when it names
             // none. Never over another pane than the one named.
@@ -413,14 +414,14 @@ final class Extensions {
             } else {
                 view = SessionManager.shared.currentController?.content.focusedView
             }
-            view?.showToast(jsonString(req["text"]) ?? "", duration: 4)
+            view?.showToast(q.text, duration: 4)
             return
         }
         // The app in the background: the question waits until the user comes, rather than
         // taking the focus from what they are doing. One waits at a time.
         if !NSApp.isActive {
-            if let old = pending, let oldId = jsonUInt64(old["id"]) {
-                call("ui.reply", ["id": oldId, "result": NSNull()])
+            if let old = pending.flatMap(UIQuestion.init) {
+                call("ui.reply", old.reply(NSNull()))
             }
             pending = req
             NSApp.requestUserAttention(.informationalRequest)
@@ -449,19 +450,18 @@ final class Extensions {
             if self?.shown?.id == id { self?.shown = nil }
             // Not to a daemon that came since: the id may be another plugin's question there.
             guard self?.connection == asked else { return }
-            self?.call("ui.reply", ["id": id, "result": value])
+            self?.call("ui.reply", q.reply(value))
         }
         let window = NSApp.keyWindow ?? SessionManager.shared.currentController?.window
-        let title = jsonString(req["title"]) ?? ""
+        let title = q.title
         switch kind {
         case "pick":
-            let items = (req["items"] as? [[String: Any]] ?? []).enumerated().map { index, item in
-                CommandPalette.Item(title: jsonString(item["title"]) ?? "", detail: jsonString(item["detail"]) ?? "") {
-                    reply(["index": index, "id": item["id"] ?? NSNull()])
+            let items = q.items.enumerated().map { index, item in
+                CommandPalette.Item(title: item.title, detail: item.detail) {
+                    reply(q.picked(index))
                 }
             }
-            let placeholder = jsonString(req["placeholder"]).flatMap { $0.isEmpty ? nil : $0 }
-                ?? (title.isEmpty ? "Pick one…" : title)
+            let placeholder = q.placeholder.isEmpty ? (title.isEmpty ? "Pick one…" : title) : q.placeholder
             shown = (id, true, { reply(NSNull()) }, { CommandPalette.shared.close() })
             // The palette hides when the app loses the focus: the question is answered with
             // nothing then, rather than left waiting behind it.
@@ -491,8 +491,8 @@ final class Extensions {
                 }
             })
             if kind == "input" {
-                let field = NSTextField(string: jsonString(req["value"]) ?? "")
-                field.placeholderString = jsonString(req["placeholder"])
+                let field = NSTextField(string: q.value)
+                field.placeholderString = q.placeholder
                 field.frame = NSRect(x: 0, y: 0, width: 300, height: 24)
                 alert.accessoryView = field
                 alert.addButton(withTitle: "OK")
@@ -502,9 +502,9 @@ final class Extensions {
                     reply(response == .alertFirstButtonReturn ? field.stringValue : NSNull())
                 }
             } else {
-                alert.informativeText = jsonString(req["body"]) ?? ""
-                alert.addButton(withTitle: jsonString(req["ok"]).flatMap { $0.isEmpty ? nil : $0 } ?? "OK")
-                alert.addButton(withTitle: jsonString(req["cancel"]).flatMap { $0.isEmpty ? nil : $0 } ?? "Cancel")
+                alert.informativeText = q.body
+                alert.addButton(withTitle: q.ok)
+                alert.addButton(withTitle: q.cancel)
                 present(alert, over: window) { response in
                     reply(response == .alertFirstButtonReturn)
                 }
@@ -521,5 +521,58 @@ final class Extensions {
         } else {
             done(alert.runModal())
         }
+    }
+}
+
+/// A plugin's question as the daemon's `ui.request` carries it (`UiRequest` in thurm-proto),
+/// and the `ui.reply` that answers it.
+struct UIQuestion {
+    struct Item {
+        let title: String
+        let detail: String
+        /// The plugin's own id for it, any JSON value.
+        let id: Any
+    }
+
+    let id: UInt64
+    /// toast, pick, input or confirm.
+    let kind: String
+    let title: String
+    let pane: UInt64?
+    let text: String
+    let placeholder: String
+    let value: String
+    let body: String
+    let ok: String
+    let cancel: String
+    let items: [Item]
+
+    init?(_ req: [String: Any]) {
+        guard let id = jsonUInt64(req["id"]) else { return nil }
+        self.id = id
+        kind = jsonString(req["kind"]) ?? ""
+        title = jsonString(req["title"]) ?? ""
+        pane = jsonUInt64(req["pane"])
+        text = jsonString(req["text"]) ?? ""
+        placeholder = jsonString(req["placeholder"]) ?? ""
+        value = jsonString(req["value"]) ?? ""
+        body = jsonString(req["body"]) ?? ""
+        ok = jsonString(req["ok"]).flatMap { $0.isEmpty ? nil : $0 } ?? "OK"
+        cancel = jsonString(req["cancel"]).flatMap { $0.isEmpty ? nil : $0 } ?? "Cancel"
+        items = (req["items"] as? [[String: Any]] ?? []).map {
+            Item(title: jsonString($0["title"]) ?? "", detail: jsonString($0["detail"]) ?? "",
+                 id: $0["id"] ?? NSNull())
+        }
+    }
+
+    /// The `ui.reply` parameters answering with `result`: what `picked` gives, the text typed,
+    /// true or false, or NSNull for no answer.
+    func reply(_ result: Any) -> [String: Any] {
+        ["id": id, "result": result]
+    }
+
+    /// The answer for item `index` picked: its place and the plugin's id for it.
+    func picked(_ index: Int) -> [String: Any] {
+        ["index": index, "id": items[index].id]
     }
 }
