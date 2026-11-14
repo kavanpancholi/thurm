@@ -141,14 +141,8 @@ final class CommandPalette: NSObject, NSTableViewDataSource, NSTableViewDelegate
         table?.reloadData()
         selectRow(initialRow)
 
-        let size = panel.frame.size
-        var origin = NSPoint(x: 200, y: 400)
-        if let w = window {
-            origin = NSPoint(x: w.frame.midX - size.width / 2, y: w.frame.maxY - size.height - 80)
-        } else if let screen = NSScreen.main {
-            origin = NSPoint(x: screen.visibleFrame.midX - size.width / 2, y: screen.visibleFrame.maxY - size.height - 120)
-        }
-        panel.setFrameOrigin(origin)
+        panel.setFrameOrigin(CommandPalette.origin(size: panel.frame.size, over: window?.frame,
+                                                   screen: NSScreen.main?.visibleFrame))
         panel.makeKeyAndOrderFront(nil)
         if let field = field { panel.makeFirstResponder(field) }
         if items.contains(where: { $0.liveShortcut != nil }) {
@@ -158,6 +152,18 @@ final class CommandPalette: NSObject, NSTableViewDataSource, NSTableViewDelegate
             liveTimer = timer
             RunLoop.main.add(timer, forMode: .common)
         }
+    }
+
+    /// Where the palette goes: near the top of the window it is for, else of the screen (a
+    /// question from a plugin may come with no window open).
+    static func origin(size: NSSize, over window: NSRect?, screen: NSRect?) -> NSPoint {
+        if let w = window {
+            return NSPoint(x: w.midX - size.width / 2, y: w.maxY - size.height - 80)
+        }
+        if let screen {
+            return NSPoint(x: screen.midX - size.width / 2, y: screen.maxY - size.height - 120)
+        }
+        return NSPoint(x: 200, y: 400)
     }
 
     func close() {

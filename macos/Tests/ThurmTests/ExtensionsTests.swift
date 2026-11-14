@@ -113,6 +113,20 @@ final class ExtensionsTests: XCTestCase {
         }
     }
 
+    /// A plugin's list to pick from shows with no window open: on the screen, near its top.
+    func testAPickWithNoWindowShowsOnTheScreen() {
+        let size = NSSize(width: 560, height: 340)
+        let screen = NSRect(x: 0, y: 25, width: 1440, height: 875)
+        let origin = CommandPalette.origin(size: size, over: nil, screen: screen)
+        let frame = NSRect(origin: origin, size: size)
+        XCTAssertTrue(screen.contains(frame), "\(frame)")
+        XCTAssertEqual(frame.midX, screen.midX)
+        let window = NSRect(x: 100, y: 100, width: 800, height: 600)
+        let over = NSRect(origin: CommandPalette.origin(size: size, over: window, screen: screen), size: size)
+        XCTAssertEqual(over.midX, window.midX)
+        XCTAssertEqual(over.maxY, window.maxY - 80)
+    }
+
     func testSecureKeyboardEntryIsNotOffered() {
         XCTAssertTrue(Extensions.personalActions.contains("secure_keyboard_entry"))
     }
