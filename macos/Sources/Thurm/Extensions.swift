@@ -259,6 +259,13 @@ final class Extensions {
                     tlog("keys: \(b.key) binds \(b.action) with arguments, which app actions don't take; ignored")
                     continue
                 }
+                // The daemon's binding wins over the file's for the same chord, however
+                // either spells it.
+                if let chord = MainMenu.normalizedChord(b.key) {
+                    for k in keys.keys where k != b.key && MainMenu.normalizedChord(k) == chord {
+                        keys[k] = nil
+                    }
+                }
                 keys[b.key] = b.action
             } else if b.args == nil, shownKey[b.action] == nil, known[b.action]?.hidden == false {
                 shownKey[b.action] = b.key

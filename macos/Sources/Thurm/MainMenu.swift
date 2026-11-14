@@ -223,6 +223,12 @@ enum MainMenu {
         return "\(m.rawValue)+\(key.lowercased())"
     }
 
+    /// One spelling for every way of writing the same chord ("CMD+T", "cmd+t"); nil for one
+    /// a menu cannot show.
+    static func normalizedChord(_ spec: String) -> String? {
+        keyEquivalent(spec).map { chord($0.0, $0.1) }
+    }
+
     /// A `[keybindings]` chord ("cmd+shift+l", "ctrl+alt+f5") as a menu key equivalent; nil for
     /// one a menu cannot show.
     static func keyEquivalent(_ chord: String) -> (String, NSEvent.ModifierFlags)? {

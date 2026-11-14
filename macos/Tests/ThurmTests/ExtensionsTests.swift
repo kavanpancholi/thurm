@@ -61,6 +61,20 @@ final class ExtensionsTests: XCTestCase {
         XCTAssertEqual(keys, ["cmd+shift+k": "split_down"])
     }
 
+    /// The daemon's key for an app action replaces the file's for the same chord, however
+    /// either spells it.
+    func testTheDaemonsKeyWinsOverTheFilesSameChord() {
+        let ext = Extensions()
+        ext.load(actions: [], bindings: [
+            .init(key: "CMD+T", action: "split_down"),
+            .init(key: "shift+cmd+k", action: "split_down"),
+        ], appActions: ["split_down"])
+        let (keys, _) = ext.menuInput(keybindings: ["cmd+t": "new_tab", "cmd+shift+k": "clear",
+                                                    "cmd+n": "new_window"], commands: [])
+        XCTAssertEqual(keys, ["CMD+T": "split_down", "shift+cmd+k": "split_down",
+                              "cmd+n": "new_window"])
+    }
+
     func testSecureKeyboardEntryIsNotOffered() {
         XCTAssertTrue(Extensions.personalActions.contains("secure_keyboard_entry"))
     }
