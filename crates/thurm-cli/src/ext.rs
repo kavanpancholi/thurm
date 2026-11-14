@@ -413,6 +413,19 @@ fn name_free(
     Ok(())
 }
 
+/// Takes `target` (in the plugins directory `dir`) for this command: it makes the directory,
+/// and fails when something else made it first.
+fn reserve(
+    dir: &std::path::Path,
+    target: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    std::fs::create_dir_all(dir)?;
+    std::fs::create_dir(target).map_err(|e| match e.kind() {
+        std::io::ErrorKind::AlreadyExists => format!("{} exists already", target.display()).into(),
+        _ => Box::<dyn std::error::Error>::from(e),
+    })
+}
+
 /// Asks the daemon, when one runs, to look at the plugins again.
 fn reload_running(name: Option<&str>) {
     if let Ok(c) = crate::connect(false) {
@@ -478,8 +491,8 @@ pub fn plugin_local(cmd: PluginCmd, json: bool) -> R {
             }
             let target = dir.join(&name);
             name_free(&dir, &name, &target)?;
+            reserve(&dir, &target)?;
             let made = || -> Result<(), Box<dyn std::error::Error>> {
-                std::fs::create_dir_all(&target)?;
                 for (file, text, executable) in thurm_config::plugins::scaffold(&name, program) {
                     let path = target.join(file);
                     std::fs::write(&path, text)?;
@@ -497,7 +510,7 @@ pub fn plugin_local(cmd: PluginCmd, json: bool) -> R {
                 }
                 Ok(())
             };
-            // Half made, it goes: the name was free, so the directory is this command's.
+            // Half made, it goes: this command made the directory.
             if let Err(e) = made() {
                 let _ = std::fs::remove_dir_all(&target);
                 return Err(e);
@@ -519,17 +532,24 @@ pub fn plugin_local(cmd: PluginCmd, json: bool) -> R {
                 "thurm: plugins run with your rights and can do anything you can: install only \
                  plugins you trust."
             );
-            std::fs::create_dir_all(&dir)?;
-            // A clone that failed part way goes: the name was free, so what is there is its.
-            if let Err(e) = git(&[
+            // The name is taken (an empty directory) for this command; the clone goes to a
+            // hidden directory of its own, which then takes the name's place. On a failure
+            // both go: they are this command's.
+            reserve(&dir, &target)?;
+            let clone = dir.join(format!(".{name}.install-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&clone);
+            let cloned = git(&[
                 "clone",
                 "--depth",
                 "1",
                 "--",
                 &url,
-                &target.display().to_string(),
-            ]) {
-                let _ = std::fs::remove_dir_all(&target);
+                &clone.display().to_string(),
+            ])
+            .and_then(|()| Ok(std::fs::rename(&clone, &target)?));
+            if let Err(e) = cloned {
+                let _ = std::fs::remove_dir_all(&clone);
+                let _ = std::fs::remove_dir(&target);
                 return Err(e);
             }
             // Not a plugin: it goes again, rather than sitting in the plugins directory.
