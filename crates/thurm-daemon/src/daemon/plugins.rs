@@ -55,6 +55,9 @@ pub struct Plugins {
     /// Every program plugin's process not reaped yet, recorded or still starting: shutdown
     /// waits for them all. `true` once the daemon is stopping them: none starts after.
     processes: Mutex<(bool, Vec<Arc<Process>>)>,
+    /// Entries of the plugins directory that are not plugins it could run, as the last look
+    /// found them: listed, with why.
+    broken: Mutex<Vec<thurm_config::plugins::Broken>>,
 }
 
 /// A running plugin or script, and its client.
@@ -319,6 +322,7 @@ impl Daemon {
         for w in &warnings {
             log::warn!("plugins: {w}");
         }
+        *self.plugins.broken.lock() = warnings;
         let found: Vec<FoundPlugin> = init_plugin()
             .into_iter()
             .chain(found)
@@ -1047,7 +1051,8 @@ impl Daemon {
 
     fn plugin_list(&self) -> Vec<ext::PluginInfo> {
         let actions = self.ext_actions();
-        self.plugins
+        let mut list = self
+            .plugins
             .records
             .lock()
             .values()
@@ -1071,7 +1076,24 @@ impl Daemon {
                         .collect(),
                 }
             })
-            .collect()
+            .collect::<Vec<_>>();
+        // What could not be a plugin is listed too, saying why, unless one of that name runs.
+        let broken: Vec<ext::PluginInfo> = self
+            .plugins
+            .broken
+            .lock()
+            .iter()
+            .filter(|b| !list.iter().any(|p| p.name == b.name))
+            .map(|b| ext::PluginInfo {
+                name: b.name.clone(),
+                path: b.path.display().to_string(),
+                state: "broken".into(),
+                error: Some(b.error.clone()),
+                ..Default::default()
+            })
+            .collect();
+        list.extend(broken);
+        list
     }
 
     /// Writes `plugins.disabled` with `name` in it (`disable`) or not, and applies the config.
@@ -1274,6 +1296,11 @@ fn read_lines(r: impl Read, max: usize, mut f: impl FnMut(String, bool) -> bool)
         let cut = !ended && buf.len() > max;
         if cut {
             buf.truncate(max);
+            // Told before the rest is skipped: a reader that stops on it must not wait for a
+            // newline that may never come.
+            if !f(String::from_utf8_lossy(&buf).into_owned(), true) {
+                return;
+            }
             let mut rest = Vec::new();
             loop {
                 rest.clear();
@@ -1283,8 +1310,9 @@ fn read_lines(r: impl Read, max: usize, mut f: impl FnMut(String, bool) -> bool)
                     Ok(_) => {}
                 }
             }
+            continue;
         }
-        if !f(String::from_utf8_lossy(&buf).into_owned(), cut) {
+        if !f(String::from_utf8_lossy(&buf).into_owned(), false) {
             return;
         }
     }
@@ -1292,6 +1320,18 @@ fn read_lines(r: impl Read, max: usize, mut f: impl FnMut(String, bool) -> bool)
 
 #[cfg(test)]
 mod read_lines_tests {
+    /// A line past the limit is told of at once: the stream behind it may never end.
+    #[test]
+    fn an_overlong_line_is_told_before_its_end() {
+        let endless = std::io::repeat(b'x');
+        let mut told = Vec::new();
+        super::read_lines(endless, 16, |l, cut| {
+            told.push((l, cut));
+            false
+        });
+        assert_eq!(told, [("x".repeat(16), true)]);
+    }
+
     fn lines(input: &[u8], max: usize) -> Vec<(String, bool)> {
         let mut out = Vec::new();
         super::read_lines(input, max, |l, cut| {

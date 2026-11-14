@@ -1197,9 +1197,9 @@ fn reloads_keep_what_works_and_retry_what_failed() {
     let (c, _rx) = ext_client(&env, "e2e");
     let list = until_plugins(&c, "started", |l| {
         plugin(l, "good")["actions"] == json!(["good.one"])
-            && plugin(l, "later")["state"] == "failed"
+            && plugin(l, "later")["state"] == "broken"
     });
-    // A program that isn't there fails once, saying so, and is not started over and over.
+    // A program that isn't there is listed as broken, saying why, and is not started.
     assert!(
         plugin(&list, "later")["error"]
             .as_str()

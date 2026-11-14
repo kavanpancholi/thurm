@@ -360,7 +360,8 @@ pub struct PluginInfo {
     pub kind: String,
     /// Its directory, or its file for a plugin that is only one.
     pub path: String,
-    /// `running`, `disabled`, `failed` or `stopped`.
+    /// `running`, `disabled`, `failed` or `stopped`; `broken` for an entry of the plugins
+    /// directory that is not a plugin that could run (`error` says why).
     pub state: String,
     /// Why it failed (or its last error while running).
     pub error: Option<String>,

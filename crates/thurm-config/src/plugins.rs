@@ -41,6 +41,38 @@ pub struct FoundPlugin {
     pub kind: PluginKind,
 }
 
+/// An entry of the plugins directory that is not a plugin it could run, and why.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Broken {
+    /// The name it would have: the directory's, or the file's without its extension.
+    pub name: String,
+    pub path: PathBuf,
+    pub error: String,
+}
+
+impl std::fmt::Display for Broken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.path.display(), self.error)
+    }
+}
+
+impl Broken {
+    fn new(path: &Path, error: String) -> Broken {
+        let name = if path.is_dir() {
+            path.file_name()
+        } else {
+            path.file_stem()
+        };
+        Broken {
+            name: name
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            path: path.to_owned(),
+            error,
+        }
+    }
+}
+
 #[derive(Deserialize, Default)]
 #[serde(default, deny_unknown_fields)]
 struct Manifest {
@@ -56,7 +88,7 @@ struct Manifest {
 }
 
 /// The plugins in `dir`, sorted by name, and what was wrong with the entries that are not.
-pub fn discover(dir: &Path) -> (Vec<FoundPlugin>, Vec<String>) {
+pub fn discover(dir: &Path) -> (Vec<FoundPlugin>, Vec<Broken>) {
     let mut found: Vec<FoundPlugin> = Vec::new();
     let mut warnings = Vec::new();
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -75,33 +107,28 @@ pub fn discover(dir: &Path) -> (Vec<FoundPlugin>, Vec<String>) {
         match read(&path) {
             Ok(Some(p)) => {
                 if p.name == INIT || p.name == SCRIPT {
-                    warnings.push(format!(
-                        "{}: {:?} names {} already; rename it",
-                        path.display(),
+                    let e = format!(
+                        "{:?} names {} already; rename it",
                         p.name,
                         if p.name == INIT {
                             "init.lua beside config.toml"
                         } else {
                             "the scripts thurm do runs"
                         }
-                    ));
+                    );
+                    warnings.push(Broken::new(&path, e));
                 } else if !thurm_proto::ext::valid_plugin_name(&p.name) {
-                    warnings.push(format!(
-                        "{}: a plugin's name has only letters, digits, - and _",
-                        path.display()
-                    ));
+                    let e = "a plugin's name has only letters, digits, - and _".to_owned();
+                    warnings.push(Broken::new(&path, e));
                 } else if found.iter().any(|f| f.name == p.name) {
-                    warnings.push(format!(
-                        "{}: another plugin is called {:?} already",
-                        path.display(),
-                        p.name
-                    ));
+                    let e = format!("another plugin is called {:?} already", p.name);
+                    warnings.push(Broken::new(&path, e));
                 } else {
                     found.push(p);
                 }
             }
             Ok(None) => {}
-            Err(e) => warnings.push(format!("{}: {e}", path.display())),
+            Err(e) => warnings.push(Broken::new(&path, e)),
         }
     }
     found.sort_by(|a, b| a.name.cmp(&b.name));
@@ -134,6 +161,18 @@ fn read(path: &Path) -> Result<Option<FoundPlugin>, String> {
                     && (program.contains('/') || local.is_file())
                 {
                     *program = local.display().to_string();
+                }
+                // A program by path (not a name looked up in PATH as it starts) must be there
+                // and run.
+                if program.contains('/') {
+                    use std::os::unix::fs::PermissionsExt;
+                    match std::fs::metadata(&*program) {
+                        Ok(m) if m.is_file() && m.permissions().mode() & 0o111 != 0 => {}
+                        Ok(m) if m.is_file() => {
+                            return Err(format!("{program} is not executable"));
+                        }
+                        _ => return Err(format!("{program} is missing")),
+                    }
                 }
                 PluginKind::Process { exec }
             }
@@ -333,9 +372,23 @@ mod tests {
         std::fs::write(dir.join("dup.lua"), "").unwrap();
         std::fs::create_dir(dir.join("dup")).unwrap();
         std::fs::write(dir.join("dup/init.lua"), "").unwrap();
+        // A program by path that isn't there, or can't run.
+        std::fs::create_dir(dir.join("gone")).unwrap();
+        std::fs::write(dir.join("gone/plugin.toml"), "exec = [\"./run.sh\"]\n").unwrap();
+        std::fs::create_dir(dir.join("plain")).unwrap();
+        std::fs::write(dir.join("plain/plugin.toml"), "exec = [\"run.sh\"]\n").unwrap();
+        std::fs::write(dir.join("plain/run.sh"), "").unwrap();
         let (found, warnings) = discover(&dir);
         assert_eq!(found.len(), 1, "{found:?}");
-        assert_eq!(warnings.len(), 7, "{warnings:?}");
+        assert_eq!(warnings.len(), 9, "{warnings:?}");
+        let gone = warnings.iter().find(|w| w.name == "gone").unwrap();
+        assert!(gone.error.ends_with("run.sh is missing"), "{gone}");
+        let plain = warnings.iter().find(|w| w.name == "plain").unwrap();
+        assert!(plain.error.ends_with("is not executable"), "{plain}");
+        assert!(
+            warnings.iter().any(|w| w.name == "bad name"),
+            "{warnings:?}"
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
