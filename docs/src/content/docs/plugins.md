@@ -146,10 +146,11 @@ floating panes go. Set `float = true` with them as well: a Thurm from before
 
 ```lua
 -- A card over the middle of the current pane, 60 by 20 cells.
-local info = thurm.info(ctx.pane)
+local pane = thurm.focused()
+local info = thurm.info(pane)
 thurm.open{
   command = { "htop" },
-  target = ctx.pane,
+  target = pane,
   float = true,
   cells = {
     cols = 60, rows = 20,
