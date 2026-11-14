@@ -147,7 +147,8 @@ corner, or `cells = {cols = 60, rows = 20, col = 2, row = 1}` for a terminal of
 that many cells whose first cell is `col` columns right of and `row` rows below
 `target`'s (either may be negative; the app keeps the card inside the tab).
 Either one floats the pane. An app too old to place it floats it where new
-floating panes go.
+floating panes go. Set `float = true` with them as well: a Thurm from before
+`frame` and `cells` ignores both, and opens a tab where `float` is not set.
 
 ```lua
 -- A card over the middle of the current pane, 60 by 20 cells.
@@ -155,6 +156,7 @@ local info = thurm.info(ctx.pane)
 thurm.open{
   command = { "htop" },
   target = ctx.pane,
+  float = true,
   cells = {
     cols = 60, rows = 20,
     col = (info.size.cols - 60) // 2, row = (info.size.rows - 20) // 2,

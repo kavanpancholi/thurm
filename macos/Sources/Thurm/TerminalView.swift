@@ -1287,10 +1287,18 @@ final class TerminalView: NSView, NSTextInputClient {
         return text
     }
 
+    /// Where the mouse pointer is now, in this view, or nil when it is not over the view. Read
+    /// from the window rather than the hover events, which stop while the window is not key.
+    func pointerLocation() -> NSPoint? {
+        guard let window else { return nil }
+        let point = convert(window.mouseLocationOutsideOfEventStream, from: nil)
+        return bounds.contains(point) ? point : nil
+    }
+
     /// The file the mouse pointer is over, as the context menu's Quick Look finds it: a path as
     /// written there, or a `file://` link's path. Nil when the pointer is not over this pane.
     func pointedFile() -> String? {
-        guard let point = lastMouseLocation, bounds.contains(point) else { return nil }
+        guard let point = pointerLocation() else { return nil }
         let p = cellPosition(point)
         guard p.inGrid else { return nil }
         let (text, columns) = renderer.snapshot.rowText(p.row)
