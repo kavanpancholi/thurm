@@ -311,6 +311,16 @@ control_url = ""
 # same caller checks apply. Empty is off.
 plain_listen = ""
 
+[plugins]
+# Run plugins: init.lua beside this file, and those in plugins/ (`thurm plugin list`).
+enabled = true
+# Plugins not to start, by name (`thurm plugin disable NAME` adds one).
+disabled = []
+# Each plugin's own settings, as the plugin documents them: thurm.settings in Lua, the
+# THURM_PLUGIN_SETTINGS environment variable (JSON) for a program.
+# [plugins.settings]
+# git-tools = { remote = "origin" }
+
 [updates]
 # "release" (tagged releases), "tip" (a build of every commit to main), or "auto": the
 # channel of the installed build. Also under Thurm > Update Channel.
@@ -350,6 +360,9 @@ animation_duration = 0.2
 # name = "Dev layout"
 # exec = ["~/bin/dev-layout", "--branch", "main"]
 # key = "cmd+shift+l"          # optional, written like a [keybindings] chord
+
+# For actions with arguments, pickers, panes and state between events, use init.lua beside
+# this file, or a plugin in plugins/ (`thurm plugin new NAME`).
 
 # Commands the daemon runs when something happens in a pane, with the event as JSON on stdin
 # (`{"event": …, "pane": {…}}`, the pane as `thurm info --json` shows it) and THURM_EVENT,

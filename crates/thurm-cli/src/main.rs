@@ -8,6 +8,7 @@ mod agent;
 mod agent_prompt;
 mod attach;
 mod events;
+mod ext;
 mod hook_pgrp;
 mod layouts;
 mod pair;
@@ -420,6 +421,27 @@ enum Cmd {
         #[arg(short, long)]
         pane: Option<PaneId>,
         title: Vec<String>,
+    },
+    /// Run a Lua script in the daemon, with the `thurm` API of plugins (`-` reads it from
+    /// stdin). What it logs is printed, then what it returns.
+    Do {
+        /// With --remote: also send the .lua files beside FILE (a few levels deep) for
+        /// `require`. Only what you are fine sending to that host.
+        #[arg(long)]
+        with_modules: bool,
+        file: String,
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Plugins: list, make, install, enable and disable them, read their logs.
+    Plugin {
+        #[command(subcommand)]
+        action: ext::PluginCmd,
+    },
+    /// Actions: your `[[commands]]`, and what plugins and the app provide.
+    Action {
+        #[command(subcommand)]
+        action: ext::ActionCmd,
     },
     /// The app's workspaces.
     Workspace {
@@ -993,6 +1015,17 @@ fn run(cli: Cli) -> R {
             }
             Ok(ExitCode::SUCCESS)
         }
+        Cmd::Do {
+            file,
+            args,
+            with_modules,
+        } => ext::script(remote.as_deref(), &file, args, with_modules, json),
+        Cmd::Plugin { action } if action.local() => {
+            if remote.is_some() {
+                return Err("this works on this machine's plugins; drop --remote".into());
+            }
+            ext::plugin_local(action, json)
+        }
         Cmd::Daemon { action } => daemon_cmd(&action, json),
         Cmd::AgentHook { agent, event } => {
             agent_hook(agent, event);
@@ -1027,7 +1060,7 @@ fn run(cli: Cli) -> R {
                 Some(name) => remote::connect_remote(name)?,
                 None => connect(true)?,
             };
-            run_connected(&client, cmd, json)
+            run_connected(&client, cmd, json, remote.as_deref())
         }
     }
 }
@@ -1415,9 +1448,12 @@ fn pane_size_default() -> PaneSize {
     }
 }
 
-fn run_connected(c: &Client, cmd: Cmd, json: bool) -> R {
+/// `remote`: the host `c` is connected to, with --remote.
+fn run_connected(c: &Client, cmd: Cmd, json: bool, remote: Option<&str>) -> R {
     match cmd {
         Cmd::Agent { action } => return agent::run(c, action, json),
+        Cmd::Action { action } => return ext::action(c, action, json),
+        Cmd::Plugin { action } => return ext::plugin(c, action, json, remote),
         Cmd::List => {
             let panes = list(c)?;
             if json {
@@ -2114,6 +2150,7 @@ fn run_connected(c: &Client, cmd: Cmd, json: bool) -> R {
         | Cmd::Notify { .. }
         | Cmd::Daemon { .. }
         | Cmd::Events { .. }
+        | Cmd::Do { .. }
         | Cmd::AgentHook { .. }
         | Cmd::Hooks { .. }
         | Cmd::Skill { .. }

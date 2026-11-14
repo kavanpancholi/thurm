@@ -1,0 +1,23 @@
+{
+  "requests": [
+    { "kind": "toast", "id": 1, "text": "saved", "pane": 4 },
+    {
+      "kind": "pick",
+      "id": 2,
+      "title": "Branch",
+      "placeholder": "",
+      "items": [
+        { "id": "a", "title": "main", "detail": "origin" },
+        { "id": 7, "title": "dev", "detail": "" }
+      ]
+    },
+    { "kind": "input", "id": 3, "title": "Name?", "placeholder": "name", "value": "x" },
+    { "kind": "confirm", "id": 4, "title": "Sure?", "body": "It goes.", "ok": "Delete", "cancel": "" }
+  ],
+  "replies": [
+    { "id": 2, "result": { "index": 1, "id": 7 } },
+    { "id": 3, "result": "typed" },
+    { "id": 4, "result": true },
+    { "id": 3, "result": null }
+  ]
+}

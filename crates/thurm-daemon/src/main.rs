@@ -207,6 +207,7 @@ fn main() {
         daemon.restore_session();
     }
     daemon.start_tailnet(tailnet);
+    daemon.start_plugins();
 
     {
         // A few, so one slow repository doesn't hold up every pane's status.
@@ -266,6 +267,7 @@ fn main() {
         }
     }
     daemon.shutdown.store(true, Ordering::Relaxed);
+    daemon.stop_plugins();
     let _ = std::fs::remove_file(&socket);
     let _ = std::fs::remove_file(&pid_path);
     log::info!("bye");
