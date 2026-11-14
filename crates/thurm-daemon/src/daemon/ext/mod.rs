@@ -372,6 +372,10 @@ impl Daemon {
                         pane,
                         origin: origin.to_owned(),
                         depth: depth + 1,
+                        // Another host's pane is the reason for none.
+                        remote: run.remote.filter(|_| pane.is_none()),
+                        selection: run.selection,
+                        file: run.file,
                     },
                 };
                 send_ext(&client, notice::ACTION_INVOKE, &json!(invoke));

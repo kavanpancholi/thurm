@@ -107,7 +107,7 @@ your keys. Errors are raised: catch them with `pcall` where you expect them.
 
 | Function | Does |
 | --- | --- |
-| `thurm.action{name, title, description, category, hidden, args, run}` | Adds an action; `run(ctx, args)` returns its result. `ctx` has `pane`, `origin` and `depth` |
+| `thurm.action{name, title, description, category, hidden, args, run}` | Adds an action; `run(ctx, args)` returns its result. `ctx` has `pane`, `origin` and `depth`, and more when the app runs it (below) |
 | `thurm.run(name, args, pane)` | Runs any action and returns its result |
 | `thurm.actions()` | Every action and binding |
 | `thurm.bind(key, action or fn, args)`, `thurm.unbind(key)` | Binds a key |
@@ -126,6 +126,14 @@ your keys. Errors are raised: catch them with `pcall` where you expect them.
 | `thurm.call(method, params)`, `thurm.request(request)` | Any method of the API below, or any daemon request as JSON |
 | `thurm.json.encode`, `thurm.json.decode`, `thurm.json.null`, `thurm.log(...)`, `thurm.warn(...)` | JSON (decode keeps nulls as `thurm.json.null`; in the API's results a null field is `nil` and a null in an array is `thurm.json.null`), and the plugin's log (`print` logs too) |
 | `thurm.plugin`, `thurm.dir`, `thurm.settings`, `thurm.args`, `thurm.pane` | The plugin's name, directory and settings; a script's arguments and pane |
+
+When the app runs an action (a key, the palette, the menu), `ctx` also says
+what the person is looking at: `selection`, the text selected in the pane, and
+`file`, the file the mouse pointer is over, as the context menu's **Quick
+Look** finds it (a path as written there, so relative to the pane's
+directory unless it is absolute). In a remote host's pane, `pane` is `nil`
+(this daemon's pane ids mean nothing there) and `remote` is the host's
+`[[remote]]` name.
 
 A floating pane goes where new floating panes go, unless you place it: `frame
 = {x, y, width, height}` in fractions of the tab's area, from its top left
@@ -284,7 +292,7 @@ JSON.
 | `actions.list` | | `{actions, bindings}` |
 | `actions.register` | `{actions: [{name, title, description, category, hidden, args}]}` | |
 | `actions.unregister` | `{names}` | |
-| `actions.run` | `{name, args, pane, no_pane}`; without `pane` the focused one, unless `no_pane` | The action's result |
+| `actions.run` | `{name, args, pane, no_pane, remote, selection, file}`; without `pane` the focused one, unless `no_pane`; the rest reach the action's `ctx` | The action's result |
 | `keys.bind`, `keys.unbind` | `{key, action, args}`, `{key}` | |
 | `events.subscribe`, `events.unsubscribe` | `{names}` (`"*"` for all) | |
 | `events.emit` | `{name, payload}`; the name has a dot | |

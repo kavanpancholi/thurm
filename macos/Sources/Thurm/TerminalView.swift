@@ -1276,13 +1276,34 @@ final class TerminalView: NSView, NSTextInputClient {
 
     // MARK: Edit actions
 
-    @objc func copy(_ sender: Any?) {
+    /// The selected text, or nil without a selection.
+    func selectedText() -> String? {
         // Local panes answer from the app's own copy; a remote host gets a moment, not forever.
         guard let resp = Core.shared.request(object: ["CopySelection": ["pane": pane.number]], host: pane.host,
                                              timeout: 2),
               let v = JSON.variant(resp), v.name == "Text",
               let text = v.payload as? String, !text.isEmpty
-        else { return }
+        else { return nil }
+        return text
+    }
+
+    /// The file the mouse pointer is over, as the context menu's Quick Look finds it: a path as
+    /// written there, or a `file://` link's path. Nil when the pointer is not over this pane.
+    func pointedFile() -> String? {
+        guard let point = lastMouseLocation, bounds.contains(point) else { return nil }
+        let p = cellPosition(point)
+        guard p.inGrid else { return nil }
+        let (text, columns) = renderer.snapshot.rowText(p.row)
+        switch TerminalFileReference.at(text: text, columns: columns, column: p.col,
+                                        link: linkURL(col: p.col, row: p.row)) {
+        case .path(let path)?: return path
+        case .fileURL(let url)?: return url.path
+        case nil: return nil
+        }
+    }
+
+    @objc func copy(_ sender: Any?) {
+        guard let text = selectedText() else { return }
         let pb = NSPasteboard.general
         pb.clearContents()
         pb.setString(text, forType: .string)

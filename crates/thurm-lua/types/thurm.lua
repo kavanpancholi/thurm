@@ -19,6 +19,9 @@
 ---@field pane integer? The pane it runs for: the focused one, when a person asked.
 ---@field origin string Who asked: a client's name, `plugin:<name>`.
 ---@field depth integer How many actions deep it runs.
+---@field remote string? The `[[remote]]` host whose pane the person is in; `pane` is then nil.
+---@field selection string? The text selected in the pane, when an app runs it.
+---@field file string? The file the mouse pointer is over in the pane, as written there (relative to the pane's directory unless absolute), when an app runs it.
 
 ---@class thurm.ActionSpec
 ---@field name string `group.verb`: letters, digits, `.`, `_`, `-`, `:` and spaces.

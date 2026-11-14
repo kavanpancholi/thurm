@@ -1092,8 +1092,19 @@ final class SessionManager: NSObject, CoreDelegate {
         var pane: Any = NSNull()
         if let focused = currentController?.focusedPane, focused.host == localHost { pane = focused.id }
         if Extensions.shared.available {
-            let remote = (currentController?.focusedPane).map { $0.host != localHost } ?? false
-            Extensions.shared.run(name, args: args, pane: pane as? UInt64, noPane: remote) { error in
+            let focused = currentController?.focusedPane
+            let remote = focused.map { $0.host != localHost } ?? false
+            // What the action learns of where it runs: another host's pane by its host's name;
+            // in one of this Mac's, the selection and the file under the pointer.
+            var context: [String: Any] = [:]
+            if remote, let host = focused?.host {
+                context["remote"] = host
+            } else if let view {
+                if let text = view.selectedText() { context["selection"] = text }
+                if let file = view.pointedFile() { context["file"] = file }
+            }
+            Extensions.shared.run(name, args: args, pane: pane as? UInt64, noPane: remote,
+                                  context: context) { error in
                 if let error { view?.showToast("\(name): \(error)", duration: 5) }
             }
             return

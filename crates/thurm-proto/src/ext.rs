@@ -195,6 +195,16 @@ pub struct RunAction {
     /// it: the depth is that one's. Without it, a provider is taken to be as deep as the
     /// deepest action it has been asked to carry out.
     pub invocation: Option<u64>,
+    /// With `no_pane`: the `[[remote]]` host whose pane the person is in.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remote: Option<String>,
+    /// The text selected in the pane, when an app runs it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selection: Option<String>,
+    /// The file the mouse pointer is over in the pane, as written there (a `file://` link as
+    /// its path), when an app runs it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
 }
 
 /// What an action's provider gets with [`notice::ACTION_INVOKE`].
@@ -217,6 +227,17 @@ pub struct Context {
     pub origin: String,
     /// How many actions deep this one runs (an action may run others).
     pub depth: u32,
+    /// The `[[remote]]` host whose pane the person is in: `pane` is then none, since this
+    /// daemon's ids mean nothing there.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remote: Option<String>,
+    /// The text selected in the pane, when an app runs it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selection: Option<String>,
+    /// The file the mouse pointer is over in the pane, as written there (relative to the
+    /// pane's directory, unless it is absolute), when an app runs it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
 }
 
 /// The answer of a socket client to something the daemon asked it ([`notice::ACTION_INVOKE`],

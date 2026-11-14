@@ -1281,3 +1281,61 @@ fn a_plugin_places_the_floating_pane_it_opens() {
     };
     assert_eq!(panes, 2, "a refused place opens no pane");
 }
+
+#[test]
+fn an_action_hears_the_selection_the_file_and_the_remote_host() {
+    let env = Env::new("ext-context");
+    let _d = env.start();
+    let (provider, provider_rx) = ext_client(&env, "provider");
+    let (user, _rx) = ext_client(&env, "user");
+    call(
+        &provider,
+        method::ACTIONS_REGISTER,
+        json!({ "actions": [{ "name": "ctx.echo" }] }),
+    )
+    .unwrap();
+    let answering = std::thread::spawn({
+        let provider = provider.clone();
+        move || {
+            for _ in 0..3 {
+                let invoke = next(&provider_rx, notice::ACTION_INVOKE);
+                call(
+                    &provider,
+                    method::ACTIONS_RESULT,
+                    json!({ "id": invoke["id"], "result": invoke["ctx"] }),
+                )
+                .unwrap();
+            }
+        }
+    });
+    let pane = create(&user, &env.dir);
+    let ctx = call(
+        &user,
+        method::ACTIONS_RUN,
+        json!({ "name": "ctx.echo", "pane": pane, "selection": "a b", "file": "src/x.rs" }),
+    )
+    .unwrap();
+    assert_eq!(ctx["pane"], json!(pane));
+    assert_eq!(ctx["selection"], json!("a b"));
+    assert_eq!(ctx["file"], json!("src/x.rs"));
+    assert!(ctx.get("remote").is_none(), "{ctx}");
+
+    let ctx = call(
+        &user,
+        method::ACTIONS_RUN,
+        json!({ "name": "ctx.echo", "no_pane": true, "remote": "devbox" }),
+    )
+    .unwrap();
+    assert_eq!(ctx["pane"], Value::Null);
+    assert_eq!(ctx["remote"], json!("devbox"));
+
+    // A pane of this daemon's is not another host's.
+    let ctx = call(
+        &user,
+        method::ACTIONS_RUN,
+        json!({ "name": "ctx.echo", "pane": pane, "remote": "devbox" }),
+    )
+    .unwrap();
+    assert!(ctx.get("remote").is_none(), "{ctx}");
+    answering.join().unwrap();
+}
