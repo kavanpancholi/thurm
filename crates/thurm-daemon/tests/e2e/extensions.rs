@@ -1228,3 +1228,56 @@ fn reloads_keep_what_works_and_retry_what_failed() {
             .contains("stays")
     );
 }
+
+#[test]
+fn a_plugin_places_the_floating_pane_it_opens() {
+    let env = Env::new("ext-float-place");
+    let _d = env.start();
+    let (app, app_rx) = env.connect();
+    let (plugin, _rx) = ext_client(&env, "plugin");
+    let target = create(&app, &env.dir);
+    let opened = call(
+        &plugin,
+        method::PANES_OPEN,
+        json!({
+            "command": ["sleep", "30"],
+            "target": target,
+            "cells": { "col": 2, "row": -1, "cols": 40, "rows": 10 },
+            "background": true,
+        }),
+    )
+    .unwrap();
+    assert_eq!(opened["shown"], json!(true));
+    let pane = opened["pane"].as_u64().unwrap();
+    let want = UiCommand::OpenFloatingAt {
+        pane,
+        target: Some(target),
+        place: FloatPlace::Cells {
+            anchor: target,
+            col: 2,
+            row: -1,
+            cols: 40,
+            rows: 10,
+        },
+        background: true,
+    };
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut got = false;
+    while Instant::now() < deadline && !got {
+        got = matches!(app_rx.recv_timeout(Duration::from_millis(200)), Ok(Event::Ui(ref c)) if *c == want);
+    }
+    assert!(got, "no {want:?}");
+
+    let err = call(
+        &plugin,
+        method::PANES_OPEN,
+        json!({ "frame": [0.0, 0.0, 1.5, 1.0] }),
+    )
+    .unwrap_err();
+    assert!(err.contains("frame"), "{err}");
+    let panes = match app.request(Request::ListPanes).unwrap() {
+        Response::Panes(p) => p.len(),
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(panes, 2, "a refused place opens no pane");
+}

@@ -244,6 +244,12 @@ pub struct OpenPane {
     pub split: Option<String>,
     /// Float above `target`'s tab.
     pub float: bool,
+    /// Float it at `[x, y, width, height]`, fractions of the tab's area from its top left
+    /// corner (as [`crate::FloatPlace::Fraction`]). Implies `float`.
+    pub frame: Option<[f64; 4]>,
+    /// Float it with a terminal of this many cells, placed from `target`'s first cell (as
+    /// [`crate::FloatPlace::Cells`] anchored at `target`). Implies `float`.
+    pub cells: Option<FloatCells>,
     /// In a new workspace.
     pub window: bool,
     /// The pane to split, float above, or take the working directory from (the focused one).
@@ -256,6 +262,18 @@ pub struct OpenPane {
     pub hold: bool,
     /// Do not show it at all: the caller places it later.
     pub detached: bool,
+}
+
+/// [`OpenPane::cells`]: a floating pane's terminal `cols` (at least 2) by `rows` cells, its
+/// first cell `col` cells right of and `row` cells below the target's first cell. Either may be
+/// negative or past the target's edge: the app keeps the card inside the tab.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq)]
+#[serde(default)]
+pub struct FloatCells {
+    pub col: i32,
+    pub row: i32,
+    pub cols: u16,
+    pub rows: u16,
 }
 
 /// What an app shows for a plugin, sent with [`notice::UI_REQUEST`].

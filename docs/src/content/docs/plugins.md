@@ -113,7 +113,7 @@ your keys. Errors are raised: catch them with `pcall` where you expect them.
 | `thurm.bind(key, action or fn, args)`, `thurm.unbind(key)` | Binds a key |
 | `thurm.on(event, fn)`, `thurm.emit(name, payload)` | Hears events; sends one of your own |
 | `thurm.panes()`, `thurm.info(pane)`, `thurm.focused()` | Panes, one pane, the focused pane |
-| `thurm.open{command, cwd, env, agent, split, float, window, target, percent, background, hold}` | Opens a pane and returns its id |
+| `thurm.open{command, cwd, env, agent, split, float, frame, cells, window, target, percent, background, hold}` | Opens a pane and returns its id; `frame` and `cells` place a floating one (below) |
 | `thurm.split(dir, opts)` | `thurm.open` with `split = dir` |
 | `thurm.send(pane, text, {enter})`, `thurm.capture(pane, {lines, scrollback, ansi})` | Types into a pane; reads its screen |
 | `thurm.wait(pane, {match, idle, exit, agent, timeout})` | Waits for the prompt, a regex, quiet, exit or a free agent; `true`, or `false` and why; waiting for `exit`, the exit code is the third value (`true, nil, code`) |
@@ -126,6 +126,27 @@ your keys. Errors are raised: catch them with `pcall` where you expect them.
 | `thurm.call(method, params)`, `thurm.request(request)` | Any method of the API below, or any daemon request as JSON |
 | `thurm.json.encode`, `thurm.json.decode`, `thurm.json.null`, `thurm.log(...)`, `thurm.warn(...)` | JSON (decode keeps nulls as `thurm.json.null`; in the API's results a null field is `nil` and a null in an array is `thurm.json.null`), and the plugin's log (`print` logs too) |
 | `thurm.plugin`, `thurm.dir`, `thurm.settings`, `thurm.args`, `thurm.pane` | The plugin's name, directory and settings; a script's arguments and pane |
+
+A floating pane goes where new floating panes go, unless you place it: `frame
+= {x, y, width, height}` in fractions of the tab's area, from its top left
+corner, or `cells = {cols = 60, rows = 20, col = 2, row = 1}` for a terminal of
+that many cells whose first cell is `col` columns right of and `row` rows below
+`target`'s (either may be negative; the app keeps the card inside the tab).
+Either one floats the pane. An app too old to place it floats it where new
+floating panes go.
+
+```lua
+-- A card over the middle of the current pane, 60 by 20 cells.
+local info = thurm.info(ctx.pane)
+thurm.open{
+  command = { "htop" },
+  target = ctx.pane,
+  cells = {
+    cols = 60, rows = 20,
+    col = (info.size.cols - 60) // 2, row = (info.size.rows - 20) // 2,
+  },
+}
+```
 
 `require` loads modules from the plugin's own directory. `io.popen`,
 `os.execute` and `os.exit` are not available (use `thurm.exec`). `io` opens
