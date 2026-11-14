@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.22.0 - 2026-11-14
+
+Thurm 0.21.0 lets plugins place the floating pane they open. Plugin actions also get more context, and a new example plugin previews files with Quick Look.
+
+### New features
+
+- A plugin sets `frame` or `cells` in `panes.open` to place the floating pane it opens. Older Thurm versions also need `float = true`, or they open a tab.
+- Plugin actions get `ctx.selection`, `ctx.file`, and `ctx.remote`. A plugin can act on the selected text, the file under the pointer, or the remote host.
+- `thurm.fail(message)` stops an action with a message. The user sees the message alone, without a file name and line number.
+- The new `quicklook` example plugin previews a file in a floating pane. Press `cmd+y` to preview the selected file or the file under the pointer.
+
+### Fixes
+
+- `panes.open` no longer makes a pane when its target pane does not exist.
+- Actions read the pointer position when they run. The `ctx.file` value is the file under the pointer at that time.
+- `panes.open` falls back to a default float only for an app too old to place panes.
+
+### Other changes
+
+- The plugin guide documents pane placement and the new action context fields. The Lua types list them too.
+
 ## v0.21.0 - 2026-11-14
 
 Thurm adds an extension API with actions, key bindings and events. Lua plugins and program plugins use it, and `thurm plugin` manages them.
