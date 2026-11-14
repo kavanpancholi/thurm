@@ -9,7 +9,7 @@
 //! `action.invoke` request it answers.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::PathBuf;
 use std::process::ChildStdin;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -100,6 +100,12 @@ impl Record {
 
 /// How many messages may wait for a program plugin to read them.
 const OUTBOX: usize = 1024;
+
+/// The longest message a program plugin may write on stdout: past it, the plugin is stopped.
+const MAX_MESSAGE: usize = 8 << 20;
+
+/// The longest stderr line kept in a plugin's log: the rest of a longer one is dropped.
+const MAX_LOG_LINE: usize = 64 << 10;
 
 struct Process {
     pgid: libc::pid_t,
@@ -595,6 +601,17 @@ impl Daemon {
         generation: u64,
     ) -> Result<(), String> {
         let name = found.name.clone();
+        // A program by path (not a name the shell looks up) must be there and run: the shell
+        // would start, fail, and be started again and again. Failed here, the plugin waits for
+        // a reload.
+        if exec[0].contains('/') {
+            use std::os::unix::fs::PermissionsExt;
+            match std::fs::metadata(&exec[0]) {
+                Ok(m) if m.is_file() && m.permissions().mode() & 0o111 != 0 => {}
+                Ok(m) if m.is_file() => return Err(format!("{} is not executable", exec[0])),
+                _ => return Err(format!("{} is missing", exec[0])),
+            }
+        }
         let mut env = self.user_exec_env(None, None);
         env.push(("THURM_PLUGIN".into(), name.clone()));
         env.push(("THURM_PLUGIN_DIR".into(), found.dir.display().to_string()));
@@ -658,14 +675,20 @@ impl Daemon {
             let _ = std::thread::Builder::new()
                 .name("plugin-stderr".into())
                 .spawn(move || {
-                    for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-                        let Some(d) = daemon.upgrade() else { return };
+                    read_lines(stderr, MAX_LOG_LINE, |mut line, cut| {
+                        let Some(d) = daemon.upgrade() else {
+                            return false;
+                        };
+                        if cut {
+                            line.push_str(" [cut]");
+                        }
                         if let Some(r) = d.plugins.records.lock().get_mut(&name)
                             && r.generation == generation
                         {
                             r.log(line);
                         }
-                    }
+                        true
+                    });
                     drop(stderr_done);
                 });
         }
@@ -675,10 +698,22 @@ impl Daemon {
             let _ = std::thread::Builder::new()
                 .name("plugin-rpc".into())
                 .spawn(move || {
-                    for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-                        let Some(d) = daemon.upgrade() else { return };
+                    read_lines(stdout, MAX_MESSAGE, |line, cut| {
+                        let Some(d) = daemon.upgrade() else {
+                            return false;
+                        };
+                        if cut {
+                            log::warn!(
+                                "plugin process {} wrote a message over {MAX_MESSAGE} bytes; \
+                                 stopping it",
+                                process.pgid
+                            );
+                            process.stop();
+                            return false;
+                        }
                         d.plugin_message(instance, &client, &process, &line);
-                    }
+                        true
+                    });
                 });
         }
         let daemon = Arc::downgrade(self);
@@ -1214,5 +1249,68 @@ fn group_has_others(pgid: libc::pid_t) -> bool {
     {
         // macOS refuses to signal a group of zombies (EPERM).
         unsafe { libc::kill(-pgid, 0) == 0 }
+    }
+}
+
+/// Reads `r` a line at a time, each at most `max` bytes and decoded lossily (a line that isn't
+/// UTF-8 doesn't end the stream). `f` gets each line and whether it was cut short (the rest of
+/// that line is skipped); reading ends with the stream, or when `f` says false.
+fn read_lines(r: impl Read, max: usize, mut f: impl FnMut(String, bool) -> bool) {
+    let mut r = BufReader::new(r);
+    let mut buf = Vec::new();
+    loop {
+        buf.clear();
+        match Read::take(&mut r, max as u64 + 1).read_until(b'\n', &mut buf) {
+            Ok(0) | Err(_) => return,
+            Ok(_) => {}
+        }
+        let ended = buf.last() == Some(&b'\n');
+        if ended {
+            buf.pop();
+            if buf.last() == Some(&b'\r') {
+                buf.pop();
+            }
+        }
+        let cut = !ended && buf.len() > max;
+        if cut {
+            buf.truncate(max);
+            let mut rest = Vec::new();
+            loop {
+                rest.clear();
+                match Read::take(&mut r, 64 << 10).read_until(b'\n', &mut rest) {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) if rest.last() == Some(&b'\n') => break,
+                    Ok(_) => {}
+                }
+            }
+        }
+        if !f(String::from_utf8_lossy(&buf).into_owned(), cut) {
+            return;
+        }
+    }
+}
+
+#[cfg(test)]
+mod read_lines_tests {
+    fn lines(input: &[u8], max: usize) -> Vec<(String, bool)> {
+        let mut out = Vec::new();
+        super::read_lines(input, max, |l, cut| {
+            out.push((l, cut));
+            true
+        });
+        out
+    }
+
+    #[test]
+    fn lines_go_on_past_bad_utf8_and_long_ones() {
+        assert_eq!(
+            lines(b"a\n\xff\xfeb\r\n0123456789abc\nlast", 8),
+            [
+                ("a".to_owned(), false),
+                ("\u{fffd}\u{fffd}b".to_owned(), false),
+                ("01234567".to_owned(), true),
+                ("last".to_owned(), false),
+            ]
+        );
     }
 }

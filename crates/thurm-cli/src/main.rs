@@ -1060,7 +1060,7 @@ fn run(cli: Cli) -> R {
                 Some(name) => remote::connect_remote(name)?,
                 None => connect(true)?,
             };
-            run_connected(&client, cmd, json)
+            run_connected(&client, cmd, json, remote.as_deref())
         }
     }
 }
@@ -1448,11 +1448,12 @@ fn pane_size_default() -> PaneSize {
     }
 }
 
-fn run_connected(c: &Client, cmd: Cmd, json: bool) -> R {
+/// `remote`: the host `c` is connected to, with --remote.
+fn run_connected(c: &Client, cmd: Cmd, json: bool, remote: Option<&str>) -> R {
     match cmd {
         Cmd::Agent { action } => return agent::run(c, action, json),
         Cmd::Action { action } => return ext::action(c, action, json),
-        Cmd::Plugin { action } => return ext::plugin(c, action, json),
+        Cmd::Plugin { action } => return ext::plugin(c, action, json, remote),
         Cmd::List => {
             let panes = list(c)?;
             if json {

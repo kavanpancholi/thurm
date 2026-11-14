@@ -650,7 +650,8 @@ pub fn plugin_local(cmd: PluginCmd, json: bool) -> R {
 }
 
 /// `thurm plugin` commands that go through a daemon.
-pub fn plugin(c: &Client, cmd: PluginCmd, json: bool) -> R {
+/// `remote`: the host whose daemon `c` is, with --remote.
+pub fn plugin(c: &Client, cmd: PluginCmd, json: bool, remote: Option<&str>) -> R {
     match cmd {
         PluginCmd::List => {
             let list: Vec<ext::PluginInfo> =
@@ -660,10 +661,18 @@ pub fn plugin(c: &Client, cmd: PluginCmd, json: bool) -> R {
                 return Ok(ExitCode::SUCCESS);
             }
             if list.is_empty() {
-                println!(
-                    "No plugins. `thurm plugin new NAME` makes one in {}",
-                    thurm_config::plugins_dir().display()
-                );
+                // Made on the host that runs them: this machine's directory says nothing of
+                // another's.
+                match remote {
+                    Some(host) => println!(
+                        "No plugins on {host}. Make or install them there, in its config \
+                         directory's plugins/."
+                    ),
+                    None => println!(
+                        "No plugins. `thurm plugin new NAME` makes one in {}",
+                        thurm_config::plugins_dir().display()
+                    ),
+                }
                 return Ok(ExitCode::SUCCESS);
             }
             println!(

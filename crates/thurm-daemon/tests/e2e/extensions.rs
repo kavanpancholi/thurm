@@ -1195,10 +1195,18 @@ fn reloads_keep_what_works_and_retry_what_failed() {
     std::fs::write(plugins.join("later/plugin.toml"), "exec = [\"./run.sh\"]\n").unwrap();
     let _d = env.start();
     let (c, _rx) = ext_client(&env, "e2e");
-    until_plugins(&c, "started", |l| {
+    let list = until_plugins(&c, "started", |l| {
         plugin(l, "good")["actions"] == json!(["good.one"])
             && plugin(l, "later")["state"] == "failed"
     });
+    // A program that isn't there fails once, saying so, and is not started over and over.
+    assert!(
+        plugin(&list, "later")["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("run.sh is missing"),
+        "{list}"
+    );
 
     std::fs::write(plugins.join("good.lua"), "thurm.action{ name = ").unwrap();
     let run = plugins.join("later/run.sh");
