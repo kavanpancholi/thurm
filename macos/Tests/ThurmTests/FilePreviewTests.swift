@@ -182,6 +182,30 @@ final class FilePreviewTests: XCTestCase {
         }
     }
 
+    /// A window whose pointer is wherever the test puts it.
+    private final class PointerWindow: NSWindow {
+        var pointer = NSPoint.zero
+        override var mouseLocationOutsideOfEventStream: NSPoint { pointer }
+    }
+
+    func testPointerIsFoundInTheView() {
+        _ = NSApplication.shared
+        let window = PointerWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+                                   styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        let content = NSView(frame: NSRect(x: 0, y: 0, width: 400, height: 300))
+        window.contentView = content
+        let view = TerminalView(pane: .local(987657))
+        view.frame = NSRect(x: 50, y: 40, width: 200, height: 100)
+        content.addSubview(view)
+        // 10 points right of and above the view's bottom left corner; the view counts from its top.
+        window.pointer = NSPoint(x: 60, y: 50)
+        XCTAssertEqual(view.pointerLocation(), NSPoint(x: 10, y: 90))
+        window.pointer = NSPoint(x: 300, y: 250)
+        XCTAssertNil(view.pointerLocation())
+    }
+
     func testPointerIsReadNowNotFromTheLastHover() throws {
         _ = NSApplication.shared
         let view = TerminalView(pane: .local(987656))
