@@ -1561,17 +1561,19 @@ final class TerminalView: NSView, NSTextInputClient {
             window?.makeFirstResponder(self)
         }
         let modifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
+        let point = convert(event.locationInWindow, from: nil)
         if modifiers == [.command, .option], let container {
             pressedButton = nil
             container.focus(pane)
-            if container.isFloating(pane) {
-                container.trackCardDrag(pane, from: event, preferEdges: true)
-            } else {
-                container.trackPaneDrag(pane, from: event)
+            let dragged = container.isFloating(pane)
+                ? container.trackCardDrag(pane, from: event, preferEdges: true)
+                : container.trackPaneDrag(pane, from: event)
+            // A click without a drag previews the file under the pointer.
+            if !dragged, let file = fileReference(at: point) {
+                quickLook(filePreviewRequest(file))
             }
             return
         }
-        let point = convert(event.locationInWindow, from: nil)
         if event.modifierFlags.contains(.command) {
             let p = cellPosition(point)
             if let url = linkURL(col: p.col, row: p.row) {
@@ -1608,12 +1610,19 @@ final class TerminalView: NSView, NSTextInputClient {
         if window?.firstResponder !== self {
             window?.makeFirstResponder(self)
         }
-        let p = cellPosition(convert(event.locationInWindow, from: nil))
+        let point = convert(event.locationInWindow, from: nil)
+        let p = cellPosition(point)
         let link = p.inGrid ? linkURL(col: p.col, row: p.row) : nil
+        NSMenu.popUpContextMenu(contextMenu(link: link, file: fileReference(at: point)), with: event, for: self)
+    }
+
+    /// The file path (or `file:` link) shown at `point`, as the context menu's Quick Look finds it.
+    func fileReference(at point: NSPoint) -> TerminalFileReference? {
+        let p = cellPosition(point)
+        guard p.inGrid else { return nil }
         let (text, columns) = renderer.snapshot.rowText(p.row)
-        let file = p.inGrid
-            ? TerminalFileReference.at(text: text, columns: columns, column: p.col, link: link) : nil
-        NSMenu.popUpContextMenu(contextMenu(link: link, file: file), with: event, for: self)
+        return TerminalFileReference.at(text: text, columns: columns, column: p.col,
+                                        link: linkURL(col: p.col, row: p.row))
     }
 
     override func rightMouseUp(with event: NSEvent) {
@@ -1790,8 +1799,7 @@ final class TerminalView: NSView, NSTextInputClient {
             let item = menu.addItem(withTitle: "Quick Look", action: #selector(quickLookFile(_:)),
                                     keyEquivalent: "")
             item.target = self
-            item.representedObject = FilePreviewRequest(reference: file,
-                cwd: SessionManager.shared.panes[pane]?.cwd, isRemote: pane.isRemote)
+            item.representedObject = filePreviewRequest(file)
             menu.addItem(NSMenuItem.separator())
         }
         if let link {
@@ -1824,10 +1832,22 @@ final class TerminalView: NSView, NSTextInputClient {
         return menu
     }
 
+    private func filePreviewRequest(_ file: TerminalFileReference) -> FilePreviewRequest {
+        FilePreviewRequest(reference: file, cwd: SessionManager.shared.panes[pane]?.cwd, isRemote: pane.isRemote)
+    }
+
     @objc private func quickLookFile(_ sender: NSMenuItem) {
         guard let request = sender.representedObject as? FilePreviewRequest else { return }
+        quickLook(request)
+    }
+
+    /// Takes the file Quick Look would open in place of the panel (tests).
+    var openPreview: ((URL) -> Void)?
+
+    private func quickLook(_ request: FilePreviewRequest) {
         do {
             let url = try request.reference.localFile(cwd: request.cwd, isRemote: request.isRemote)
+            if let openPreview { return openPreview(url) }
             guard let window, let panel = QLPreviewPanel.shared() else { return }
             window.makeKeyAndOrderFront(nil)
             window.makeFirstResponder(self)

@@ -30,10 +30,10 @@ final class PaneDragTests: XCTestCase {
     }
 
     private func drag(_ pane: PaneKey, in content: TabContentView, window: NSWindow,
-                      modifiers: NSEvent.ModifierFlags, end: NSPoint? = nil,
+                      modifiers: NSEvent.ModifierFlags, start: NSPoint? = nil, end: NSPoint? = nil,
                       cancel: Bool = false, clickOnly: Bool = false, header: Bool = false) throws {
         let view = try XCTUnwrap(content.views[pane])
-        let start = NSPoint(x: view.frame.midX, y: view.frame.midY)
+        let start = start ?? NSPoint(x: view.frame.midX, y: view.frame.midY)
         let destination = end ?? NSPoint(x: content.paneArea.maxX - 20, y: content.paneArea.midY)
         func mouse(_ type: NSEvent.EventType, at point: NSPoint) -> NSEvent {
             NSEvent.mouseEvent(with: type, location: content.convert(point, to: nil), modifierFlags: modifiers,
@@ -105,6 +105,90 @@ final class PaneDragTests: XCTestCase {
                 try drag(pane, in: content, window: window, modifiers: moveModifiers, clickOnly: true)
                 XCTAssertEqual(content.root.panes, [first, second])
                 XCTAssertEqual(content.floating, cards)
+            }
+        }
+    }
+
+    /// Shows `path` on the third row of `pane` and records the files it asks Quick Look to open.
+    /// Returns a point on the path and one on the blank row below it, in `content`'s coordinates.
+    private func show(_ path: String, in content: TabContentView, pane: PaneKey,
+                      previews: @escaping (URL) -> Void) throws -> (onPath: NSPoint, blank: NSPoint) {
+        let view = try XCTUnwrap(content.views[pane])
+        view.accessibilitySnapshot.show(lines: ["", "", "  " + path, ""], cols: path.count + 4)
+        view.openPreview = previews
+        let cell = view.accessibilityCellSize
+        let padding = view.accessibilityPadding
+        func point(col: Int, row: Int) -> NSPoint {
+            view.convert(NSPoint(x: padding.x + (CGFloat(col) + 0.5) * cell.width,
+                                 y: padding.y + (CGFloat(row) + 0.5) * cell.height), to: content)
+        }
+        let points = (onPath: point(col: 4, row: 2), blank: point(col: 4, row: 3))
+        // The negative cases mean nothing unless the pointer finds the path.
+        XCTAssertEqual(view.fileReference(at: view.convert(points.onPath, from: content)), .path(path))
+        XCTAssertNil(view.fileReference(at: view.convert(points.blank, from: content)))
+        return points
+    }
+
+    /// A local file to show, and a font, so that terminals have cells to click.
+    private func temporaryFile() throws -> URL {
+        let savedFont = FontShaper.settings
+        FontShaper.settings = { (SessionManager.shared.config, 14) }
+        FontShaper.invalidateAll()
+        addTeardownBlock {
+            FontShaper.settings = savedFont
+            FontShaper.invalidateAll()
+        }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("report.txt")
+        try Data("report".utf8).write(to: file)
+        return file
+    }
+
+    func testCommandOptionClickPreviewsTheFileUnderThePointer() throws {
+        let file = try temporaryFile()
+        try withContent(floating: true) { content, window in
+            let cards = content.floating
+            for pane in [first, card] {
+                var previewed: [String] = []
+                let points = try show(file.path, in: content, pane: pane) { previewed.append($0.path) }
+                try drag(pane, in: content, window: window, modifiers: moveModifiers, start: points.onPath,
+                         clickOnly: true)
+                XCTAssertEqual(previewed, [file.path], "Pane: \(pane)")
+                XCTAssertEqual(content.root.panes, [first, second])
+                XCTAssertEqual(content.floating, cards)
+                try drag(pane, in: content, window: window, modifiers: moveModifiers, start: points.blank,
+                         clickOnly: true)
+                XCTAssertEqual(previewed, [file.path], "A click off the path previewed it")
+            }
+        }
+    }
+
+    func testOtherClicksOnAPathDoNotPreviewIt() throws {
+        let file = try temporaryFile()
+        for flags in [[], .command, .option, [.command, .option, .shift]] as [NSEvent.ModifierFlags] {
+            try withContent { content, window in
+                var previewed: [String] = []
+                let points = try show(file.path, in: content, pane: first) { previewed.append($0.path) }
+                try drag(first, in: content, window: window, modifiers: flags, start: points.onPath, clickOnly: true)
+                XCTAssertEqual(previewed, [], "Modifiers: \(flags.rawValue)")
+            }
+        }
+    }
+
+    func testDraggingOrEscapeFromAPathDoesNotPreviewIt() throws {
+        let file = try temporaryFile()
+        for floating in [false, true] {
+            for (cancel, clickOnly) in [(false, false), (true, false), (true, true)] {
+                try withContent(floating: floating) { content, window in
+                    let pane = floating ? card : first
+                    var previewed: [String] = []
+                    let points = try show(file.path, in: content, pane: pane) { previewed.append($0.path) }
+                    try drag(pane, in: content, window: window, modifiers: moveModifiers, start: points.onPath,
+                             cancel: cancel, clickOnly: clickOnly)
+                    XCTAssertEqual(previewed, [], "Floating: \(floating), Esc: \(cancel), moved: \(!clickOnly)")
+                }
             }
         }
     }

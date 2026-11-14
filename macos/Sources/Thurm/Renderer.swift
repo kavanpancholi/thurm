@@ -367,6 +367,25 @@ final class GridSnapshot {
         return true
     }
 
+    /// Shows plain text rows, `cols` cells wide, in place of a daemon's grid (tests).
+    func show(lines: [String], cols: Int) {
+        var newInfo = thurm_grid_info()
+        newInfo.cols = UInt16(cols)
+        newInfo.rows = UInt16(lines.count)
+        cells = lines.flatMap { line in
+            let scalars = Array(line.unicodeScalars.prefix(cols))
+            return (0..<cols).map { c in
+                var cell = thurm_cell()
+                cell.ch = c < scalars.count ? scalars[c].value : 32
+                return cell
+            }
+        }
+        rowClusters = Array(repeating: [:], count: lines.count)
+        links = []
+        info = newInfo
+        valid = true
+    }
+
     func cell(col: Int, row: Int) -> thurm_cell? {
         guard valid, col >= 0, row >= 0, col < cols, row < rows else { return nil }
         return cells[row * cols + col]

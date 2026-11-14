@@ -43,7 +43,8 @@ Hold Cmd+Option and drag inside a pane to move it, even when pane headers are
 hidden. Drop it at an edge of the tab to give it that half of the tab, or over
 another pane to split that pane on the side under the pointer. The drop preview
 shows the new position. Esc cancels the move. A click without a drag keeps the
-layout unchanged. A split pane can move only if another split pane remains.
+layout unchanged, and on a file's path opens it in Quick Look. A split pane can
+move only if another split pane remains.
 
 You can also drag a floating card's header to an edge to dock it there.
 Normal titlebar dragging and double-clicking keep their window actions.
@@ -151,7 +152,7 @@ Showing the sidebar restores the filter button, with its setting preserved.
 | Delete to line start / go to line start / end | Cmd+Backspace / Cmd+Left / Cmd+Right |
 | Increase / decrease / reset font size | Cmd++ / Cmd+- / Cmd+0 |
 | Open a URL | Cmd+click |
-| Preview a file | Right-click its path, then select Quick Look |
+| Preview a file | Cmd+Option+click its path, or right-click it and select Quick Look |
 | Open / reload configuration | Cmd+, / Cmd+Shift+, |
 | Secure Keyboard Entry | Cmd+Option+I |
 | Full screen | Cmd+Control+F |
@@ -165,9 +166,10 @@ Shell integration adds prompt marks and working directory tracking for zsh,
 bash, and fish. It also supports completion choices at a shell prompt. Use
 `thurm scroll prev-prompt` or `thurm scroll next-prompt` to move between marks.
 
-On Mac, **Quick Look** opens a native preview panel for images, PDFs, and other
-files that macOS can preview. Press Escape to close the panel. If macOS has no
-preview provider for the file type, the panel shows basic file information.
+On Mac, **Quick Look** (or a Cmd+Option+click on a path) opens a native preview
+panel for images, PDFs, and other files that macOS can preview. Press Escape to
+close the panel. If macOS has no preview provider for the file type, the panel
+shows basic file information.
 
 Use an absolute path, a `~/` path, a relative path such as `./report.pdf`, or a
 `file://` link. Filenames with an extension, such as `report.pdf`, also work.
@@ -185,7 +187,7 @@ if the pane has since changed directory or its directory is unknown.
 Remote panes and file links to other hosts cannot use Quick Look. Copy the file
 to this Mac first. Missing files, unreadable files, folders, and special files
 show a message. In programs that use the mouse, hold Shift when you right-click
-to open the Thurm context menu.
+to open the Thurm context menu; Cmd+Option+click works there as it is.
 
 Completion choices for a command come from a spec named `<command>.json`. Thurm
 reads it from `~/.config/thurm/completions` first, then from the specs bundled with
