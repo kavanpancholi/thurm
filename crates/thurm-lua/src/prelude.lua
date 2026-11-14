@@ -322,6 +322,83 @@ os.execute = refuse("os.execute")
 os.exit = refuse("os.exit")
 io.popen = refuse("io.popen")
 
+-- Files are opened only when they are regular ones (or not there yet): opening a FIFO or a
+-- device can block, and all plugins share one thread. Nothing reads the daemon's stdin.
+local function openable(path)
+  if type(path) ~= "string" then
+    return nil, "a path is needed here in Thurm (there is no stdin)"
+  end
+  if P.kind(path) == "other" then
+    return nil, path .. ": not a regular file"
+  end
+  return true
+end
+local function must_open(path)
+  local ok, why = openable(path)
+  if not ok then
+    error(why, 3)
+  end
+end
+local io_open, io_lines, io_input, io_output = io.open, io.lines, io.input, io.output
+local load_file, do_file = loadfile, dofile
+function io.open(path, mode)
+  local ok, why = openable(path)
+  if not ok then
+    return nil, why
+  end
+  return io_open(path, mode)
+end
+function io.lines(path, ...)
+  must_open(path)
+  return io_lines(path, ...)
+end
+function io.input(f)
+  if f ~= nil and type(f) ~= "userdata" then
+    must_open(f)
+  end
+  return io_input(f)
+end
+function io.output(f)
+  if f ~= nil and type(f) ~= "userdata" then
+    must_open(f)
+  end
+  return io_output(f)
+end
+function io.read()
+  error("there is no stdin in Thurm", 2)
+end
+function loadfile(path, ...)
+  local ok, why = openable(path)
+  if not ok then
+    return nil, why
+  end
+  return load_file(path, ...)
+end
+function dofile(path)
+  must_open(path)
+  return do_file(path)
+end
+-- require's own file searcher opens what it tries: this one looks first.
+package.searchers[2] = function(name)
+  local tried = {}
+  local path = name:gsub("%.", "/")
+  for template in package.path:gmatch("[^;]+") do
+    local file = template:gsub("%?", function() return path end)
+    local kind = P.kind(file)
+    if kind == "file" then
+      local chunk, err = load_file(file)
+      if not chunk then
+        error(err, 0)
+      end
+      return chunk, file
+    elseif kind == "other" then
+      error(file .. ": not a regular file", 0)
+    end
+    tried[#tried + 1] = "\n\tno file '" .. file .. "'"
+  end
+  return table.concat(tried)
+end
+
 if P.dir then
   package.path = P.dir .. "/?.lua;" .. P.dir .. "/?/init.lua"
 else

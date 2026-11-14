@@ -565,6 +565,17 @@ impl Engine {
             })?,
         )?;
         p.set("json_null", lua.null())?;
+        // What a path is, without opening it: a FIFO or device could block the open.
+        p.set(
+            "kind",
+            lua.create_function(|_, path: String| {
+                Ok(match std::fs::metadata(&path) {
+                    Ok(m) if m.is_file() => "file",
+                    Ok(_) => "other",
+                    Err(_) => "missing",
+                })
+            })?,
+        )?;
 
         let host = self.host.clone();
         let sink = spec.log.clone();

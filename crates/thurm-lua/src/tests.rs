@@ -527,3 +527,53 @@ fn notices_back_up_in_the_sender() {
     });
     busy.recv_timeout(Duration::from_secs(20)).unwrap().unwrap();
 }
+
+/// A FIFO (or device) is not opened: that could hold up every plugin. Regular files are.
+#[test]
+fn only_regular_files_are_opened() {
+    let dir = std::env::temp_dir().join(format!("thurm-lua-fifo-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let fifo = dir.join("pipe.lua");
+    assert!(
+        std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success()
+    );
+    std::fs::write(dir.join("plain.lua"), "return 42").unwrap();
+    let f = fixture();
+    let mut s = spec(
+        8,
+        &format!(
+            r#"
+            local dir = {dir:?}
+            local f, why = io.open(dir .. "/pipe.lua")
+            local lf, lwhy = loadfile(dir .. "/pipe.lua")
+            local req_ok, req_err = pcall(require, "pipe")
+            local plain = io.open(dir .. "/plain.lua"):read("a")
+            local new = assert(io.open(dir .. "/new.txt", "w")) new:write("x") new:close()
+            return {{ f = f == nil, why = why, lf = lf == nil, lwhy = lwhy,
+                      req = not req_ok and tostring(req_err):find("not a regular file") ~= nil,
+                      plain = plain, mod = require("plain"),
+                      stdin = not pcall(io.read), lines = not pcall(io.lines) }}
+            "#,
+            dir = dir.display().to_string()
+        ),
+        true,
+    );
+    s.dir = Some(dir.clone());
+    let r =
+        f.rt.load(s)
+            .recv_timeout(Duration::from_secs(20))
+            .expect("script did not end")
+            .unwrap();
+    let not_regular = format!("{}: not a regular file", fifo.display());
+    assert_eq!(
+        r,
+        json!({ "f": true, "why": not_regular, "lf": true, "lwhy": not_regular, "req": true,
+                "plain": "return 42", "mod": 42, "stdin": true, "lines": true })
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
