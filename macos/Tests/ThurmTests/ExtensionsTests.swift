@@ -128,8 +128,16 @@ final class ExtensionsTests: XCTestCase {
         window.makeFirstResponder(view)
         let item = NSMenuItem(title: "Split", action: #selector(PaneActionView.splitForTest(_:)),
                               keyEquivalent: "")
-        XCTAssertTrue(Extensions.target(for: #selector(PaneActionView.splitForTest(_:)),
-                                        item: item, in: window) === view)
+        let found = Extensions.target(for: #selector(PaneActionView.splitForTest(_:)), item: item, in: window)
+        XCTAssertTrue(found?.target === view)
+        XCTAssertEqual(found?.ofWindow, true)
+        // An item with a target of its own: that one, which is not of the window.
+        let owner = PaneActionView(frame: .zero)
+        item.target = owner
+        let own = Extensions.target(for: #selector(PaneActionView.splitForTest(_:)), item: item, in: window)
+        XCTAssertTrue(own?.target === owner)
+        XCTAssertEqual(own?.ofWindow, false)
+        item.target = nil
         let other = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 100, height: 100),
                              styleMask: [.titled], backing: .buffered, defer: true)
         XCTAssertNil(Extensions.target(for: #selector(PaneActionView.splitForTest(_:)),

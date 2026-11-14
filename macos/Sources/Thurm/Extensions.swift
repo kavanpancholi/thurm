@@ -355,8 +355,14 @@ final class Extensions {
             SessionManager.shared.focusPane(key, activate: false)
             // The action goes to that pane's window, whichever window is key: the first in its
             // responder chain that takes it, else the app's own (one of no window).
-            guard let target = Extensions.target(for: action, item: item, in: view.window) else {
+            guard let (target, ofWindow) = Extensions.target(for: action, item: item, in: view.window) else {
                 answer("\"\(name)\" does not apply to pane \(pane)'s window")
+                return
+            }
+            // The app's own handlers act on the window in front (the current one): only when
+            // that is the pane's.
+            if !ofWindow, SessionManager.shared.currentController?.window !== view.window {
+                answer("\"\(name)\" acts on the window in front, which is not pane \(pane)'s")
                 return
             }
             guard MainMenu.enabled(item, target: target) else {
@@ -379,22 +385,24 @@ final class Extensions {
         answer(nil)
     }
 
-    /// Who takes `action` of `item` for `window`: the item's own target, else the first of the
-    /// window's responder chain (from its focused view), its controller or delegate, else the
-    /// app or its delegate. `nil` when only something of another window would.
-    static func target(for action: Selector, item: NSMenuItem, in window: NSWindow?) -> AnyObject? {
-        if let t = item.target { return t as AnyObject }
+    /// Who takes `action` of `item` for `window`, and whether it is of that window: the first
+    /// of the window's responder chain (from its focused view), its controller or delegate are;
+    /// the item's own target, the app or its delegate are not (they act on the window in
+    /// front). `nil` when only something of another window would.
+    static func target(for action: Selector, item: NSMenuItem,
+                       in window: NSWindow?) -> (target: AnyObject, ofWindow: Bool)? {
+        if let t = item.target { return (t as AnyObject, false) }
         guard let window else { return nil }
         var r: NSResponder? = window.firstResponder
         while let x = r {
-            if x.responds(to: action) { return x }
+            if x.responds(to: action) { return (x, true) }
             r = x.nextResponder
         }
-        if window.responds(to: action) { return window }
-        if let c = window.windowController, c.responds(to: action) { return c }
-        if let d = window.delegate as? NSObject, d.responds(to: action) { return d }
-        if NSApp.responds(to: action) { return NSApp }
-        if let d = NSApp.delegate as? NSObject, d.responds(to: action) { return d }
+        if window.responds(to: action) { return (window, true) }
+        if let c = window.windowController, c.responds(to: action) { return (c, true) }
+        if let d = window.delegate as? NSObject, d.responds(to: action) { return (d, true) }
+        if NSApp.responds(to: action) { return (NSApp, false) }
+        if let d = NSApp.delegate as? NSObject, d.responds(to: action) { return (d, false) }
         return nil
     }
 
