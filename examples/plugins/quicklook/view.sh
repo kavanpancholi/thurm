@@ -8,7 +8,10 @@
 # then empty.
 
 img=$1
-caption=${2:-$(basename "$img")}
+# The caption is a file's name, not terminal markup: control characters (C0, DEL and C1) show
+# as `?`.
+caption=$(printf %s "${2:-$(basename "$img")}" | LC_ALL=C tr '\000-\037\177' '?' |
+	LC_ALL=C sed "s/$(printf '\302[\200-\237]')/?/g")
 
 saved=$(stty -g)
 cleanup() {
@@ -38,32 +41,58 @@ byte() {
 }
 
 # Sets cw and ch to a cell's size in pixels: CSI 16 t answers ESC [ 6 ; height ; width t.
+# Any other input is a key pressed meanwhile, and sets key=1: the viewer then closes.
 cell_size() {
 	cw=8 ch=16
 	printf '\033[16t'
+	# The answer so far, spelled with e for ESC and b for [.
 	reply= tries=0
-	while [ "$tries" -lt 20 ]; do
-		b=$(byte)
+	while [ "$tries" -lt 20 ] && [ "${#reply}" -lt 24 ]; do
+		b=$(byte | od -An -tu1 | tr -d ' \n')
 		if [ -z "$b" ]; then
 			tries=$((tries + 1))
 			continue
 		fi
-		[ "$b" = t ] && break
-		reply=$reply$b
+		case $b in
+		27) reply=${reply}e ;;
+		91) reply=${reply}b ;;
+		59) reply="$reply;" ;;
+		4[89] | 5[0-7]) reply=$reply$((b - 48)) ;;
+		116)
+			reply=${reply}t
+			break
+			;;
+		*)
+			key=1
+			return
+			;;
+		esac
 	done
 	case $reply in
-	*'[6;'*)
-		reply=${reply#*\[6;}
+	'') ;;
+	'eb6;'*t)
+		reply=${reply#eb6;}
+		reply=${reply%t}
 		h=${reply%%;*} w=${reply#*;}
-		case $h$w in '' | *[!0-9]*) ;; *) [ "$h" -gt 0 ] && [ "$w" -gt 0 ] && ch=$h cw=$w ;; esac
+		if number "$h" && number "$w" && [ "$h" -gt 0 ] && [ "$w" -gt 0 ]; then
+			ch=$h cw=$w
+		else
+			key=1
+		fi
 		;;
+	*) key=1 ;;
 	esac
+}
+
+number() {
+	case $1 in '' | *[!0-9]*) return 1 ;; esac
 }
 
 draw() {
 	set -- $(stty size)
 	rows=$1 cols=$2
 	cell_size
+	[ "$key" = 1 ] && return
 	# The last line is the caption's.
 	area=$((rows - 1))
 	[ "$area" -ge 1 ] || area=1
@@ -88,12 +117,13 @@ draw() {
 	printf '\033[%d;%dH\033[2m%s\033[0m' "$rows" $(((cols - ${#text}) / 2 + 1)) "$text"
 }
 
-resized=1
+key=0 resized=1
 trap 'resized=1' WINCH
 while :; do
 	if [ "$resized" = 1 ]; then
 		resized=0
 		draw
 	fi
+	[ "$key" = 1 ] && break
 	[ -n "$(byte | od -An -c)" ] && break
 done

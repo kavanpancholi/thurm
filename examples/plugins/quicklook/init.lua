@@ -32,18 +32,25 @@ local REMOTE_CLIENTS = { ssh = true, autossh = true, mosh = true, ["mosh-client"
 local settings = thurm.settings
 local size = math.tointeger(settings.size) or 1600
 
-local function is_file(path)
-  -- io.open opens regular files only: a directory or a device is not one.
-  local f = io.open(path, "rb")
-  if f then
-    f:close()
-    return true
-  end
-  return false
-end
-
 local function trim(s)
   return (s:gsub("^%s+", ""):gsub("%s+$", ""))
+end
+
+-- `test -f` reads a file's type without opening it: opening a named pipe waits for a writer.
+local function is_file(path)
+  return thurm.exec({ "/bin/test", "-f", path }).ok
+end
+
+-- The index of the first of `paths` that is a regular file, checked in one run.
+local function first_file(paths)
+  if #paths == 0 then
+    return nil
+  end
+  local r = thurm.exec({
+    "/bin/sh", "-c", 'i=0; for f; do i=$((i + 1)); [ -f "$f" ] && echo "$i" && exit; done; exit 1',
+    "sh", table.unpack(paths),
+  })
+  return r.ok and tonumber(trim(r.stdout)) or nil
 end
 
 local function resolve(path, cwd)
@@ -67,27 +74,26 @@ local function file_on_screen(pane, cwd)
   for line in text:gmatch("[^\n]+") do
     lines[#lines + 1] = line
   end
-  local tried = 0
+  -- The words that may name a file, last first.
+  local words, paths = {}, {}
   for i = #lines, 1, -1 do
-    local words = {}
+    local line = {}
     for word in lines[i]:gmatch("[^%s\"'`]+") do
-      words[#words + 1] = word
+      line[#line + 1] = word
     end
-    for j = #words, 1, -1 do
+    for j = #line, 1, -1 do
       -- `src/main.rs:12:5`, `(notes.txt).`, `file.pdf,`
-      local word = words[j]:gsub("^[%(%[<]+", ""):gsub("[%)%]>,;:.]+$", ""):gsub(":%d+.*$", "")
+      local word = line[j]:gsub("^[%(%[<]+", ""):gsub("[%)%]>,;:.]+$", ""):gsub(":%d+.*$", "")
       if word:find("[./]") and word ~= "." and word ~= ".." then
-        if is_file(resolve(word, cwd)) then
-          return word
-        end
-        tried = tried + 1
-        if tried >= 200 then
-          return nil
+        words[#words + 1] = word
+        paths[#paths + 1] = resolve(word, cwd)
+        if #paths >= 200 then
+          return words[first_file(paths)]
         end
       end
     end
   end
-  return nil
+  return words[first_file(paths)]
 end
 
 -- The file to preview: the one asked for, else the selection or the file under the pointer
@@ -164,7 +170,7 @@ local function thumbnail(path, name, dir)
     thurm.fail("Quick Look took too long on " .. name)
   end
   local png = dir .. "/" .. name .. ".png"
-  return r.ok and is_file(png) and png or nil
+  return r.ok and png_size(png) and png or nil
 end
 
 -- The thumbnail of a text file Quick Look has no generator for (no extension, `.toml`,
@@ -172,19 +178,16 @@ end
 -- plain text with `qlmanage -c` draws black text on a dark page, and quicklookd skips a
 -- `.txt` symlink.
 local function text_thumbnail(path, name, dir)
-  local src = io.open(path, "rb")
-  if not src then
-    return nil
-  end
-  local head = src:read(64 * 1024) or ""
-  src:close()
   local copy = dir .. "/" .. name .. ".txt"
-  local dst = io.open(copy, "wb")
-  if not dst then
+  -- head, not io.open: a file swapped for a named pipe since it was checked times out.
+  local r = thurm.exec(
+    { "/bin/sh", "-c", 'exec /usr/bin/head -c 65536 -- "$1" > "$2"', "sh", path, copy },
+    { timeout = 5 }
+  )
+  if not r.ok then
+    os.remove(copy)
     return nil
   end
-  dst:write(head)
-  dst:close()
   local png = thumbnail(copy, name .. ".txt", dir)
   os.remove(copy)
   return png
