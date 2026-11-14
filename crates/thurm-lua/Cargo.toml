@@ -9,6 +9,7 @@ license.workspace = true
 mlua = { version = "0.12", features = ["lua54", "vendored", "serialize"] }
 serde_json.workspace = true
 crossbeam-channel.workspace = true
+libc.workspace = true
 log.workspace = true
 thurm-proto.workspace = true
 serde.workspace = true

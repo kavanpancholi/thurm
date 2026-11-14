@@ -323,76 +323,104 @@ os.exit = refuse("os.exit")
 io.popen = refuse("io.popen")
 
 -- Files are opened only when they are regular ones (or not there yet): opening a FIFO or a
--- device can block, and all plugins share one thread. Nothing reads the daemon's stdin.
-local function openable(path)
-  if type(path) ~= "string" then
-    return nil, "a path is needed here in Thurm (there is no stdin)"
-  end
-  if P.kind(path) == "other" then
-    return nil, path .. ": not a regular file"
-  end
-  return true
-end
-local function must_open(path)
-  local ok, why = openable(path)
-  if not ok then
-    error(why, 3)
-  end
-end
-local io_open, io_lines, io_input, io_output = io.open, io.lines, io.input, io.output
-local load_file, do_file = loadfile, dofile
+-- device can block, and all plugins share one thread. The daemon opens them without blocking
+-- and looks at what it opened. Nothing reads the daemon's stdin.
+local io_open, io_input, io_output = io.open, io.input, io.output
 function io.open(path, mode)
-  local ok, why = openable(path)
-  if not ok then
+  if type(path) ~= "string" then
+    error("bad argument #1 to 'open' (string expected)", 2)
+  end
+  mode = mode or "r"
+  local at, fd, why = P.open_regular(path, mode)
+  if not at then
     return nil, why
   end
-  return io_open(path, mode)
+  -- The open descriptor's own path: a name swapped meanwhile changes nothing.
+  local f, err = io_open(at, mode)
+  P.close_fd(fd)
+  return f, err
 end
 function io.lines(path, ...)
-  must_open(path)
-  return io_lines(path, ...)
-end
-function io.input(f)
-  if f ~= nil and type(f) ~= "userdata" then
-    must_open(f)
+  if path == nil then
+    error("there is no stdin in Thurm", 2)
   end
-  return io_input(f)
-end
-function io.output(f)
-  if f ~= nil and type(f) ~= "userdata" then
-    must_open(f)
+  local f, why = io.open(path, "r")
+  if not f then
+    error(why, 2)
   end
-  return io_output(f)
+  local next_line = f:lines(...)
+  return function()
+    local r = table.pack(next_line())
+    if r[1] == nil then
+      f:close()
+    end
+    return table.unpack(r, 1, r.n)
+  end
 end
+local function use(set, mode)
+  return function(f)
+    if type(f) == "string" then
+      local file, why = io.open(f, mode)
+      if not file then
+        error(why, 2)
+      end
+      f = file
+    end
+    return set(f)
+  end
+end
+io.input = use(io_input, "r")
+io.output = use(io_output, "w")
 function io.read()
   error("there is no stdin in Thurm", 2)
 end
-function loadfile(path, ...)
-  local ok, why = openable(path)
-  if not ok then
+-- Source as loadfile reads it: a first line starting with # is skipped (its newline stays,
+-- so line numbers do too).
+local function read_chunk(path)
+  local src, why, missing = P.read_regular(path)
+  if not src then
+    return nil, why, missing
+  end
+  if src:sub(1, 1) == "#" then
+    src = src:gsub("^#[^\n]*", "", 1)
+  end
+  return src
+end
+function loadfile(path, mode, ...)
+  if type(path) ~= "string" then
+    return nil, "there is no stdin in Thurm: loadfile needs a path"
+  end
+  local src, why = read_chunk(path)
+  if not src then
     return nil, why
   end
-  return load_file(path, ...)
+  if select("#", ...) > 0 then
+    return load(src, "@" .. path, mode or "bt", (...))
+  end
+  return load(src, "@" .. path, mode or "bt")
 end
 function dofile(path)
-  must_open(path)
-  return do_file(path)
+  local chunk, why = loadfile(path)
+  if not chunk then
+    error(why, 2)
+  end
+  return chunk()
 end
--- require's own file searcher opens what it tries: this one looks first.
+-- require's own file searcher opens what it tries as it is: this one doesn't.
 package.searchers[2] = function(name)
   local tried = {}
   local path = name:gsub("%.", "/")
   for template in package.path:gmatch("[^;]+") do
     local file = template:gsub("%?", function() return path end)
-    local kind = P.kind(file)
-    if kind == "file" then
-      local chunk, err = load_file(file)
+    local src, why, missing = read_chunk(file)
+    if src then
+      local chunk, err = load(src, "@" .. file)
       if not chunk then
         error(err, 0)
       end
       return chunk, file
-    elseif kind == "other" then
-      error(file .. ": not a regular file", 0)
+    elseif not missing then
+      error(why, 0)
     end
     tried[#tried + 1] = "\n\tno file '" .. file .. "'"
   end

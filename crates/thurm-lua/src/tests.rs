@@ -543,6 +543,7 @@ fn only_regular_files_are_opened() {
             .success()
     );
     std::fs::write(dir.join("plain.lua"), "return 42").unwrap();
+    std::fs::write(dir.join("run.lua"), "#!/usr/bin/env lua\nreturn 'ran'").unwrap();
     let f = fixture();
     let mut s = spec(
         8,
@@ -554,10 +555,17 @@ fn only_regular_files_are_opened() {
             local req_ok, req_err = pcall(require, "pipe")
             local plain = io.open(dir .. "/plain.lua"):read("a")
             local new = assert(io.open(dir .. "/new.txt", "w")) new:write("x") new:close()
+            local more = assert(io.open(dir .. "/new.txt", "a")) more:write("y") more:close()
+            local written = io.open(dir .. "/new.txt"):read("a")
+            local count = 0
+            for _ in io.lines(dir .. "/plain.lua") do count = count + 1 end
+            local missing, mwhy = io.open(dir .. "/nope.txt")
             return {{ f = f == nil, why = why, lf = lf == nil, lwhy = lwhy,
                       req = not req_ok and tostring(req_err):find("not a regular file") ~= nil,
                       plain = plain, mod = require("plain"),
-                      stdin = not pcall(io.read), lines = not pcall(io.lines) }}
+                      stdin = not pcall(io.read), lines = not pcall(io.lines),
+                      written = written, count = count, missing = missing == nil,
+                      mwhy = mwhy:find("No such file") ~= nil, shebang = dofile(dir .. "/run.lua") }}
             "#,
             dir = dir.display().to_string()
         ),
@@ -573,7 +581,8 @@ fn only_regular_files_are_opened() {
     assert_eq!(
         r,
         json!({ "f": true, "why": not_regular, "lf": true, "lwhy": not_regular, "req": true,
-                "plain": "return 42", "mod": 42, "stdin": true, "lines": true })
+                "plain": "return 42", "mod": 42, "stdin": true, "lines": true,
+                "written": "xy", "count": 1, "missing": true, "mwhy": true, "shebang": "ran" })
     );
     std::fs::remove_dir_all(&dir).unwrap();
 }

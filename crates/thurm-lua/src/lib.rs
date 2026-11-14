@@ -565,15 +565,50 @@ impl Engine {
             })?,
         )?;
         p.set("json_null", lua.null())?;
-        // What a path is, without opening it: a FIFO or device could block the open.
+        // Files open only when they are regular ones: a FIFO or device could block, and every
+        // plugin shares this thread. Opened without blocking, then looked at.
         p.set(
-            "kind",
-            lua.create_function(|_, path: String| {
-                Ok(match std::fs::metadata(&path) {
-                    Ok(m) if m.is_file() => "file",
-                    Ok(_) => "other",
-                    Err(_) => "missing",
+            "open_regular",
+            lua.create_function(|_, (path, mode): (String, String)| {
+                Ok(match open_regular(&path, &mode) {
+                    Ok(f) => {
+                        use std::os::fd::IntoRawFd;
+                        let fd = f.into_raw_fd();
+                        (Some(fd_path(fd)), Some(fd), None)
+                    }
+                    Err(why) => (None, None, Some(why)),
                 })
+            })?,
+        )?;
+        p.set(
+            "close_fd",
+            lua.create_function(|_, fd: i32| {
+                use std::os::fd::FromRawFd;
+                drop(unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) });
+                Ok(())
+            })?,
+        )?;
+        p.set(
+            "read_regular",
+            lua.create_function(|lua, path: String| {
+                let f = match open_regular(&path, "r") {
+                    Ok(f) => f,
+                    Err(why) => {
+                        let missing = !std::path::Path::new(&path).exists();
+                        return Ok((None, Some(why), missing));
+                    }
+                };
+                let mut bytes = Vec::new();
+                let limit = MEMORY_LIMIT as u64;
+                if let Err(e) =
+                    std::io::Read::read_to_end(&mut std::io::Read::take(f, limit + 1), &mut bytes)
+                {
+                    return Ok((None, Some(format!("{path}: {}", os_message(&e))), false));
+                }
+                if bytes.len() as u64 > limit {
+                    return Ok((None, Some(format!("{path}: too large")), false));
+                }
+                Ok((Some(lua.create_string(&bytes)?), None, false))
             })?,
         )?;
 
@@ -979,6 +1014,58 @@ fn short_path(path: &str) -> String {
             format!("~{}", &path[home.len()..])
         }
         _ => path.to_owned(),
+    }
+}
+
+/// Opens `path` as `fopen` would with `mode`, without blocking (a FIFO opens at once) and
+/// without taking a terminal; what it opened must be a regular file.
+fn open_regular(path: &str, mode: &str) -> Result<std::fs::File, String> {
+    let flags = match mode.replace('b', "").as_str() {
+        "r" => libc::O_RDONLY,
+        "w" => libc::O_WRONLY | libc::O_CREAT | libc::O_TRUNC,
+        "a" => libc::O_WRONLY | libc::O_CREAT | libc::O_APPEND,
+        "r+" => libc::O_RDWR,
+        "w+" => libc::O_RDWR | libc::O_CREAT | libc::O_TRUNC,
+        "a+" => libc::O_RDWR | libc::O_CREAT | libc::O_APPEND,
+        _ => return Err(format!("invalid mode '{mode}'")),
+    };
+    let c = std::ffi::CString::new(path).map_err(|_| format!("{path:?}: a NUL in the path"))?;
+    let fd = unsafe {
+        libc::open(
+            c.as_ptr(),
+            flags | libc::O_NONBLOCK | libc::O_NOCTTY | libc::O_CLOEXEC,
+            0o666 as libc::c_uint,
+        )
+    };
+    if fd < 0 {
+        return Err(format!(
+            "{path}: {}",
+            os_message(&std::io::Error::last_os_error())
+        ));
+    }
+    let f = unsafe { <std::fs::File as std::os::fd::FromRawFd>::from_raw_fd(fd) };
+    match f.metadata() {
+        Ok(m) if m.is_file() => Ok(f),
+        Ok(_) => Err(format!("{path}: not a regular file")),
+        Err(e) => Err(format!("{path}: {}", os_message(&e))),
+    }
+}
+
+/// A path that opens what the descriptor `fd` has open (not whatever its name is now).
+fn fd_path(fd: i32) -> String {
+    if cfg!(target_os = "linux") {
+        format!("/proc/self/fd/{fd}")
+    } else {
+        format!("/dev/fd/{fd}")
+    }
+}
+
+/// An OS error as C's strerror says it, without Rust's "(os error N)".
+fn os_message(e: &std::io::Error) -> String {
+    let s = e.to_string();
+    match s.find(" (os error") {
+        Some(i) => s[..i].to_owned(),
+        None => s,
     }
 }
 
