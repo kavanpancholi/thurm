@@ -126,7 +126,9 @@ your keys. Errors are raised: catch them with `pcall` where you expect them.
 | `thurm.plugin`, `thurm.dir`, `thurm.settings`, `thurm.args`, `thurm.pane` | The plugin's name, directory and settings; a script's arguments and pane |
 
 `require` loads modules from the plugin's own directory. `io.popen`,
-`os.execute` and `os.exit` are not available (use `thurm.exec`). Code that
+`os.execute` and `os.exit` are not available (use `thurm.exec`). `io` opens
+regular files only (a FIFO or device could hold up every plugin), and there
+is no stdin to read. Code that
 runs for 5 seconds without waiting is stopped, and a plugin may use at most
 256 MiB (a script, 64 MiB).
 
