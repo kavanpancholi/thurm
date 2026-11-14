@@ -127,13 +127,13 @@ your keys. Errors are raised: catch them with `pcall` where you expect them.
 | `thurm.json.encode`, `thurm.json.decode`, `thurm.json.null`, `thurm.log(...)`, `thurm.warn(...)` | JSON (decode keeps nulls as `thurm.json.null`; in the API's results a null field is `nil` and a null in an array is `thurm.json.null`), and the plugin's log (`print` logs too) |
 | `thurm.plugin`, `thurm.dir`, `thurm.settings`, `thurm.args`, `thurm.pane` | The plugin's name, directory and settings; a script's arguments and pane |
 
-When the app runs an action (a key, the palette, the menu), `ctx` also says
-what the person is looking at: `selection`, the text selected in the pane, and
-`file`, the file the mouse pointer is over, as the context menu's **Quick
-Look** finds it (a path as written there, so relative to the pane's
-directory unless it is absolute). In a remote host's pane, `pane` is `nil`
-(this daemon's pane ids mean nothing there) and `remote` is the host's
-`[[remote]]` name.
+When the app runs an action (a key, the palette, the menu) in one of this
+Mac's panes, `ctx` also says what the person is looking at: `selection`, the
+text selected in the pane, and `file`, the file the mouse pointer is over, as
+the context menu's **Quick Look** finds it (a path as written there, so
+relative to the pane's directory unless it is absolute). In a remote host's
+pane, the action gets neither: `pane` is `nil` (this daemon's pane ids mean
+nothing there) and `remote` is the host's `[[remote]]` name.
 
 A floating pane goes where new floating panes go, unless you place it: `frame
 = {x, y, width, height}` in fractions of the tab's area, from its top left
