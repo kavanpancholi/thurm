@@ -216,6 +216,7 @@ local function show_preview(pane, info, path, name, textual)
   local ok, opened = pcall(thurm.open, {
     command = { "/bin/sh", thurm.dir .. "/view.sh", png, name },
     target = pane,
+    float = true,
     cells = image_card(info.size, w, h),
   })
   if not ok then
