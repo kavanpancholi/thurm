@@ -214,7 +214,11 @@ local function show_preview(pane, info, path, name, textual)
   end
   -- The viewer deletes the PNG and the directory when it closes; without a viewer, they go here.
   local ok, opened = pcall(thurm.open, {
-    command = { "/bin/sh", thurm.dir .. "/view.sh", png, name },
+    -- The card shares the pane's font, so its cells are the pane's size.
+    command = {
+      "/bin/sh", thurm.dir .. "/view.sh", png, name,
+      tostring(info.size.cell_width), tostring(info.size.cell_height),
+    },
     target = pane,
     float = true,
     cells = image_card(info.size, w, h),

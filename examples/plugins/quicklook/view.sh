@@ -2,12 +2,22 @@
 # Shows a PNG with the kitty graphics protocol, fitted to the pane and centered, with a caption
 # on the last line. Any key closes it. Redraws when the pane is resized.
 #
-#   view.sh IMAGE.png [CAPTION]
+#   view.sh IMAGE.png [CAPTION [CELL_WIDTH CELL_HEIGHT]]
 #
 # IMAGE is the quicklook plugin's own copy: it is deleted on exit, with its directory if that is
-# then empty.
+# then empty. The cell size, in pixels, is given rather than asked of the terminal: an answer
+# would arrive mixed with the keys that close the viewer. It is 8 by 16 when not given.
+
+# Whether $1 is a whole number above 0.
+positive() {
+	case $1 in '' | *[!0-9]* | 0*) return 1 ;; esac
+}
 
 img=$1
+cw=8 ch=16
+if positive "$3" && positive "$4"; then
+	cw=$3 ch=$4
+fi
 # The caption is a file's name, not terminal markup: control characters (C0, DEL and C1) show
 # as `?`.
 caption=$(printf %s "${2:-$(basename "$img")}" | LC_ALL=C tr '\000-\037\177' '?' |
@@ -40,58 +50,10 @@ byte() {
 	dd bs=1 count=1 2>/dev/null
 }
 
-# Sets cw and ch to a cell's size in pixels: CSI 16 t answers ESC [ 6 ; height ; width t.
-# Anything else read meanwhile is a key, and sets key=1: the viewer then closes. The terminal
-# writes its answer at once, so a read takes it whole, and a key lands before or after it,
-# never inside it.
-cell_size() {
-	cw=8 ch=16
-	printf '\033[16t'
-	# What was read, spelled with e for ESC, b for [ and x for any other byte.
-	reply= tries=0
-	while [ "$tries" -lt 20 ] && [ "${#reply}" -lt 64 ]; do
-		chunk=$(dd bs=64 count=1 2>/dev/null | od -An -tu1)
-		if [ -z "$chunk" ]; then
-			tries=$((tries + 1))
-			continue
-		fi
-		for b in $chunk; do
-			case $b in
-			27) reply=${reply}e ;;
-			91) reply=${reply}b ;;
-			59) reply="$reply;" ;;
-			4[89] | 5[0-7]) reply=$reply$((b - 48)) ;;
-			116) reply=${reply}t ;;
-			*) reply=${reply}x ;;
-			esac
-		done
-		# Stop at the answer, or at a byte no answer starts with.
-		case $reply in *eb6\;*t* | *x* | [!e]*) break ;; esac
-	done
-	[ -n "$reply" ] || return
-	case $reply in
-	eb6\;*t)
-		size=${reply#eb6;}
-		size=${size%t}
-		h=${size%%;*} w=${size#*;}
-		if number "$h" && number "$w" && [ "$h" -gt 0 ] && [ "$w" -gt 0 ]; then
-			ch=$h cw=$w
-			return
-		fi
-		;;
-	esac
-	key=1
-}
-
-number() {
-	case $1 in '' | *[!0-9]*) return 1 ;; esac
-}
-
 draw() {
 	set -- $(stty size)
 	rows=$1 cols=$2
-	cell_size
-	[ "$key" = 1 ] && return
+	[ "$cols" -ge 1 ] || cols=1
 	# The last line is the caption's.
 	area=$((rows - 1))
 	[ "$area" -ge 1 ] || area=1
@@ -116,13 +78,12 @@ draw() {
 	printf '\033[%d;%dH\033[2m%s\033[0m' "$rows" $(((cols - ${#text}) / 2 + 1)) "$text"
 }
 
-key=0 resized=1
+resized=1
 trap 'resized=1' WINCH
 while :; do
 	if [ "$resized" = 1 ]; then
 		resized=0
 		draw
 	fi
-	[ "$key" = 1 ] && break
 	[ -n "$(byte | od -An -c)" ] && break
 done
