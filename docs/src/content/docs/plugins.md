@@ -72,9 +72,10 @@ bound with `thurm.bind` (or by a plugin program) works like a
 action too, and the menu shows it (the action's own key keeps working, as with
 `[keybindings]`); bound to a plugin's action, it runs it. The binding made last
 wins, and goes when its plugin stops. A key bound with arguments
-(`thurm.bind(key, action, args)`) runs a plugin's or `[[commands]]` action
-with them; the app's own actions take no arguments, and the app ignores such a
-key for them.
+(`thurm.bind(key, action, args)`) runs a plugin's action with them.
+`[[commands]]` entries and the app's own actions take no arguments: a
+`[[commands]]` entry runs as it is, and the app ignores such a key for its
+actions.
 
 ## Events
 
