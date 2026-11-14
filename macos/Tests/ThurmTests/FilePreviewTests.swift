@@ -182,6 +182,25 @@ final class FilePreviewTests: XCTestCase {
         }
     }
 
+    func testPointerIsReadNowNotFromTheLastHover() throws {
+        _ = NSApplication.shared
+        let view = TerminalView(pane: .local(987656))
+        XCTAssertNil(view.pointerLocation())
+        // Far off every screen, so the real pointer cannot be over it.
+        let window = NSWindow(contentRect: NSRect(x: -40000, y: -40000, width: 400, height: 300),
+                              styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        window.contentView = view
+        let hover = try XCTUnwrap(NSEvent.mouseEvent(with: .mouseMoved, location: NSPoint(x: 200, y: 150),
+                                                     modifierFlags: [], timestamp: 0,
+                                                     windowNumber: window.windowNumber, context: nil,
+                                                     eventNumber: 0, clickCount: 0, pressure: 0))
+        view.mouseMoved(with: hover)
+        XCTAssertNil(view.pointerLocation())
+        XCTAssertNil(view.pointedFile())
+    }
+
     func testMenuKeepsClickedPaneContext() throws {
         _ = NSApplication.shared
         let pane = PaneKey.local(987654)
