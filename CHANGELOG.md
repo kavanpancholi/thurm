@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.21.0 - 2026-11-14
+
+Thurm adds an extension API with actions, key bindings and events. Lua plugins and program plugins use it, and `thurm plugin` manages them.
+
+### New features
+
+- The daemon adds an extension API with actions, key bindings and events. Use `thurm action list` and `thurm action run` to call actions from the command line.
+- The iOS app shows the time of each agent's last report. Agents appear in lists the same way as on the Mac.
+
+### Fixes
+
+- An idle agent that re-sends its terminal title no longer shows the status "Working". Writes that only set the title do not count as pane activity.
+- The agent list shows a permission prompt first, even when the agent is Working or Idle. A prompt with no message shows "Needs permission".
+- A Live Activity timer now counts from when the agent's status began. Before, it counted from when the update arrived, so it showed too little time.
+
 ## v0.20.1 - 2026-11-13
 
 This release fixes a macOS crash. The app now stays open when you switch from the sidebar to native tabs.
