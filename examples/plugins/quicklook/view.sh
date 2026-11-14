@@ -41,47 +41,46 @@ byte() {
 }
 
 # Sets cw and ch to a cell's size in pixels: CSI 16 t answers ESC [ 6 ; height ; width t.
-# Any other input is a key pressed meanwhile, and sets key=1: the viewer then closes.
+# Anything else read meanwhile is a key, and sets key=1: the viewer then closes. The terminal
+# writes its answer at once, so a read takes it whole, and a key lands before or after it,
+# never inside it.
 cell_size() {
 	cw=8 ch=16
 	printf '\033[16t'
-	# The answer so far, spelled with e for ESC and b for [.
+	# What was read, spelled with e for ESC, b for [ and x for any other byte.
 	reply= tries=0
-	while [ "$tries" -lt 20 ] && [ "${#reply}" -lt 24 ]; do
-		b=$(byte | od -An -tu1 | tr -d ' \n')
-		if [ -z "$b" ]; then
+	while [ "$tries" -lt 20 ] && [ "${#reply}" -lt 64 ]; do
+		chunk=$(dd bs=64 count=1 2>/dev/null | od -An -tu1)
+		if [ -z "$chunk" ]; then
 			tries=$((tries + 1))
 			continue
 		fi
-		case $b in
-		27) reply=${reply}e ;;
-		91) reply=${reply}b ;;
-		59) reply="$reply;" ;;
-		4[89] | 5[0-7]) reply=$reply$((b - 48)) ;;
-		116)
-			reply=${reply}t
-			break
-			;;
-		*)
-			key=1
-			return
-			;;
-		esac
+		for b in $chunk; do
+			case $b in
+			27) reply=${reply}e ;;
+			91) reply=${reply}b ;;
+			59) reply="$reply;" ;;
+			4[89] | 5[0-7]) reply=$reply$((b - 48)) ;;
+			116) reply=${reply}t ;;
+			*) reply=${reply}x ;;
+			esac
+		done
+		# Stop at the answer, or at a byte no answer starts with.
+		case $reply in *eb6\;*t* | *x* | [!e]*) break ;; esac
 	done
+	[ -n "$reply" ] || return
 	case $reply in
-	'') ;;
-	'eb6;'*t)
-		reply=${reply#eb6;}
-		reply=${reply%t}
-		h=${reply%%;*} w=${reply#*;}
+	eb6\;*t)
+		size=${reply#eb6;}
+		size=${size%t}
+		h=${size%%;*} w=${size#*;}
 		if number "$h" && number "$w" && [ "$h" -gt 0 ] && [ "$w" -gt 0 ]; then
 			ch=$h cw=$w
-		else
-			key=1
+			return
 		fi
 		;;
-	*) key=1 ;;
 	esac
+	key=1
 }
 
 number() {

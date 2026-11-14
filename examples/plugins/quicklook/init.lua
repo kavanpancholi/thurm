@@ -212,12 +212,17 @@ local function show_preview(pane, info, path, name, textual)
     thurm.exec({ "rm", "-rf", dir })
     thurm.fail("no Quick Look preview for " .. name)
   end
-  -- The viewer deletes the PNG and the directory when it closes.
-  return thurm.open{
+  -- The viewer deletes the PNG and the directory when it closes; without a viewer, they go here.
+  local ok, opened = pcall(thurm.open, {
     command = { "/bin/sh", thurm.dir .. "/view.sh", png, name },
     target = pane,
     cells = image_card(info.size, w, h),
-  }
+  })
+  if not ok then
+    thurm.exec({ "rm", "-rf", dir })
+    error(opened, 0)
+  end
+  return opened
 end
 
 local function preview(ctx, args)
