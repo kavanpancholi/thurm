@@ -565,6 +565,12 @@ impl Engine {
             })?,
         )?;
         p.set("json_null", lua.null())?;
+        p.set(
+            "fail",
+            lua.create_function(|_, message: String| -> mlua::Result<()> {
+                Err(mlua::Error::external(Refused(message)))
+            })?,
+        )?;
         // Files open only when they are regular ones: a FIFO or device could block, and every
         // plugin shares this thread. Opened without blocking, then looked at.
         p.set(
@@ -716,15 +722,19 @@ impl Engine {
                 Some(v) => from_lua::<Value>(&plugin.lua, v).map_err(|e| describe(&e)),
                 None => Ok(Value::Null),
             },
-            Err(e) => {
-                let mut message = describe(&e);
-                if let Some(at) = user_frame(&e.to_string())
-                    && !message.contains(&at)
-                {
-                    message = format!("{at} {message}");
+            Err(e) => match e.downcast_ref::<Refused>() {
+                // `thurm.fail`: the message is for the user, as written.
+                Some(refused) => Err(refused.0.clone()),
+                None => {
+                    let mut message = describe(&e);
+                    if let Some(at) = user_frame(&e.to_string())
+                        && !message.contains(&at)
+                    {
+                        message = format!("{at} {message}");
+                    }
+                    Err(message)
                 }
-                Err(message)
-            }
+            },
         };
         self.end_task(instance, &task);
         self.finish(instance, task.kind, outcome);
@@ -972,6 +982,19 @@ fn from_lua<T: serde::de::DeserializeOwned>(lua: &Lua, v: mlua::Value) -> mlua::
         .deny_recursive_tables(false);
     lua.from_value_with(v, options)
 }
+
+/// What `thurm.fail` raises: a message for the user, shown without the file and line it came
+/// from (those are for bugs).
+#[derive(Debug)]
+struct Refused(String);
+
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for Refused {}
 
 /// An error as one line for the user: the message without Lua's traceback.
 pub fn describe(e: &mlua::Error) -> String {

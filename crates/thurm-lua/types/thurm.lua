@@ -215,6 +215,11 @@ function thurm.every(seconds, fn) end
 ---@param seconds number
 function thurm.sleep(seconds) end
 
+--- Stops the action, script, handler or timer with a message for the user, shown as it is
+--- (`error` also says the file and line, which is for bugs).
+---@param message string
+function thurm.fail(message) end
+
 thurm.json = {}
 
 --- JSON's null in what `thurm.json.decode` gives (`[1, null, 3]` keeps three items). In the API's

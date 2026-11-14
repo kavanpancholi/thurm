@@ -104,6 +104,11 @@ Calls that wait (a program, an action, the user, `sleep`) work in the main
 chunk, in actions, in event handlers and in timers; Thurm runs each of these
 in a coroutine and keeps going meanwhile, so a slow handler never holds up
 your keys. Errors are raised: catch them with `pcall` where you expect them.
+An error says the file and line it came from, which helps with a bug; to stop
+with a message meant for the user (a file that isn't there), use
+`thurm.fail(message)`, which shows only the message. An action that fails
+either way shows it over the pane when the app ran it, and `thurm action run`
+prints it and exits with 1.
 
 | Function | Does |
 | --- | --- |
@@ -123,6 +128,7 @@ your keys. Errors are raised: catch them with `pcall` where you expect them.
 | `thurm.ui.input{title, placeholder, value}`, `thurm.ui.confirm{title, body, ok, cancel}` | A line of text, or yes or no |
 | `thurm.exec(argv, {cwd, env, stdin, timeout})` | Runs a program to its end through your login shell; `ok`, `code`, `stdout`, `stderr`, `timed_out`. A string runs with `sh -c` |
 | `thurm.after(s, fn)`, `thurm.every(s, fn)`, `thurm.sleep(s)` | Timers; the first two return a handle with `cancel()` (a plugin may have 4096 set at a time) |
+| `thurm.fail(message)` | Stops with a message for the user, without the file and line an error adds |
 | `thurm.call(method, params)`, `thurm.request(request)` | Any method of the API below, or any daemon request as JSON |
 | `thurm.json.encode`, `thurm.json.decode`, `thurm.json.null`, `thurm.log(...)`, `thurm.warn(...)` | JSON (decode keeps nulls as `thurm.json.null`; in the API's results a null field is `nil` and a null in an array is `thurm.json.null`), and the plugin's log (`print` logs too) |
 | `thurm.plugin`, `thurm.dir`, `thurm.settings`, `thurm.args`, `thurm.pane` | The plugin's name, directory and settings; a script's arguments and pane |
