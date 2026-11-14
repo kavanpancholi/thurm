@@ -1276,13 +1276,42 @@ final class TerminalView: NSView, NSTextInputClient {
 
     // MARK: Edit actions
 
-    @objc func copy(_ sender: Any?) {
+    /// The selected text, or nil without a selection.
+    func selectedText() -> String? {
         // Local panes answer from the app's own copy; a remote host gets a moment, not forever.
         guard let resp = Core.shared.request(object: ["CopySelection": ["pane": pane.number]], host: pane.host,
                                              timeout: 2),
               let v = JSON.variant(resp), v.name == "Text",
               let text = v.payload as? String, !text.isEmpty
-        else { return }
+        else { return nil }
+        return text
+    }
+
+    /// Where the mouse pointer is now, in this view, or nil when it is not over the view. Read
+    /// from the window rather than the hover events, which stop while the window is not key.
+    func pointerLocation() -> NSPoint? {
+        guard let window else { return nil }
+        let point = convert(window.mouseLocationOutsideOfEventStream, from: nil)
+        return bounds.contains(point) ? point : nil
+    }
+
+    /// The file the mouse pointer is over, as the context menu's Quick Look finds it: a path as
+    /// written there, or a `file://` link's path. Nil when the pointer is not over this pane.
+    func pointedFile() -> String? {
+        guard let point = pointerLocation() else { return nil }
+        let p = cellPosition(point)
+        guard p.inGrid else { return nil }
+        let (text, columns) = renderer.snapshot.rowText(p.row)
+        switch TerminalFileReference.at(text: text, columns: columns, column: p.col,
+                                        link: linkURL(col: p.col, row: p.row)) {
+        case .path(let path)?: return path
+        case .fileURL(let url)?: return url.path
+        case nil: return nil
+        }
+    }
+
+    @objc func copy(_ sender: Any?) {
+        guard let text = selectedText() else { return }
         let pb = NSPasteboard.general
         pb.clearContents()
         pb.setString(text, forType: .string)

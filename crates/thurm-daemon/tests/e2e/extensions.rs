@@ -1228,3 +1228,170 @@ fn reloads_keep_what_works_and_retry_what_failed() {
             .contains("stays")
     );
 }
+
+#[test]
+fn a_plugin_places_the_floating_pane_it_opens() {
+    let env = Env::new("ext-float-place");
+    let _d = env.start();
+    let (app, app_rx) = env.connect();
+    let (plugin, _rx) = ext_client(&env, "plugin");
+    let target = create(&app, &env.dir);
+    let opened = call(
+        &plugin,
+        method::PANES_OPEN,
+        json!({
+            "command": ["sleep", "30"],
+            "target": target,
+            "cells": { "col": 2, "row": -1, "cols": 40, "rows": 10 },
+            "background": true,
+        }),
+    )
+    .unwrap();
+    assert_eq!(opened["shown"], json!(true));
+    let pane = opened["pane"].as_u64().unwrap();
+    let want = UiCommand::OpenFloatingAt {
+        pane,
+        target: Some(target),
+        place: FloatPlace::Cells {
+            anchor: target,
+            col: 2,
+            row: -1,
+            cols: 40,
+            rows: 10,
+        },
+        background: true,
+    };
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut got = false;
+    while Instant::now() < deadline && !got {
+        got = matches!(app_rx.recv_timeout(Duration::from_millis(200)), Ok(Event::Ui(ref c)) if *c == want);
+    }
+    assert!(got, "no {want:?}");
+
+    let err = call(
+        &plugin,
+        method::PANES_OPEN,
+        json!({ "frame": [0.0, 0.0, 1.5, 1.0] }),
+    )
+    .unwrap_err();
+    assert!(err.contains("frame"), "{err}");
+    let err = call(
+        &plugin,
+        method::PANES_OPEN,
+        json!({
+            "command": ["sleep", "30"],
+            "target": 999_999,
+            "cells": { "cols": 40, "rows": 10 },
+        }),
+    )
+    .unwrap_err();
+    assert!(err.contains("no such pane"), "{err}");
+    let panes = match app.request(Request::ListPanes).unwrap() {
+        Response::Panes(p) => p.len(),
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(panes, 2, "a refused place opens no pane");
+}
+
+#[test]
+fn an_app_from_before_placing_floats_the_pane_where_new_ones_go() {
+    let env = Env::new("ext-float-old");
+    let _d = env.start();
+    let mut old = super::ui_layout::ui_with(
+        &env,
+        &[
+            CAP_ACTIVE_SIZE,
+            CAP_UI_LAYOUT,
+            CAP_AGENT_WALL,
+            CAP_FLOATING,
+            CAP_FLOATING_NEW,
+        ],
+    );
+    let (plugin, _rx) = ext_client(&env, "plugin");
+    let target = create(&plugin, &env.dir);
+    let opened = call(
+        &plugin,
+        method::PANES_OPEN,
+        json!({
+            "command": ["sleep", "30"],
+            "target": target,
+            "cells": { "cols": 40, "rows": 10 },
+        }),
+    )
+    .unwrap();
+    assert_eq!(opened["shown"], json!(true));
+    let want = UiCommand::OpenFloating {
+        pane: opened["pane"].as_u64().unwrap(),
+        target: Some(target),
+        background: false,
+    };
+    old.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    loop {
+        let frame = codec::read_frame(&mut old).unwrap().expect("daemon closed");
+        match codec::decode(&frame).unwrap() {
+            ServerMessage::Event(Event::Ui(c)) => {
+                assert_eq!(c, want);
+                break;
+            }
+            _ => continue,
+        }
+    }
+}
+
+#[test]
+fn an_action_hears_the_selection_the_file_and_the_remote_host() {
+    let env = Env::new("ext-context");
+    let _d = env.start();
+    let (provider, provider_rx) = ext_client(&env, "provider");
+    let (user, _rx) = ext_client(&env, "user");
+    call(
+        &provider,
+        method::ACTIONS_REGISTER,
+        json!({ "actions": [{ "name": "ctx.echo" }] }),
+    )
+    .unwrap();
+    let answering = std::thread::spawn({
+        let provider = provider.clone();
+        move || {
+            for _ in 0..3 {
+                let invoke = next(&provider_rx, notice::ACTION_INVOKE);
+                call(
+                    &provider,
+                    method::ACTIONS_RESULT,
+                    json!({ "id": invoke["id"], "result": invoke["ctx"] }),
+                )
+                .unwrap();
+            }
+        }
+    });
+    let pane = create(&user, &env.dir);
+    let ctx = call(
+        &user,
+        method::ACTIONS_RUN,
+        json!({ "name": "ctx.echo", "pane": pane, "selection": "a b", "file": "src/x.rs" }),
+    )
+    .unwrap();
+    assert_eq!(ctx["pane"], json!(pane));
+    assert_eq!(ctx["selection"], json!("a b"));
+    assert_eq!(ctx["file"], json!("src/x.rs"));
+    assert!(ctx.get("remote").is_none(), "{ctx}");
+
+    let ctx = call(
+        &user,
+        method::ACTIONS_RUN,
+        json!({ "name": "ctx.echo", "no_pane": true, "remote": "devbox" }),
+    )
+    .unwrap();
+    assert_eq!(ctx["pane"], Value::Null);
+    assert_eq!(ctx["remote"], json!("devbox"));
+
+    // A pane of this daemon's is not another host's.
+    let ctx = call(
+        &user,
+        method::ACTIONS_RUN,
+        json!({ "name": "ctx.echo", "pane": pane, "remote": "devbox" }),
+    )
+    .unwrap();
+    assert!(ctx.get("remote").is_none(), "{ctx}");
+    answering.join().unwrap();
+}

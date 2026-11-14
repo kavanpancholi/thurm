@@ -104,16 +104,21 @@ Calls that wait (a program, an action, the user, `sleep`) work in the main
 chunk, in actions, in event handlers and in timers; Thurm runs each of these
 in a coroutine and keeps going meanwhile, so a slow handler never holds up
 your keys. Errors are raised: catch them with `pcall` where you expect them.
+An error says the file and line it came from, which helps with a bug; to stop
+with a message meant for the user (a file that isn't there), use
+`thurm.fail(message)`, which shows only the message. An action that fails
+either way shows it over the pane when the app ran it, and `thurm action run`
+prints it and exits with 1.
 
 | Function | Does |
 | --- | --- |
-| `thurm.action{name, title, description, category, hidden, args, run}` | Adds an action; `run(ctx, args)` returns its result. `ctx` has `pane`, `origin` and `depth` |
+| `thurm.action{name, title, description, category, hidden, args, run}` | Adds an action; `run(ctx, args)` returns its result. `ctx` has `pane`, `origin` and `depth`, and more when the app runs it (below) |
 | `thurm.run(name, args, pane)` | Runs any action and returns its result |
 | `thurm.actions()` | Every action and binding |
 | `thurm.bind(key, action or fn, args)`, `thurm.unbind(key)` | Binds a key |
 | `thurm.on(event, fn)`, `thurm.emit(name, payload)` | Hears events; sends one of your own |
 | `thurm.panes()`, `thurm.info(pane)`, `thurm.focused()` | Panes, one pane, the focused pane |
-| `thurm.open{command, cwd, env, agent, split, float, window, target, percent, background, hold}` | Opens a pane and returns its id |
+| `thurm.open{command, cwd, env, agent, split, float, frame, cells, window, target, percent, background, hold}` | Opens a pane and returns its id; `frame` and `cells` place a floating one (below) |
 | `thurm.split(dir, opts)` | `thurm.open` with `split = dir` |
 | `thurm.send(pane, text, {enter})`, `thurm.capture(pane, {lines, scrollback, ansi})` | Types into a pane; reads its screen |
 | `thurm.wait(pane, {match, idle, exit, agent, timeout})` | Waits for the prompt, a regex, quiet, exit or a free agent; `true`, or `false` and why; waiting for `exit`, the exit code is the third value (`true, nil, code`) |
@@ -123,9 +128,42 @@ your keys. Errors are raised: catch them with `pcall` where you expect them.
 | `thurm.ui.input{title, placeholder, value}`, `thurm.ui.confirm{title, body, ok, cancel}` | A line of text, or yes or no |
 | `thurm.exec(argv, {cwd, env, stdin, timeout})` | Runs a program to its end through your login shell; `ok`, `code`, `stdout`, `stderr`, `timed_out`. A string runs with `sh -c` |
 | `thurm.after(s, fn)`, `thurm.every(s, fn)`, `thurm.sleep(s)` | Timers; the first two return a handle with `cancel()` (a plugin may have 4096 set at a time) |
+| `thurm.fail(message)` | Stops with a message for the user, without the file and line an error adds |
 | `thurm.call(method, params)`, `thurm.request(request)` | Any method of the API below, or any daemon request as JSON |
 | `thurm.json.encode`, `thurm.json.decode`, `thurm.json.null`, `thurm.log(...)`, `thurm.warn(...)` | JSON (decode keeps nulls as `thurm.json.null`; in the API's results a null field is `nil` and a null in an array is `thurm.json.null`), and the plugin's log (`print` logs too) |
 | `thurm.plugin`, `thurm.dir`, `thurm.settings`, `thurm.args`, `thurm.pane` | The plugin's name, directory and settings; a script's arguments and pane |
+
+When the app runs an action (a key, the palette, the menu) in one of this
+Mac's panes, `ctx` also says what the person is looking at: `selection`, the
+text selected in the pane, and `file`, the file the mouse pointer is over, as
+the context menu's **Quick Look** finds it (a path as written there, so
+relative to the pane's directory unless it is absolute). In a remote host's
+pane, the action gets neither: `pane` is `nil` (this daemon's pane ids mean
+nothing there) and `remote` is the host's `[[remote]]` name.
+
+A floating pane goes where new floating panes go, unless you place it: `frame
+= {x, y, width, height}` in fractions of the tab's area, from its top left
+corner, or `cells = {cols = 60, rows = 20, col = 2, row = 1}` for a terminal of
+that many cells whose first cell is `col` columns right of and `row` rows below
+`target`'s (either may be negative; the app keeps the card inside the tab).
+Either one floats the pane. An app too old to place it floats it where new
+floating panes go. Set `float = true` with them as well: a Thurm from before
+`frame` and `cells` ignores both, and opens a tab where `float` is not set.
+
+```lua
+-- A card over the middle of the current pane, 60 by 20 cells.
+local pane = thurm.focused()
+local info = thurm.info(pane)
+thurm.open{
+  command = { "htop" },
+  target = pane,
+  float = true,
+  cells = {
+    cols = 60, rows = 20,
+    col = (info.size.cols - 60) // 2, row = (info.size.rows - 20) // 2,
+  },
+}
+```
 
 `require` loads modules from the plugin's own directory. `io.popen`,
 `os.execute` and `os.exit` are not available (use `thurm.exec`). `io` opens
@@ -200,6 +238,12 @@ thurm plugin update
 thurm plugin remove git-tools
 ```
 
+For a whole plugin to start from, see
+[`examples/plugins/quicklook`](https://github.com/nklmilojevic/thurm/tree/main/examples/plugins/quicklook)
+in Thurm's repository: an action and a key (⌘Y) that preview a file with
+macOS's Quick Look in a floating pane, drawn with the kitty graphics protocol
+by a small script that ships with it.
+
 `install` clones the repository into the plugins directory (the name drops a
 `thurm-` prefix; `--name` picks another). `disable` and `enable` change
 `plugins.disabled` in `config.toml`:
@@ -263,7 +307,7 @@ JSON.
 | `actions.list` | | `{actions, bindings}` |
 | `actions.register` | `{actions: [{name, title, description, category, hidden, args}]}` | |
 | `actions.unregister` | `{names}` | |
-| `actions.run` | `{name, args, pane, no_pane}`; without `pane` the focused one, unless `no_pane` | The action's result |
+| `actions.run` | `{name, args, pane, no_pane, remote, selection, file}`; without `pane` the focused one, unless `no_pane`; the rest reach the action's `ctx` | The action's result |
 | `keys.bind`, `keys.unbind` | `{key, action, args}`, `{key}` | |
 | `events.subscribe`, `events.unsubscribe` | `{names}` (`"*"` for all) | |
 | `events.emit` | `{name, payload}`; the name has a dot | |

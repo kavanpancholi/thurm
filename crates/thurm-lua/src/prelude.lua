@@ -290,6 +290,12 @@ end
 
 -- Odds and ends -------------------------------------------------------------------------------
 
+-- Stops the action (or script, handler, timer) with a message for the user, shown as it is: an
+-- error raised with `error` also says the file and line it came from.
+function thurm.fail(message)
+  P.fail(tostring(message))
+end
+
 -- decode keeps JSON nulls as thurm.json.null (arrays keep their length). In the API's own
 -- results a null field is a missing one (nil), while a null in an array, at any depth, is
 -- thurm.json.null, so the items after it keep their places.

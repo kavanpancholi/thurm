@@ -290,10 +290,12 @@ final class Extensions {
     /// `completion` gets the error, if any.
     /// `noPane`: the focus is on no pane of this Mac's daemon (another host's), so the action
     /// gets none rather than the daemon's own focused one.
+    /// `context`: what the action learns of where it runs (`remote`, `selection`, `file`).
     func run(_ name: String, args: String? = nil, pane: UInt64?, noPane: Bool = false,
-             completion: @escaping (String?) -> Void) {
+             context: [String: Any] = [:], completion: @escaping (String?) -> Void) {
         var params: [String: Any] = ["name": name, "pane": pane.map { $0 as Any } ?? NSNull()]
         if noPane { params["no_pane"] = true }
+        params.merge(context) { mine, _ in mine }
         if let args, let value = JSON.decode(args) { params["args"] = value }
         // An action may ask the user, or run a while: the answer can take long.
         call("actions.run", params, timeout: 30 * 60) { _, e in

@@ -195,6 +195,16 @@ pub struct RunAction {
     /// it: the depth is that one's. Without it, a provider is taken to be as deep as the
     /// deepest action it has been asked to carry out.
     pub invocation: Option<u64>,
+    /// With `no_pane`: the `[[remote]]` host whose pane the person is in.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remote: Option<String>,
+    /// The text selected in the pane, when an app runs it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selection: Option<String>,
+    /// The file the mouse pointer is over in the pane, as written there (a `file://` link as
+    /// its path), when an app runs it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
 }
 
 /// What an action's provider gets with [`notice::ACTION_INVOKE`].
@@ -217,6 +227,17 @@ pub struct Context {
     pub origin: String,
     /// How many actions deep this one runs (an action may run others).
     pub depth: u32,
+    /// The `[[remote]]` host whose pane the person is in: `pane` is then none, since this
+    /// daemon's ids mean nothing there.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remote: Option<String>,
+    /// The text selected in the pane, when an app runs it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selection: Option<String>,
+    /// The file the mouse pointer is over in the pane, as written there (relative to the
+    /// pane's directory, unless it is absolute), when an app runs it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
 }
 
 /// The answer of a socket client to something the daemon asked it ([`notice::ACTION_INVOKE`],
@@ -244,6 +265,12 @@ pub struct OpenPane {
     pub split: Option<String>,
     /// Float above `target`'s tab.
     pub float: bool,
+    /// Float it at `[x, y, width, height]`, fractions of the tab's area from its top left
+    /// corner (as [`crate::FloatPlace::Fraction`]). Implies `float`.
+    pub frame: Option<[f64; 4]>,
+    /// Float it with a terminal of this many cells, placed from `target`'s first cell (as
+    /// [`crate::FloatPlace::Cells`] anchored at `target`). Implies `float`.
+    pub cells: Option<FloatCells>,
     /// In a new workspace.
     pub window: bool,
     /// The pane to split, float above, or take the working directory from (the focused one).
@@ -256,6 +283,18 @@ pub struct OpenPane {
     pub hold: bool,
     /// Do not show it at all: the caller places it later.
     pub detached: bool,
+}
+
+/// [`OpenPane::cells`]: a floating pane's terminal `cols` (at least 2) by `rows` cells, its
+/// first cell `col` cells right of and `row` cells below the target's first cell. Either may be
+/// negative or past the target's edge: the app keeps the card inside the tab.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq)]
+#[serde(default)]
+pub struct FloatCells {
+    pub col: i32,
+    pub row: i32,
+    pub cols: u16,
+    pub rows: u16,
 }
 
 /// What an app shows for a plugin, sent with [`notice::UI_REQUEST`].

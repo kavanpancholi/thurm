@@ -12,11 +12,16 @@
 ---@field exit_code integer?
 ---@field at_prompt boolean
 ---@field agent table?
+---@field size { cols: integer, rows: integer, cell_width: integer, cell_height: integer } Cells, and a cell's size in pixels.
+---@field foreground { pid: integer, name: string, argv: string[] }? The program in the foreground.
 
 ---@class thurm.Context
 ---@field pane integer? The pane it runs for: the focused one, when a person asked.
 ---@field origin string Who asked: a client's name, `plugin:<name>`.
 ---@field depth integer How many actions deep it runs.
+---@field remote string? The `[[remote]]` host whose pane the person is in; `pane` is then nil.
+---@field selection string? The text selected in the pane, when an app runs it.
+---@field file string? The file the mouse pointer is over in the pane, as written there (relative to the pane's directory unless absolute), when an app runs it.
 
 ---@class thurm.ActionSpec
 ---@field name string `group.verb`: letters, digits, `.`, `_`, `-`, `:` and spaces.
@@ -34,12 +39,20 @@
 ---@field agent string? An agent preset to start instead of `command`.
 ---@field split "right"|"down"|"left"|"up"? Split `target` instead of opening a tab.
 ---@field float boolean? Float above `target`'s tab.
+---@field frame number[]? Float at `{x, y, width, height}`: fractions of the tab's area, from its top left corner. Set `float` too, for a Thurm from before `frame`.
+---@field cells thurm.FloatCells? Float with a terminal of this many cells, placed from `target`'s first cell. Set `float` too, for a Thurm from before `cells`.
 ---@field window boolean? In a new workspace.
 ---@field target integer? The pane to split or float over; the focused one when unset.
 ---@field percent integer? The new pane's share of a split.
 ---@field background boolean? Keep the focus where it is.
 ---@field hold boolean? Keep the pane open after its program exits.
 ---@field detached boolean? Do not show it: place it later.
+
+---@class thurm.FloatCells
+---@field cols integer Columns, at least 2.
+---@field rows integer
+---@field col integer? Its first cell this many columns right of `target`'s first cell (0); may be negative.
+---@field row integer? And this many rows below it (0); may be negative.
 
 ---@class thurm.ExecResult
 ---@field ok boolean Exited with 0.
@@ -201,6 +214,11 @@ function thurm.every(seconds, fn) end
 
 ---@param seconds number
 function thurm.sleep(seconds) end
+
+--- Stops the action, script, handler or timer with a message for the user, shown as it is
+--- (`error` also says the file and line, which is for bugs).
+---@param message any Shown with `tostring`.
+function thurm.fail(message) end
 
 thurm.json = {}
 

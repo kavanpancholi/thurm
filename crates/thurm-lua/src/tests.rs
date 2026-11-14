@@ -137,6 +137,44 @@ fn errors_say_where_and_calls_raise() {
 }
 
 #[test]
+fn thurm_fail_says_only_what_it_was_given() {
+    let f = fixture();
+    let e = run(&f, "\n\nthurm.fail('no such file: x.png')").unwrap_err();
+    assert_eq!(e, "no such file: x.png");
+    // Caught and raised again, it is still the message alone.
+    let e = run(&f, "local ok, e = pcall(thurm.fail, 'nope')\nerror(e)").unwrap_err();
+    assert_eq!(e, "nope");
+    let e = run(&f, "thurm.fail(42)").unwrap_err();
+    assert_eq!(e, "42");
+
+    // From an action, after it waited on something.
+    let done = f.rt.load(spec(
+        1,
+        r#"
+        local function check(path)
+            thurm.exec({ "slowprog" })
+            thurm.fail("no such file: " .. path)
+        end
+        thurm.action{ name = "test.missing", run = function(ctx, args) check(args.path) end }
+        "#,
+        false,
+    ));
+    assert_eq!(
+        done.recv_timeout(Duration::from_secs(20)).unwrap(),
+        Ok(Value::Null)
+    );
+    f.rt.notice(
+        1,
+        notice::ACTION_INVOKE,
+        json!({ "id": 20, "name": "test.missing", "args": { "path": "x.png" }, "ctx": {} }),
+    );
+    assert_eq!(
+        next(&f, "actions.result"),
+        json!({ "id": 20, "error": "no such file: x.png" })
+    );
+}
+
+#[test]
 fn a_runaway_loop_is_stopped() {
     let f = fixture();
     let at = Instant::now();

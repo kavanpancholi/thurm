@@ -372,6 +372,10 @@ impl Daemon {
                         pane,
                         origin: origin.to_owned(),
                         depth: depth + 1,
+                        // Another host's pane is the reason for none.
+                        remote: run.remote.filter(|_| pane.is_none()),
+                        selection: run.selection,
+                        file: run.file,
                     },
                 };
                 send_ext(&client, notice::ACTION_INVOKE, &json!(invoke));
@@ -598,6 +602,7 @@ impl Daemon {
             }
         };
         let target = open.target.or_else(|| self.focused_pane());
+        let place = float_place(&open, target, |p| self.pane(p).is_some())?;
         let pane = self
             .create_pane(
                 CreatePane {
@@ -615,12 +620,28 @@ impl Daemon {
         if open.detached {
             return Ok(json!({ "pane": pane, "shown": false }));
         }
-        let cmd = if open.float {
-            UiCommand::OpenFloating {
+        let floating = UiCommand::OpenFloating {
+            pane,
+            target,
+            background: open.background,
+        };
+        if let Some(place) = place {
+            let at = UiCommand::OpenFloatingAt {
                 pane,
                 target,
+                place,
                 background: open.background,
+            };
+            // An app from before `OpenFloatingAt` floats it where new floating panes go.
+            let shown = match self.layout_ui(at) {
+                Err(e) if e == thurm_proto::UI_TOO_OLD => self.layout_ui(floating),
+                other => other,
             }
+            .is_ok();
+            return Ok(json!({ "pane": pane, "shown": shown }));
+        }
+        let cmd = if open.float {
+            floating
         } else {
             UiCommand::Open {
                 pane,
@@ -769,4 +790,114 @@ pub(super) fn send_ext(client: &Client, name: &str, payload: &Value) {
         name: name.to_owned(),
         payload: payload.to_string(),
     }));
+}
+
+/// Where `panes.open` floats its pane: at `frame`, or in `cells` counted from `target`. A place
+/// over a `target` that is not a live pane is refused, before any pane is made.
+fn float_place(
+    open: &ext::OpenPane,
+    target: Option<PaneId>,
+    live: impl Fn(PaneId) -> bool,
+) -> Result<Option<thurm_proto::FloatPlace>, String> {
+    use thurm_proto::FloatPlace;
+    if (open.frame.is_some() || open.cells.is_some())
+        && let Some(t) = target.filter(|&t| !live(t))
+    {
+        return Err(format!("target {t}: no such pane"));
+    }
+    match (open.frame, open.cells) {
+        (None, None) => Ok(None),
+        (Some(_), Some(_)) => Err("give frame or cells, not both".into()),
+        (Some([x, y, w, h]), None) => {
+            if [x, y, w, h].iter().any(|f| !(0.0..=1.0).contains(f)) || w == 0.0 || h == 0.0 {
+                return Err(
+                    "frame: fractions go from 0 to 1, and the width and height can't be 0".into(),
+                );
+            }
+            Ok(Some(FloatPlace::Fraction([x, y, w, h])))
+        }
+        (None, Some(c)) => {
+            if c.cols < 2 || c.rows == 0 {
+                return Err("cells: at least 2 columns by 1 row".into());
+            }
+            let anchor = target.ok_or("cells count from a pane: give target")?;
+            Ok(Some(FloatPlace::Cells {
+                anchor,
+                col: c.col,
+                row: c.row,
+                cols: c.cols,
+                rows: c.rows,
+            }))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn open(frame: Option<[f64; 4]>, cells: Option<ext::FloatCells>) -> ext::OpenPane {
+        ext::OpenPane {
+            frame,
+            cells,
+            ..Default::default()
+        }
+    }
+
+    fn float_place_in(
+        open: &ext::OpenPane,
+        target: Option<PaneId>,
+    ) -> Result<Option<thurm_proto::FloatPlace>, String> {
+        float_place(open, target, |_| true)
+    }
+
+    #[test]
+    fn float_place_takes_a_frame_or_cells() {
+        use thurm_proto::FloatPlace;
+        assert_eq!(float_place_in(&open(None, None), Some(3)), Ok(None));
+        assert_eq!(
+            float_place_in(&open(Some([0.1, 0.2, 0.5, 0.4]), None), None),
+            Ok(Some(FloatPlace::Fraction([0.1, 0.2, 0.5, 0.4])))
+        );
+        let cells = ext::FloatCells {
+            col: -2,
+            row: 1,
+            cols: 40,
+            rows: 10,
+        };
+        assert_eq!(
+            float_place_in(&open(None, Some(cells)), Some(3)),
+            Ok(Some(FloatPlace::Cells {
+                anchor: 3,
+                col: -2,
+                row: 1,
+                cols: 40,
+                rows: 10
+            }))
+        );
+    }
+
+    #[test]
+    fn float_place_refuses_what_the_app_cannot_place() {
+        let cells = ext::FloatCells {
+            cols: 40,
+            rows: 10,
+            ..Default::default()
+        };
+        assert!(float_place_in(&open(Some([0.0, 0.0, 1.0, 1.0]), Some(cells)), Some(1)).is_err());
+        assert!(float_place_in(&open(Some([0.0, 0.0, 1.5, 1.0]), None), None).is_err());
+        assert!(float_place_in(&open(Some([0.0, 0.0, 0.0, 1.0]), None), None).is_err());
+        assert!(float_place_in(&open(Some([f64::NAN, 0.0, 0.5, 0.5]), None), None).is_err());
+        assert!(float_place_in(&open(None, Some(cells)), None).is_err());
+        let narrow = ext::FloatCells {
+            cols: 1,
+            rows: 10,
+            ..Default::default()
+        };
+        assert!(float_place_in(&open(None, Some(narrow)), Some(1)).is_err());
+        let gone = |p| p != 7;
+        assert!(float_place(&open(None, Some(cells)), Some(7), gone).is_err());
+        assert!(float_place(&open(Some([0.0, 0.0, 0.5, 0.5]), None), Some(7), gone).is_err());
+        assert_eq!(float_place(&open(None, None), Some(7), gone), Ok(None));
+    }
 }

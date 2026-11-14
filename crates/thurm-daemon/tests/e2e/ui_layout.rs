@@ -13,7 +13,7 @@ fn old_ui(env: &Env) -> UnixStream {
 }
 
 /// A UI that announces only `capabilities`.
-fn ui_with(env: &Env, capabilities: &[&str]) -> UnixStream {
+pub(super) fn ui_with(env: &Env, capabilities: &[&str]) -> UnixStream {
     let mut s = UnixStream::connect(&env.socket).unwrap();
     let r = send(
         &mut s,
