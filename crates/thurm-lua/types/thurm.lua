@@ -36,8 +36,8 @@
 ---@field agent string? An agent preset to start instead of `command`.
 ---@field split "right"|"down"|"left"|"up"? Split `target` instead of opening a tab.
 ---@field float boolean? Float above `target`'s tab.
----@field frame number[]? Float at `{x, y, width, height}`: fractions of the tab's area, from its top left corner.
----@field cells thurm.FloatCells? Float with a terminal of this many cells, placed from `target`'s first cell.
+---@field frame number[]? Float at `{x, y, width, height}`: fractions of the tab's area, from its top left corner. Set `float` too, for a Thurm from before `frame`.
+---@field cells thurm.FloatCells? Float with a terminal of this many cells, placed from `target`'s first cell. Set `float` too, for a Thurm from before `cells`.
 ---@field window boolean? In a new workspace.
 ---@field target integer? The pane to split or float over; the focused one when unset.
 ---@field percent integer? The new pane's share of a split.

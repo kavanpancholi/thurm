@@ -1275,6 +1275,17 @@ fn a_plugin_places_the_floating_pane_it_opens() {
     )
     .unwrap_err();
     assert!(err.contains("frame"), "{err}");
+    let err = call(
+        &plugin,
+        method::PANES_OPEN,
+        json!({
+            "command": ["sleep", "30"],
+            "target": 999_999,
+            "cells": { "cols": 40, "rows": 10 },
+        }),
+    )
+    .unwrap_err();
+    assert!(err.contains("no such pane"), "{err}");
     let panes = match app.request(Request::ListPanes).unwrap() {
         Response::Panes(p) => p.len(),
         other => panic!("{other:?}"),
