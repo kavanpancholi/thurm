@@ -8,7 +8,8 @@
 -- Use:
 --
 --   cmd+y        previews the file you selected, or the one the mouse pointer is over;
---                with neither, asks for one, starting from the last file the pane shows
+--                when neither is a file, asks for one, starting from the last file the
+--                pane shows
 --   thurm action run quicklook.preview '{"path":"report.pdf"}'
 --   thurm.run("quicklook.preview", { path = "~/Desktop/shot.png" })      -- from Lua
 --
@@ -74,8 +75,14 @@ local function file_on_screen(pane, cwd)
   for line in text:gmatch("[^\n]+") do
     lines[#lines + 1] = line
   end
-  -- The words that may name a file, last first.
+  -- The words that may name a file, last first, checked 200 at a time: the first batch with a
+  -- file in it has the last one.
   local words, paths = {}, {}
+  local function check()
+    local found = words[first_file(paths)]
+    words, paths = {}, {}
+    return found
+  end
   for i = #lines, 1, -1 do
     local line = {}
     for word in lines[i]:gmatch("[^%s\"'`]+") do
@@ -88,12 +95,15 @@ local function file_on_screen(pane, cwd)
         words[#words + 1] = word
         paths[#paths + 1] = resolve(word, cwd)
         if #paths >= 200 then
-          return words[first_file(paths)]
+          local found = check()
+          if found then
+            return found
+          end
         end
       end
     end
   end
-  return words[first_file(paths)]
+  return check()
 end
 
 -- The file to preview: the one asked for, else the selection or the file under the pointer
@@ -112,7 +122,8 @@ local function choose(ctx, args, cwd)
   if ctx.file and is_file(resolve(ctx.file, cwd)) then
     return ctx.file
   end
-  local default = selection or ctx.file or file_on_screen(ctx.pane, cwd)
+  -- A selection or a pointer path that is not a file is no default: the screen's file is.
+  local default = file_on_screen(ctx.pane, cwd)
     or (cwd and (cwd:gsub("/$", "")) .. "/") or ""
   local path = thurm.ui.input{ title = "Quick Look", placeholder = "A file", value = default }
   if path and trim(path) ~= "" then
