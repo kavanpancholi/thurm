@@ -2238,3 +2238,27 @@ fn a_title_only_write_leaves_the_pane_idle() {
     t.advance(b"\x1b]0;Command Code\x07x");
     assert!(t.last_output > idle_since);
 }
+
+#[test]
+fn a_title_split_across_reads_leaves_the_pane_idle() {
+    let mut t = term(20, 4);
+    let idle_since = Instant::now() - Duration::from_secs(10);
+    t.last_output = idle_since;
+    t.advance(b"\x1b]0;Command");
+    t.advance(b" Code\x07");
+    assert_eq!(t.last_output, idle_since);
+}
+
+#[test]
+fn a_title_does_not_settle_a_resize_redraw() {
+    let mut t = term(40, 5);
+    t.advance(b"old layout");
+    t.last_output = Instant::now() - Duration::from_secs(10);
+    let mut size = t.size();
+    size.cols = 30;
+    t.resize(size);
+    let deadline = t.sync_deadline();
+    t.advance(b"\x1b]0;title\x07");
+    assert_eq!(t.sync_deadline(), deadline);
+    assert!(t.in_sync());
+}
