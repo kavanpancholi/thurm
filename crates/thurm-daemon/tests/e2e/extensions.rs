@@ -675,6 +675,40 @@ fn init_lua_provides_actions_and_scripts_run() {
     }
 }
 
+/// `thurm do` connects asking for no capabilities: a script still runs, its logs come back,
+/// and so does what it returns.
+#[test]
+fn a_client_without_capabilities_runs_scripts() {
+    let env = Env::new("ext-do-plain");
+    let _d = env.start();
+    let (tx, rx) = unbounded();
+    let c = Client::connect_with(
+        ConnectOptions {
+            socket: env.socket.clone(),
+            spawn_daemon: None,
+            client_name: "thurm-do",
+            ui: false,
+        },
+        &[],
+        move |ev| {
+            if let Event::Ext { name, payload } = ev {
+                let _ = tx.send((name, serde_json::from_str::<Value>(&payload).unwrap()));
+            }
+        },
+        || {},
+    )
+    .expect("connect");
+    let r = call(
+        &c,
+        method::SCRIPT_RUN,
+        json!({ "source": "thurm.log('working'); return #thurm.panes()" }),
+    )
+    .unwrap();
+    assert_eq!(r, 0);
+    let log = next(&rx, notice::SCRIPT_LOG);
+    assert_eq!(log["message"], "working");
+}
+
 /// The threads of a process.
 fn thread_count(pid: u32) -> usize {
     if let Ok(tasks) = std::fs::read_dir(format!("/proc/{pid}/task")) {
