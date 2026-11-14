@@ -1,0 +1,3 @@
+version = "0.1.0"
+description = "Quick Look a file in a floating pane"
+main = "init.lua"

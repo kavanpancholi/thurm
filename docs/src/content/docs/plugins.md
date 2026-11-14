@@ -235,6 +235,12 @@ thurm plugin update
 thurm plugin remove git-tools
 ```
 
+For a whole plugin to start from, see
+[`examples/plugins/quicklook`](https://github.com/nklmilojevic/thurm/tree/main/examples/plugins/quicklook)
+in Thurm's repository: an action and a key (⌘Y) that preview a file with
+macOS's Quick Look in a floating pane, drawn with the kitty graphics protocol
+by a small script that ships with it.
+
 `install` clones the repository into the plugins directory (the name drops a
 `thurm-` prefix; `--name` picks another). `disable` and `enable` change
 `plugins.disabled` in `config.toml`:
