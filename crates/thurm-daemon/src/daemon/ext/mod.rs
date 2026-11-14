@@ -602,7 +602,7 @@ impl Daemon {
             }
         };
         let target = open.target.or_else(|| self.focused_pane());
-        let place = float_place(&open, target)?;
+        let place = float_place(&open, target, |p| self.pane(p).is_some())?;
         let pane = self
             .create_pane(
                 CreatePane {
@@ -633,10 +633,11 @@ impl Daemon {
                 background: open.background,
             };
             // An app from before `OpenFloatingAt` floats it where new floating panes go.
-            let shown = self
-                .layout_ui(at)
-                .or_else(|_| self.layout_ui(floating))
-                .is_ok();
+            let shown = match self.layout_ui(at) {
+                Err(e) if e == thurm_proto::UI_TOO_OLD => self.layout_ui(floating),
+                other => other,
+            }
+            .is_ok();
             return Ok(json!({ "pane": pane, "shown": shown }));
         }
         let cmd = if open.float {
@@ -791,12 +792,19 @@ pub(super) fn send_ext(client: &Client, name: &str, payload: &Value) {
     }));
 }
 
-/// Where `panes.open` floats its pane: at `frame`, or in `cells` counted from `target`.
+/// Where `panes.open` floats its pane: at `frame`, or in `cells` counted from `target`. A place
+/// over a `target` that is not a live pane is refused, before any pane is made.
 fn float_place(
     open: &ext::OpenPane,
     target: Option<PaneId>,
+    live: impl Fn(PaneId) -> bool,
 ) -> Result<Option<thurm_proto::FloatPlace>, String> {
     use thurm_proto::FloatPlace;
+    if (open.frame.is_some() || open.cells.is_some())
+        && let Some(t) = target.filter(|&t| !live(t))
+    {
+        return Err(format!("target {t}: no such pane"));
+    }
     match (open.frame, open.cells) {
         (None, None) => Ok(None),
         (Some(_), Some(_)) => Err("give frame or cells, not both".into()),
@@ -836,12 +844,19 @@ mod tests {
         }
     }
 
+    fn float_place_in(
+        open: &ext::OpenPane,
+        target: Option<PaneId>,
+    ) -> Result<Option<thurm_proto::FloatPlace>, String> {
+        float_place(open, target, |_| true)
+    }
+
     #[test]
     fn float_place_takes_a_frame_or_cells() {
         use thurm_proto::FloatPlace;
-        assert_eq!(float_place(&open(None, None), Some(3)), Ok(None));
+        assert_eq!(float_place_in(&open(None, None), Some(3)), Ok(None));
         assert_eq!(
-            float_place(&open(Some([0.1, 0.2, 0.5, 0.4]), None), None),
+            float_place_in(&open(Some([0.1, 0.2, 0.5, 0.4]), None), None),
             Ok(Some(FloatPlace::Fraction([0.1, 0.2, 0.5, 0.4])))
         );
         let cells = ext::FloatCells {
@@ -851,7 +866,7 @@ mod tests {
             rows: 10,
         };
         assert_eq!(
-            float_place(&open(None, Some(cells)), Some(3)),
+            float_place_in(&open(None, Some(cells)), Some(3)),
             Ok(Some(FloatPlace::Cells {
                 anchor: 3,
                 col: -2,
@@ -869,16 +884,20 @@ mod tests {
             rows: 10,
             ..Default::default()
         };
-        assert!(float_place(&open(Some([0.0, 0.0, 1.0, 1.0]), Some(cells)), Some(1)).is_err());
-        assert!(float_place(&open(Some([0.0, 0.0, 1.5, 1.0]), None), None).is_err());
-        assert!(float_place(&open(Some([0.0, 0.0, 0.0, 1.0]), None), None).is_err());
-        assert!(float_place(&open(Some([f64::NAN, 0.0, 0.5, 0.5]), None), None).is_err());
-        assert!(float_place(&open(None, Some(cells)), None).is_err());
+        assert!(float_place_in(&open(Some([0.0, 0.0, 1.0, 1.0]), Some(cells)), Some(1)).is_err());
+        assert!(float_place_in(&open(Some([0.0, 0.0, 1.5, 1.0]), None), None).is_err());
+        assert!(float_place_in(&open(Some([0.0, 0.0, 0.0, 1.0]), None), None).is_err());
+        assert!(float_place_in(&open(Some([f64::NAN, 0.0, 0.5, 0.5]), None), None).is_err());
+        assert!(float_place_in(&open(None, Some(cells)), None).is_err());
         let narrow = ext::FloatCells {
             cols: 1,
             rows: 10,
             ..Default::default()
         };
-        assert!(float_place(&open(None, Some(narrow)), Some(1)).is_err());
+        assert!(float_place_in(&open(None, Some(narrow)), Some(1)).is_err());
+        let gone = |p| p != 7;
+        assert!(float_place(&open(None, Some(cells)), Some(7), gone).is_err());
+        assert!(float_place(&open(Some([0.0, 0.0, 0.5, 0.5]), None), Some(7), gone).is_err());
+        assert_eq!(float_place(&open(None, None), Some(7), gone), Ok(None));
     }
 }

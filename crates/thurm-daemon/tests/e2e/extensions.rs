@@ -1275,11 +1275,67 @@ fn a_plugin_places_the_floating_pane_it_opens() {
     )
     .unwrap_err();
     assert!(err.contains("frame"), "{err}");
+    let err = call(
+        &plugin,
+        method::PANES_OPEN,
+        json!({
+            "command": ["sleep", "30"],
+            "target": 999_999,
+            "cells": { "cols": 40, "rows": 10 },
+        }),
+    )
+    .unwrap_err();
+    assert!(err.contains("no such pane"), "{err}");
     let panes = match app.request(Request::ListPanes).unwrap() {
         Response::Panes(p) => p.len(),
         other => panic!("{other:?}"),
     };
     assert_eq!(panes, 2, "a refused place opens no pane");
+}
+
+#[test]
+fn an_app_from_before_placing_floats_the_pane_where_new_ones_go() {
+    let env = Env::new("ext-float-old");
+    let _d = env.start();
+    let mut old = super::ui_layout::ui_with(
+        &env,
+        &[
+            CAP_ACTIVE_SIZE,
+            CAP_UI_LAYOUT,
+            CAP_AGENT_WALL,
+            CAP_FLOATING,
+            CAP_FLOATING_NEW,
+        ],
+    );
+    let (plugin, _rx) = ext_client(&env, "plugin");
+    let target = create(&plugin, &env.dir);
+    let opened = call(
+        &plugin,
+        method::PANES_OPEN,
+        json!({
+            "command": ["sleep", "30"],
+            "target": target,
+            "cells": { "cols": 40, "rows": 10 },
+        }),
+    )
+    .unwrap();
+    assert_eq!(opened["shown"], json!(true));
+    let want = UiCommand::OpenFloating {
+        pane: opened["pane"].as_u64().unwrap(),
+        target: Some(target),
+        background: false,
+    };
+    old.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    loop {
+        let frame = codec::read_frame(&mut old).unwrap().expect("daemon closed");
+        match codec::decode(&frame).unwrap() {
+            ServerMessage::Event(Event::Ui(c)) => {
+                assert_eq!(c, want);
+                break;
+            }
+            _ => continue,
+        }
+    }
 }
 
 #[test]
