@@ -31,6 +31,7 @@ thurm.action{
   run = function(ctx)
     local info = thurm.info(ctx.pane)
     local r = thurm.exec({ "git", "status", "--short" }, { cwd = info.cwd })
+    if not r.ok then error("git status failed: " .. r.stderr) end
     thurm.ui.toast(r.stdout ~= "" and r.stdout or "clean", ctx.pane)
   end,
 }
