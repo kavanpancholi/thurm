@@ -426,6 +426,23 @@ fn reserve(
     })
 }
 
+/// A new, empty hidden directory in `dir` for a clone of plugin `name`: made by this call,
+/// never one that was there.
+fn staging(
+    dir: &std::path::Path,
+    name: &str,
+) -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
+    for n in 0..100 {
+        let path = dir.join(format!(".{name}.install-{}-{n}", std::process::id()));
+        match std::fs::create_dir(&path) {
+            Ok(()) => return Ok(path),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Err(format!("no free name for a clone in {}", dir.display()).into())
+}
+
 /// Asks the daemon, when one runs, to look at the plugins again.
 fn reload_running(name: Option<&str>) {
     if let Ok(c) = crate::connect(false) {
@@ -536,8 +553,13 @@ pub fn plugin_local(cmd: PluginCmd, json: bool) -> R {
             // hidden directory of its own, which then takes the name's place. On a failure
             // both go: they are this command's.
             reserve(&dir, &target)?;
-            let clone = dir.join(format!(".{name}.install-{}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&clone);
+            let clone = match staging(&dir, &name) {
+                Ok(c) => c,
+                Err(e) => {
+                    let _ = std::fs::remove_dir(&target);
+                    return Err(e);
+                }
+            };
             let cloned = git(&[
                 "clone",
                 "--depth",
