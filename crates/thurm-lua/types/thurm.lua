@@ -217,7 +217,7 @@ function thurm.sleep(seconds) end
 
 --- Stops the action, script, handler or timer with a message for the user, shown as it is
 --- (`error` also says the file and line, which is for bugs).
----@param message string
+---@param message any Shown with `tostring`.
 function thurm.fail(message) end
 
 thurm.json = {}
