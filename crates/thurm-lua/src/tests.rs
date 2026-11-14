@@ -34,6 +34,11 @@ impl Host for FakeHost {
                 Ok(json!({ "gone": null, "list": [1, null, { "gone": null, "deep": [null, 2] }] }))
             }
             "request" => Ok(json!({ "Panes": [{ "id": 7 }] })),
+            // Answered on the runtime's own thread: it is held up meanwhile.
+            "ui.toast" if params["text"] == "stall" => {
+                std::thread::sleep(Duration::from_millis(1500));
+                Ok(Value::Null)
+            }
             _ => Ok(Value::Null),
         }
     }
@@ -507,11 +512,7 @@ fn a_refused_action_keeps_the_handler_it_had() {
 #[test]
 fn notices_back_up_in_the_sender() {
     let f = fixture();
-    let busy = f.rt.load(spec(
-        5,
-        "local t = os.clock() while os.clock() - t < 1 do end",
-        true,
-    ));
+    let busy = f.rt.load(spec(5, "thurm.ui.toast('stall')", true));
     std::thread::sleep(Duration::from_millis(100));
     std::thread::scope(|s| {
         let sender = s.spawn(|| {
