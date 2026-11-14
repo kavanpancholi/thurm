@@ -629,10 +629,11 @@ impl Daemon {
                 background: open.background,
             };
             // An app from before `OpenFloatingAt` floats it where new floating panes go.
-            let shown = self
-                .layout_ui(at)
-                .or_else(|_| self.layout_ui(floating))
-                .is_ok();
+            let shown = match self.layout_ui(at) {
+                Err(e) if e == thurm_proto::UI_TOO_OLD => self.layout_ui(floating),
+                other => other,
+            }
+            .is_ok();
             return Ok(json!({ "pane": pane, "shown": shown }));
         }
         let cmd = if open.float {
