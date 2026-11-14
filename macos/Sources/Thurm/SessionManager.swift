@@ -1318,7 +1318,13 @@ final class SessionManager: NSObject, CoreDelegate {
         switch name {
         case "PaneInfo", "PaneActivity":
             if let info = PaneInfo(json: payload, host: host) { paneInfoUpdated(info) }
-        case "PaneExited", "PaneClosed":
+        case "PaneExited":
+            if let id = key {
+                Notifications.shared.withdraw(pane: id)
+                panes[id]?.alive = false
+                updateDockBadge()
+            }
+        case "PaneClosed":
             if let id = key {
                 Notifications.shared.withdraw(pane: id)
                 panes.removeValue(forKey: id)
