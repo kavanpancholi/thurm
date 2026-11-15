@@ -1504,7 +1504,17 @@ impl Daemon {
                 };
                 st.term.print(&msg);
             }
-            (st.hold, st.info.clone(), st.closed)
+            // The exit hook hears what exited, agent included.
+            let info = st.info.clone();
+            // A held pane outlives its process, not its agent: its state would hold the badge
+            // and the agent lists with nothing left to answer. The title stays what it was at
+            // the exit (the session's topic, say), not what the agent last set on the terminal.
+            if st.hold && !st.closed && st.info.agent.is_some() {
+                st.agent = AgentTracker::default();
+                st.info.agent = None;
+                self.broadcast(Event::PaneInfo(st.info.clone()), false);
+            }
+            (st.hold, info, st.closed)
         };
         // A close that took the pane out of the map may not have taken its lock yet.
         if closed || self.pane(pane.id).is_none() {
@@ -3230,6 +3240,10 @@ impl Daemon {
                     .find(|d| d.kind == agent)
                     .map_or_else(|| agent.clone(), |d| d.name.clone());
                 self.with_pane(pane, |_, st| {
+                    // Late from an agent that has exited with its (held) pane.
+                    if !st.info.alive {
+                        return;
+                    }
                     let before = st.info.agent.clone();
                     if st.agent.invalidate_dead_report_owner() {
                         st.info.agent = st.agent.state().cloned();
