@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.23.1 - 2026-11-15
+
+This release fixes two problems with held panes. Held panes now stay open after their command exits, and they no longer show a stale agent state.
+
+### Fixes
+
+- The macOS app keeps a held pane open after its command exits. Before, a pane started with `--hold` closed at once, so you could not read its output.
+- A held pane no longer keeps its agent after the process exits. Finished or waiting agents no longer show on the Dock badge, hover card, or agent lists.
+- The tailnet component now includes security fixes in its Go modules. The fixes cover compression, crypto, and networking packages.
+
 ## v0.23.0 - 2026-11-14
 
 This release lets you preview a file path in Quick Look with one click. It is available in the macOS app.
