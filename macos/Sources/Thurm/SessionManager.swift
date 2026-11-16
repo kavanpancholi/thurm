@@ -1698,6 +1698,32 @@ final class SessionManager: NSObject, CoreDelegate {
                 newTab(from: currentController, pane: pane, background: background)
             }
             if !background { NSApp.activate() }
+        case "OpenFloatingMinimized":
+            // `thurm new-float --minimized`: a chip from the start, that never takes the focus.
+            guard let pane = key("pane") else { return }
+            let place = FloatPlace(json: d["place"])
+            if let c = controller(for: pane) {
+                if !c.isQuick { c.content.minimize(pane, true, at: place) }
+                return
+            }
+            if panes[pane] == nil, let info = fetchPaneInfo(pane) { panes[pane] = info }
+            takeHiddenTab(pane)
+            var anchor: UInt64? = nil
+            if case let .cells(a, _, _, _) = place { anchor = a }
+            let host = anchor.flatMap { controller(for: PaneKey(daemon, $0)) }
+                ?? key("target").flatMap { controller(for: $0) }
+                ?? (currentController?.host == daemon ? currentController : nil)
+            if let host, !host.isQuick {
+                host.content.addNewFloating(pane, place: place, takeFocus: false, minimized: true)
+                host.updateTitle()
+            } else {
+                newTab(from: currentController, pane: pane, background: true)
+            }
+        case "MinimizeFloating":
+            // `thurm float --minimize/--restore`.
+            guard let pane = key("pane"), let c = controller(for: pane),
+                  !c.isQuick || c.content.isFloating(pane) else { return }
+            c.content.minimize(pane, jsonBool(d["minimized"]) ?? true, at: FloatPlace(json: d["place"]))
         case "PlaceFloating":
             // `thurm float --frame/--cells`.
             guard let pane = key("pane"), let place = FloatPlace(json: d["place"]),

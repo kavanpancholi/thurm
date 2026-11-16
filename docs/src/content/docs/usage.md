@@ -53,9 +53,17 @@ Normal titlebar dragging and double-clicking keep their window actions.
 The minimize button in a card's header (or **View › Minimize Floating Pane**) puts
 the card away as a chip in the bottom right of the tab; its program keeps running,
 and the chip shows its agent's status. Chips stay in one row; use the **+N** menu
-to restore cards whose chips do not fit. Click a chip to bring the card back where
+to restore cards whose chips do not fit. Chips stay on screen while floating panes are
+hidden. Click a chip to bring the card back where
 it was. Focusing the pane another way (the agent wall, a notification, `thurm
 focus`) brings it back too.
+
+Drag a chip to put it anywhere in the tab; it stays there, also after a restart,
+until you drop it back on the row of chips. Drop it on the sidebar, between two
+rows, to make the pane a tab of its own there. Esc cancels the drag.
+`thurm new-float --minimized -- CMD` starts a command in a card that is already
+minimized, and `thurm float --minimize` (or `--restore`) minimizes an existing
+pane from the command line.
 
 Drag a tab's row from the sidebar onto the terminal area to float that tab as a
 card in the tab you're looking at; its programs keep running and its own floating

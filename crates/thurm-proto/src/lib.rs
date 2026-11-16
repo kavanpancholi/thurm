@@ -77,6 +77,7 @@ pub const CAPABILITIES: &[&str] = &[
     CAP_FLOATING,
     CAP_FLOATING_NEW,
     CAP_FLOATING_PLACE,
+    CAP_FLOATING_MINIMIZE,
     CAP_PANE_OWNER,
     CAP_PATH_SEARCH,
     CAP_EXT,
@@ -119,6 +120,9 @@ pub const CAP_FLOATING_NEW: &str = "floating-new";
 
 /// The UI carries out [`UiCommand::OpenFloatingAt`] and [`UiCommand::PlaceFloating`].
 pub const CAP_FLOATING_PLACE: &str = "floating-place";
+
+/// The UI carries out [`UiCommand::OpenFloatingMinimized`] and [`UiCommand::MinimizeFloating`].
+pub const CAP_FLOATING_MINIMIZE: &str = "floating-minimize";
 
 /// The daemon's answer to a [`UiCommand`] that no open UI understands.
 pub const UI_TOO_OLD: &str = "the Thurm app is too old for this; update it";
@@ -1496,6 +1500,22 @@ pub enum UiCommand {
         pane: PaneId,
         place: FloatPlace,
     },
+    /// [`UiCommand::OpenFloating`] (at `place`, as [`UiCommand::OpenFloatingAt`]), minimized to
+    /// a chip from the start: it never takes the focus, nor brings the app forward. Needs
+    /// [`CAP_FLOATING_MINIMIZE`].
+    OpenFloatingMinimized {
+        pane: PaneId,
+        target: Option<PaneId>,
+        place: Option<FloatPlace>,
+    },
+    /// Minimize floating `pane` to a chip (`true`, floating it first if it is in the splits),
+    /// or bring it back (`false`), at `place` when given. Neither focuses it. Needs
+    /// [`CAP_FLOATING_MINIMIZE`].
+    MinimizeFloating {
+        pane: PaneId,
+        minimized: bool,
+        place: Option<FloatPlace>,
+    },
 }
 
 /// Where a floating pane goes.
@@ -1540,6 +1560,14 @@ impl UiCommand {
             UiCommand::PlaceFloating { pane, place } => {
                 std::iter::once(*pane).chain(place.anchor()).collect()
             }
+            UiCommand::OpenFloatingMinimized { target, place, .. } => target
+                .iter()
+                .copied()
+                .chain(place.and_then(|p| p.anchor()))
+                .collect(),
+            UiCommand::MinimizeFloating { pane, place, .. } => std::iter::once(*pane)
+                .chain(place.and_then(|p| p.anchor()))
+                .collect(),
             UiCommand::Zoom { pane, .. } => vec![*pane],
             UiCommand::MovePane { pane, target, .. } => vec![*pane, *target],
             UiCommand::SwapPanes { a, b } => vec![*a, *b],
@@ -1562,6 +1590,8 @@ impl UiCommand {
                 | UiCommand::OpenFloating { .. }
                 | UiCommand::OpenFloatingAt { .. }
                 | UiCommand::PlaceFloating { .. }
+                | UiCommand::OpenFloatingMinimized { .. }
+                | UiCommand::MinimizeFloating { .. }
         )
     }
 
@@ -1585,6 +1615,14 @@ impl UiCommand {
         matches!(
             self,
             UiCommand::OpenFloatingAt { .. } | UiCommand::PlaceFloating { .. }
+        )
+    }
+
+    /// Only UIs with [`CAP_FLOATING_MINIMIZE`] carry it out.
+    pub fn needs_floating_minimize(&self) -> bool {
+        matches!(
+            self,
+            UiCommand::OpenFloatingMinimized { .. } | UiCommand::MinimizeFloating { .. }
         )
     }
 }
