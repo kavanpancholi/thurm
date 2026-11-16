@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.24.0 - 2026-11-16
+
+This release lets you run a command out of sight in a minimized card. You can also move the chips of minimized cards where you need them.
+
+### New features
+
+- Use `thurm new-float --minimized` to start a command in a minimized card, and `thurm float --minimize` or `--restore` to minimize or restore a pane. Drag a chip within its tab, or onto the sidebar to make it a tab, and it stays there.
+
 ## v0.23.1 - 2026-11-15
 
 This release fixes two problems with held panes. Held panes now stay open after their command exits, and they no longer show a stale agent state.
