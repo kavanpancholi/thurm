@@ -239,8 +239,11 @@ while the pointer is over it). Colors are `primary`, `secondary`, `accent`,
 `green`, `yellow`, `orange`, `red`, `white`, or `#rrggbb`.
 
 A view has at most 512 nodes, nests at most 16 deep and is at most 512 KiB as
-JSON; a plugin has at most 16 views mounted. A view the app could not draw
-(an unknown slot, a `value` outside 0 to 1) is refused with an error. Views
+JSON; a plugin has at most 16 views mounted. A node's `size`, `width` and
+`height` go up to 480 points, its `spacing` and `padding` up to 48, and an
+image is drawn at most 512 pixels on a side. A view the app could not draw (an
+unknown slot, a `value` outside 0 to 1, a size out of range) is refused with
+an error. Only the app reads the views plugins mount: another plugin cannot. Views
 show on the Mac app; the phone does not draw them yet.
 
 ## Scripts

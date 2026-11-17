@@ -229,6 +229,9 @@ impl Daemon {
                 Ok(Value::Null)
             }
             method::UI_VIEWS => {
+                if !client.ext_ui.load(Ordering::Relaxed) {
+                    return Err("only the app that draws views reads them".into());
+                }
                 let views: Vec<ext::MountedView> = self
                     .ext
                     .views
@@ -510,6 +513,7 @@ impl Daemon {
                 return Err("this client was disconnected".into());
             }
             let view = ext::MountedView {
+                client: client.id,
                 owner,
                 id: mount.id,
                 slot: mount.slot,

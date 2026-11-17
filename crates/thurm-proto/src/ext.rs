@@ -389,6 +389,10 @@ pub const MAX_VIEW_DEPTH: usize = 16;
 pub const MAX_VIEW_BYTES: usize = 512 * 1024;
 /// Most views one plugin may have mounted.
 pub const MAX_VIEWS: usize = 16;
+/// Largest `size`, `width` or `height` of a node, in points.
+pub const MAX_VIEW_EXTENT: f64 = 480.0;
+/// Largest `spacing` or `padding` of a node, in points.
+pub const MAX_VIEW_GAP: f64 = 48.0;
 
 /// Parameters of [`method::UI_MOUNT`].
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
@@ -405,6 +409,8 @@ pub struct Mount {
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 #[serde(default)]
 pub struct MountedView {
+    /// The client that mounted it: two clients may give the same name and id.
+    pub client: u64,
     /// Who mounted it, as [`ActionInfo::source`] (`plugin:usage`).
     pub owner: String,
     pub id: String,
@@ -523,6 +529,17 @@ impl ViewNode {
             && !(0.0..=1.0).contains(&v)
         {
             return Err(format!("value {v}: from 0 to 1"));
+        }
+        for (name, v, max) in [
+            ("size", self.size, MAX_VIEW_EXTENT),
+            ("width", self.width, MAX_VIEW_EXTENT),
+            ("height", self.height, MAX_VIEW_EXTENT),
+            ("spacing", self.spacing, MAX_VIEW_GAP),
+            ("padding", self.padding, MAX_VIEW_GAP),
+        ] {
+            if !(0.0..=max).contains(&v) {
+                return Err(format!("{name} {v}: from 0 to {max} points"));
+            }
         }
         if let Some(a) = &self.action
             && !valid_action_name(&a.name)
@@ -708,6 +725,11 @@ mod tests {
         assert!(bad(&|m| m.slot = "sidebar".into()));
         assert!(bad(&|m| m.id = "a/b".into()));
         assert!(bad(&|m| m.view.value = Some(1.5)));
+        assert!(bad(&|m| m.view.size = 1e100));
+        assert!(bad(&|m| m.view.width = f64::NAN));
+        assert!(bad(&|m| m.view.height = -1.0));
+        assert!(bad(&|m| m.view.padding = MAX_VIEW_GAP + 1.0));
+        assert!(bad(&|m| m.view.children[0].spacing = f64::INFINITY));
         assert!(bad(&|m| m.view.action = Some(ViewAction {
             name: "".into(),
             args: Value::Null

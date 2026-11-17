@@ -1,4 +1,5 @@
 import AppKit
+import ImageIO
 import SwiftUI
 
 /// A node of a plugin's view, as `ViewNode` in thurm-proto has it.
@@ -86,12 +87,13 @@ private struct JSONValue: Decodable {
 
 /// A view a plugin mounted, as `MountedView` in thurm-proto has it.
 struct MountedPluginView: Decodable, Equatable, Identifiable {
+    var client: UInt64?
     var owner: String
     var id: String
     var slot: String
     var view: PluginNode
 
-    var key: String { owner + "/" + id }
+    var key: String { "\(client ?? 0)/\(id)" }
 }
 
 /// The views plugins mounted in the window, read from this Mac's daemon (`ui.views`) whenever it
@@ -191,7 +193,7 @@ struct PluginNodeView: View {
                 .font(.system(size: node.size > 0 ? node.size : 13, weight: fontWeight))
                 .foregroundStyle(color(default: .primary))
         case "image":
-            if let data = Data(base64Encoded: node.image), let image = NSImage(data: data) {
+            if let image = Self.image(node.image) {
                 Image(nsImage: image)
                     .resizable()
                     .aspectRatio(contentMode: .fit)
@@ -273,6 +275,24 @@ struct PluginNodeView: View {
             }
     }
 
+    /// Most pixels on a side an image keeps: a small PNG may say it is far larger.
+    static let maxImagePixels = 512
+
+    static func image(_ base64: String) -> NSImage? {
+        guard let data = Data(base64Encoded: base64),
+              let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxImagePixels,
+            kCGImageSourceShouldCacheImmediately: true,
+        ]
+        guard let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let w = props[kCGImagePropertyPixelWidth] as? Int, let h = props[kCGImagePropertyPixelHeight] as? Int,
+              w > 0, h > 0, w * h <= 4096 * 4096,
+              let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
+        return NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
+    }
+
     private var fontWeight: Font.Weight {
         switch node.weight {
         case "bold": .bold
@@ -315,6 +335,8 @@ final class PluginSlotHost: NSHostingView<PluginSlotView> {
         self.slot = slot
         super.init(rootView: PluginSlotView(slot: slot, run: run))
         isHidden = PluginViews.shared.views(in: slot).isEmpty
+        wantsLayer = true
+        layer?.masksToBounds = true
     }
 
     @available(*, unavailable)

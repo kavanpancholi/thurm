@@ -482,6 +482,10 @@ final class TabContentView: NSView {
         fatalError("init(coder:) is not supported")
     }
 
+    deinit {
+        if let pluginViewsObserver { NotificationCenter.default.removeObserver(pluginViewsObserver) }
+    }
+
     override var isFlipped: Bool { true }
 
     /// The tab's panes: those of the splits, then the floating ones.
@@ -697,7 +701,9 @@ final class TabContentView: NSView {
         for host in pluginSlots {
             host.isHidden = host.isEmpty
             guard !host.isHidden else { continue }
-            let size = host.fittingSize
+            let fit = host.fittingSize
+            let size = NSSize(width: min(fit.width, max(0, full.width - 24)),
+                              height: min(fit.height, max(0, full.height / 2)))
             let x: CGFloat
             let y: CGFloat
             switch host.slot {

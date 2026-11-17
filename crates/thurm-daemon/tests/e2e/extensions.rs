@@ -1417,6 +1417,9 @@ fn a_plugin_mounts_views_the_app_draws_until_the_plugin_leaves() {
     assert_eq!(views[0]["owner"], "plugin");
     assert_eq!(views[0]["slot"], "window.bottom_trailing");
     assert_eq!(views[0]["view"]["children"][0]["symbol"], "sparkle");
+    // Another plugin cannot read them: they may hold what only the app should see.
+    let (other, _other_rx) = ext_client(&env, "other");
+    assert!(call(&other, method::UI_VIEWS, Value::Null).is_err());
 
     // The same id replaces the view, in its place; another id lines up after it.
     let text = json!({ "type": "text", "text": "hi" });
@@ -1439,6 +1442,7 @@ fn a_plugin_mounts_views_the_app_draws_until_the_plugin_leaves() {
     for bad in [
         json!({ "id": "x", "slot": "sidebar", "view": text }),
         json!({ "id": "x", "slot": "window.bottom_trailing", "view": { "type": "bar", "value": 2 } }),
+        json!({ "id": "x", "slot": "window.bottom_trailing", "view": { "type": "ring", "size": 1_000_000 } }),
     ] {
         assert!(call(&plugin, method::UI_MOUNT, bad).is_err());
     }

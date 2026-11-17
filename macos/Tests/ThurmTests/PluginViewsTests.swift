@@ -16,7 +16,7 @@ final class PluginViewsTests: XCTestCase {
     }
 
     private let json: Any = [[
-        "owner": "plugin:usage", "id": "claude", "slot": "window.bottom_trailing",
+        "client": 4, "owner": "plugin:usage", "id": "claude", "slot": "window.bottom_trailing",
         "view": [
             "type": "ring", "value": 0.4, "color": "#ff9f0a", "later": true,
             "children": [["type": "icon", "symbol": "sparkle"]],
@@ -28,7 +28,7 @@ final class PluginViewsTests: XCTestCase {
     func testViewsDecodeAsTheDaemonSendsThem() throws {
         let views = PluginViews.decode(json)
         let view = try XCTUnwrap(views.first)
-        XCTAssertEqual(view.key, "plugin:usage/claude")
+        XCTAssertEqual(view.key, "4/claude")
         XCTAssertEqual(view.view.type, "ring")
         XCTAssertEqual(view.view.value, 0.4)
         XCTAssertEqual(view.view.children.first?.symbol, "sparkle")
@@ -38,6 +38,9 @@ final class PluginViewsTests: XCTestCase {
         XCTAssertNotNil(PluginNodeView.color("#ff9f0a"))
         XCTAssertNil(PluginNodeView.color("#nope"))
         XCTAssertEqual(PluginViews.decode(["not": "a list"]), [])
+        let png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg=="
+        XCTAssertEqual(PluginNodeView.image(png)?.size, NSSize(width: 1, height: 1))
+        XCTAssertNil(PluginNodeView.image("not base64"))
     }
 
     func testMountedViewsShowInTheirSlotAboveTheMinimizedCards() throws {
