@@ -1395,3 +1395,1059 @@ fn an_action_hears_the_selection_the_file_and_the_remote_host() {
     assert!(ctx.get("remote").is_none(), "{ctx}");
     answering.join().unwrap();
 }
+
+/// The listener is a python3 program: required, so the ports are always tested.
+fn require_python() {
+    assert!(
+        std::process::Command::new("python3")
+            .args(["-c", ""])
+            .status()
+            .is_ok_and(|s| s.success()),
+        "this test needs python3 (for a listener in a pane)"
+    );
+}
+
+/// A pane whose program listens on a free loopback port, and prints `port=<n>`.
+fn listener_pane(c: &Client, env: &Env) -> PaneId {
+    let r = c
+        .request(Request::CreatePane(CreatePane {
+            command: Some(vec![
+                "python3".into(),
+                "-c".into(),
+                "import socket,time; s=socket.socket(); s.bind(('127.0.0.1',0)); s.listen(); print('port=%d' % s.getsockname()[1], flush=True); time.sleep(600)".into(),
+            ]),
+            cwd: Some(env.dir.display().to_string()),
+            ..Default::default()
+        }))
+        .unwrap();
+    match r {
+        Response::PaneCreated { pane } => pane,
+        other => panic!("{other:?}"),
+    }
+}
+
+/// Asserts `c` hears no more `ports_changed` than it has: an event of its own, sent now, comes
+/// next (what was sent before it would come first).
+fn no_more_ports(c: &Client, rx: &Receiver<(String, Value)>) {
+    call(
+        c,
+        method::EVENTS_SUBSCRIBE,
+        json!({ "names": ["test.sentinel"] }),
+    )
+    .unwrap();
+    call(c, method::EVENTS_EMIT, json!({ "name": "test.sentinel" })).unwrap();
+    loop {
+        let ev = next(rx, notice::EVENT);
+        assert_ne!(ev["event"], "ports_changed", "heard more: {ev}");
+        if ev["event"] == "test.sentinel" {
+            return;
+        }
+    }
+}
+
+/// The next `event` notice called `event`, skipping others.
+fn next_event(rx: &Receiver<(String, Value)>, event: &str) -> Value {
+    loop {
+        let ev = next(rx, notice::EVENT);
+        if ev["event"] == event {
+            return ev;
+        }
+    }
+}
+
+/// A subscriber to `ports_changed` gets the daemon to watch its panes' ports, hears a pane's
+/// list, and can ask for it; files sent to a pane are heard once their paths are typed.
+#[test]
+fn a_subscriber_hears_ports_and_uploaded_files() {
+    use std::io::Write;
+    require_python();
+    let env = Env::new("ext-ports");
+    let _d = env.start_with(&[("THURM_PORTS_INTERVAL_MS", Path::new("200"))]);
+    let (c, rx) = ext_client(&env, "listener");
+    call(
+        &c,
+        method::EVENTS_SUBSCRIBE,
+        json!({ "names": ["ports_changed", "files_uploaded"] }),
+    )
+    .unwrap();
+
+    {
+        let pane = listener_pane(&c, &env);
+        wait_match(&c, pane, r"port=\d+");
+        let text = capture(&c, pane);
+        let port: u64 = text[text.rfind("port=").unwrap() + 5..]
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .collect::<String>()
+            .parse()
+            .unwrap();
+        let ev = loop {
+            let ev = next_event(&rx, "ports_changed");
+            if ev["id"] == pane {
+                break ev;
+            }
+        };
+        assert_eq!(ev["pane"]["id"], pane);
+        assert!(ev.get("host").is_none(), "{ev}");
+        assert_eq!(ev["ports"][0]["port"], port, "{ev}");
+        assert_eq!(ev["complete"], true);
+        let listed = call(&c, method::PORTS_LIST, json!({ "pane": pane })).unwrap();
+        assert_eq!(listed[0]["pane"], pane);
+        assert_eq!(listed[0]["ports"][0]["port"], port, "{listed}");
+        assert!(call(&c, method::PORTS_LIST, json!({ "pane": 4242 })).is_err());
+        // A pane that is not one is refused, not taken for every pane.
+        for bad in [json!(-1), json!("3"), json!(1.5), json!(true)] {
+            let e = call(&c, method::PORTS_LIST, json!({ "pane": bad })).unwrap_err();
+            assert!(e.contains("not an id"), "{bad}: {e}");
+        }
+        assert!(call(&c, method::PORTS_LIST, json!({ "pane": null })).is_ok());
+    }
+
+    let pane = match c
+        .request(Request::CreatePane(CreatePane {
+            command: Some(vec![
+                "/bin/sh".into(),
+                "-c".into(),
+                "cat > /dev/null".into(),
+            ]),
+            cwd: Some(env.dir.display().to_string()),
+            ..Default::default()
+        }))
+        .unwrap()
+    {
+        Response::PaneCreated { pane } => pane,
+        other => panic!("{other:?}"),
+    };
+    let ticket = c.upload_begin(pane, "notes.txt", 5, None).unwrap();
+    let (mut r, mut w) = thurm_client::stream::open(&env.socket, &ticket.ticket).unwrap();
+    w.write_all(b"hello").unwrap();
+    w.finish().unwrap();
+    let mut rest = Vec::new();
+    let _ = std::io::Read::read_to_end(&mut r, &mut rest);
+    let ev = next_event(&rx, "files_uploaded");
+    assert_eq!(ev["id"], pane);
+    assert_eq!(ev["pane"]["id"], pane);
+    let path = ev["paths"][0].as_str().unwrap();
+    assert!(path.ends_with("/notes.txt"), "{ev}");
+    assert_eq!(std::fs::read(path).unwrap(), b"hello");
+}
+
+/// An app that forwards, as the Mac app does.
+fn forwarding_app(env: &Env, caps: &[&str]) -> (Arc<Client>, Receiver<(String, Value)>) {
+    let (tx, rx) = unbounded();
+    let c = Client::connect_with(
+        ConnectOptions {
+            socket: env.socket.clone(),
+            spawn_daemon: None,
+            client_name: "app",
+            ui: true,
+        },
+        caps,
+        move |ev| {
+            if let Event::Ext { name, payload } = ev {
+                let _ = tx.send((name, serde_json::from_str(&payload).unwrap()));
+            }
+        },
+        || {},
+    )
+    .unwrap();
+    (c, rx)
+}
+
+/// Forwards live in the app: a plugin's open and close go to it, what it reports is heard
+/// as events, and its forwards close with it.
+#[test]
+fn forwards_go_through_the_app() {
+    let env = Env::new("ext-forwards");
+    let _d = env.start();
+    let (plugin, rx) = ext_client(&env, "plugin");
+    call(
+        &plugin,
+        method::EVENTS_SUBSCRIBE,
+        json!({ "names": ["forward_opened", "forward_closed", "ports_changed"] }),
+    )
+    .unwrap();
+
+    // Without an app that forwards, a clear error; an app without the capability is not one.
+    let (_old_app, old_rx) = forwarding_app(&env, &[CAP_EXT, CAP_EXT_UI]);
+    let e = call(
+        &plugin,
+        method::FORWARDS_OPEN,
+        json!({ "host": "devbox", "port": 5173 }),
+    )
+    .unwrap_err();
+    assert!(e.contains("forwards ports"), "{e}");
+    assert!(call(&plugin, method::FORWARDS_LIST, Value::Null).is_err());
+    assert!(
+        old_rx.try_iter().all(|(n, _)| n != notice::UI_REQUEST),
+        "an app without ext-forwards was asked"
+    );
+    // Only the app reports.
+    let e = call(&plugin, method::FORWARDS_REPORT, json!({ "forwards": [] })).unwrap_err();
+    assert!(e.contains("only for the Thurm app"), "{e}");
+
+    let (app, app_rx) = forwarding_app(&env, &[CAP_EXT, CAP_EXT_UI, CAP_EXT_FORWARDS]);
+    assert_eq!(
+        call(&plugin, method::FORWARDS_LIST, Value::Null).unwrap(),
+        json!([])
+    );
+    let opening = std::thread::spawn({
+        let plugin = plugin.clone();
+        move || {
+            call(
+                &plugin,
+                method::FORWARDS_OPEN,
+                json!({ "host": "devbox", "port": 5173, "browse": true }),
+            )
+        }
+    });
+    let req = next(&app_rx, notice::UI_REQUEST);
+    assert_eq!(req["kind"], "forward_open");
+    assert_eq!(req["host"], "devbox");
+    assert_eq!(req["port"], 5173);
+    assert_eq!(req["browse"], true);
+    let forward = json!({
+        "id": 7, "host": "devbox", "remote_port": 5173, "local_port": 5174,
+        "url": "http://localhost:5174/",
+    });
+    let mut answer = forward.clone();
+    answer["new"] = json!(true);
+    call(
+        &app,
+        method::UI_REPLY,
+        json!({ "id": req["id"], "result": answer }),
+    )
+    .unwrap();
+    assert_eq!(opening.join().unwrap().unwrap(), answer);
+
+    call(
+        &app,
+        method::FORWARDS_REPORT,
+        json!({ "forwards": [forward], "change": { "change": "opened", "forward": forward } }),
+    )
+    .unwrap();
+    let opened = next_event(&rx, "forward_opened");
+    assert_eq!(opened["id"], 7);
+    assert_eq!(opened["url"], "http://localhost:5174/");
+    assert_eq!(
+        call(&plugin, method::FORWARDS_LIST, Value::Null).unwrap()[0]["local_port"],
+        5174
+    );
+
+    // Closing goes to the app; what it answers comes back.
+    let closing = std::thread::spawn({
+        let plugin = plugin.clone();
+        move || call(&plugin, method::FORWARDS_CLOSE, json!({ "id": 7 }))
+    });
+    let req = next(&app_rx, notice::UI_REQUEST);
+    assert_eq!(req["kind"], "forward_close");
+    assert_eq!(req["forward"], 7);
+    call(
+        &app,
+        method::UI_REPLY,
+        json!({ "id": req["id"], "error": "no forward 7" }),
+    )
+    .unwrap();
+    assert!(
+        closing
+            .join()
+            .unwrap()
+            .unwrap_err()
+            .contains("no forward 7")
+    );
+
+    // The port went away on the host: closed, and why.
+    call(
+        &app,
+        method::FORWARDS_REPORT,
+        json!({ "forwards": [], "change": { "change": "closed", "forward": forward, "why": "gone" } }),
+    )
+    .unwrap();
+    let closed = next_event(&rx, "forward_closed");
+    assert_eq!(closed["id"], 7);
+    assert_eq!(closed["why"], "gone");
+
+    // A remote host's ports, as the app hears them.
+    call(
+        &app,
+        method::PORTS_REPORT,
+        json!({ "host": "devbox", "pane": 3, "complete": true,
+                "ports": [{ "port": 5173, "address": "127.0.0.1", "pid": 9, "command": "vite" }] }),
+    )
+    .unwrap();
+    let ports = next_event(&rx, "ports_changed");
+    assert_eq!(ports["host"], "devbox");
+    assert_eq!(ports["id"], 3);
+    assert_eq!(ports["ports"][0]["command"], "vite");
+    assert!(ports.get("pane").is_none(), "{ports}");
+    // Values that are not what they name are refused, not taken for a default.
+    for bad in [
+        json!({ "host": "devbox", "pane": -3, "ports": [] }),
+        json!({ "host": "devbox", "pane": 3, "ports": [], "complete": "false" }),
+        json!({ "host": "devbox", "pane": 3, "ports": [], "initial": 1 }),
+        json!({ "host": "devbox", "gone": "yes" }),
+    ] {
+        assert!(
+            call(&app, method::PORTS_REPORT, bad.clone()).is_err(),
+            "{bad} was taken"
+        );
+    }
+    let e = call(&plugin, method::FORWARDS_CLOSE, json!({ "id": -7 })).unwrap_err();
+    assert!(e.contains("not an id"), "{e}");
+
+    // The app quits: its forwards close with it.
+    call(
+        &app,
+        method::FORWARDS_REPORT,
+        json!({ "forwards": [forward] }),
+    )
+    .unwrap();
+    assert_eq!(next_event(&rx, "forward_opened")["id"], 7);
+    drop(app);
+    let closed = next_event(&rx, "forward_closed");
+    assert_eq!(closed["why"], "app");
+}
+
+/// With two apps that forward, each numbering its own forwards, plugins see only the first
+/// app's: what is listed is what a close reaches. When it quits, the second's take over.
+#[test]
+fn the_first_app_holds_the_forwards() {
+    let env = Env::new("ext-forwards-two");
+    let _d = env.start();
+    let (plugin, rx) = ext_client(&env, "plugin");
+    call(
+        &plugin,
+        method::EVENTS_SUBSCRIBE,
+        json!({ "names": ["forward_opened", "forward_closed", "ports_changed"] }),
+    )
+    .unwrap();
+    let caps = [CAP_EXT, CAP_EXT_UI, CAP_EXT_FORWARDS];
+    let (first, first_rx) = forwarding_app(&env, &caps);
+    let (second, second_rx) = forwarding_app(&env, &caps);
+    // Both have a forward numbered 1.
+    let forward = |port: u16| {
+        json!({ "id": 1, "host": "devbox", "remote_port": port, "local_port": port,
+                "url": format!("http://localhost:{port}/") })
+    };
+    call(
+        &second,
+        method::FORWARDS_REPORT,
+        json!({ "forwards": [forward(8080)] }),
+    )
+    .unwrap();
+    call(
+        &first,
+        method::FORWARDS_REPORT,
+        json!({ "forwards": [forward(5173)] }),
+    )
+    .unwrap();
+    let opened = next_event(&rx, "forward_opened");
+    assert_eq!(opened["remote_port"], 5173, "{opened}");
+    let list = call(&plugin, method::FORWARDS_LIST, Value::Null).unwrap();
+    assert_eq!(list.as_array().unwrap().len(), 1, "{list}");
+    assert_eq!(list[0]["remote_port"], 5173);
+
+    // A close of what was listed goes to the app it came from, whichever is focused.
+    let closing = std::thread::spawn({
+        let plugin = plugin.clone();
+        move || call(&plugin, method::FORWARDS_CLOSE, json!({ "id": 1 }))
+    });
+    let req = next(&first_rx, notice::UI_REQUEST);
+    assert_eq!(req["kind"], "forward_close");
+    call(
+        &first,
+        method::UI_REPLY,
+        json!({ "id": req["id"], "result": forward(5173) }),
+    )
+    .unwrap();
+    assert_eq!(closing.join().unwrap().unwrap()["remote_port"], 5173);
+    assert!(
+        second_rx.try_iter().all(|(n, _)| n != notice::UI_REQUEST),
+        "the second app was asked"
+    );
+
+    // The first quits: its forward closes, the second's are the plugins' now.
+    drop(first);
+    let closed = next_event(&rx, "forward_closed");
+    assert_eq!(
+        (closed["remote_port"].clone(), closed["why"].clone()),
+        (json!(5173), json!("app"))
+    );
+    let opened = next_event(&rx, "forward_opened");
+    assert_eq!(opened["remote_port"], 8080, "{opened}");
+    let list = call(&plugin, method::FORWARDS_LIST, Value::Null).unwrap();
+    assert_eq!(list[0]["remote_port"], 8080, "{list}");
+
+    // A host's lists as the app connected to it say so.
+    let vite =
+        |port: u16| json!([{ "port": port, "address": "127.0.0.1", "pid": 9, "command": "vite" }]);
+    call(
+        &second,
+        method::PORTS_REPORT,
+        json!({ "host": "devbox", "pane": 1, "ports": vite(5173), "complete": true, "initial": true }),
+    )
+    .unwrap();
+    assert_eq!(next_event(&rx, "ports_changed")["initial"], true);
+    call(
+        &second,
+        method::PORTS_REPORT,
+        json!({ "host": "devbox", "pane": 1, "ports": vite(5174), "complete": true }),
+    )
+    .unwrap();
+    assert!(next_event(&rx, "ports_changed").get("initial").is_none());
+}
+
+/// A plugin that subscribes after the app relayed a host's lists hears them first, as running
+/// already; a host the app lost is not told; only the app that holds plugins' forwards is
+/// heard, and when it quits, the next app's lists come as running already.
+#[test]
+fn a_late_subscriber_hears_the_remote_lists_as_initial() {
+    let env = Env::new("ext-remote-ports");
+    let _d = env.start();
+    let caps = [CAP_EXT, CAP_EXT_UI, CAP_EXT_FORWARDS];
+    let (first, _first_rx) = forwarding_app(&env, &caps);
+    let (second, _second_rx) = forwarding_app(&env, &caps);
+    let vite =
+        |port: u16| json!({ "port": port, "address": "127.0.0.1", "pid": 9, "command": "vite" });
+    let report = |app: &Client, host: &str, pane: u64, ports: Value| {
+        call(
+            app,
+            method::PORTS_REPORT,
+            json!({ "host": host, "pane": pane, "ports": ports, "complete": true }),
+        )
+        .unwrap();
+    };
+    // The host was connected and its server running before any plugin listened.
+    report(&first, "devbox", 1, json!([vite(5173)]));
+    report(&first, "pi", 2, json!([vite(3000)]));
+    report(&first, "devbox", 3, json!([vite(8080)]));
+    report(&first, "devbox", 3, json!([]));
+    report(&second, "devbox", 1, json!([vite(9999)]));
+    call(
+        &first,
+        method::PORTS_REPORT,
+        json!({ "host": "pi", "gone": true }),
+    )
+    .unwrap();
+
+    let (plugin, rx) = ext_client(&env, "plugin");
+    call(
+        &plugin,
+        method::EVENTS_SUBSCRIBE,
+        json!({ "names": ["ports_changed"] }),
+    )
+    .unwrap();
+    let first_list = next_event(&rx, "ports_changed");
+    assert_eq!(first_list["host"], "devbox", "{first_list}");
+    assert_eq!(first_list["id"], 1);
+    assert_eq!(first_list["initial"], true);
+    assert_eq!(first_list["ports"][0]["port"], 5173);
+
+    // From now on, what changes is news; the second app is not heard.
+    report(&second, "devbox", 1, json!([vite(9999), vite(9998)]));
+    report(&first, "devbox", 1, json!([vite(5173), vite(5174)]));
+    let change = next_event(&rx, "ports_changed");
+    assert!(change.get("initial").is_none(), "{change}");
+    assert_eq!(change["ports"][1]["port"], 5174, "{change}");
+
+    // The first app quits: the second's lists are the plugins' now. Its list of pane 1 came as
+    // changes (reported without `initial`), and goes to plugins as one.
+    drop(first);
+    let taken_over = next_event(&rx, "ports_changed");
+    assert!(taken_over.get("initial").is_none(), "{taken_over}");
+    assert_eq!(taken_over["ports"][1]["port"], 9998, "{taken_over}");
+    report(&second, "devbox", 1, json!([]));
+    let gone = next_event(&rx, "ports_changed");
+    assert!(
+        gone.get("initial").is_none() && gone["ports"] == json!([]),
+        "{gone}"
+    );
+}
+
+/// A plugin that subscribes to `ports_changed` while others listen gets every pane's list
+/// first, as running already, and only it: the others hear nothing again. Subscribing again
+/// changes nothing.
+#[test]
+fn a_new_ports_subscriber_alone_gets_every_list_first() {
+    require_python();
+    let env = Env::new("ext-ports-join");
+    let _d = env.start_with(&[("THURM_PORTS_INTERVAL_MS", Path::new("200"))]);
+    let (early, early_rx) = ext_client(&env, "early");
+    call(
+        &early,
+        method::EVENTS_SUBSCRIBE,
+        json!({ "names": ["ports_changed"] }),
+    )
+    .unwrap();
+    let pane = listener_pane(&early, &env);
+    let heard = loop {
+        let ev = next_event(&early_rx, "ports_changed");
+        if ev["id"] == pane {
+            break ev;
+        }
+    };
+    assert!(
+        heard.get("initial").is_none(),
+        "a change, not a list resent: {heard}"
+    );
+
+    let (late, late_rx) = ext_client(&env, "late");
+    call(
+        &late,
+        method::EVENTS_SUBSCRIBE,
+        json!({ "names": ["ports_changed"] }),
+    )
+    .unwrap();
+    let first = loop {
+        let ev = next_event(&late_rx, "ports_changed");
+        if ev["id"] == pane {
+            break ev;
+        }
+    };
+    assert_eq!(first["initial"], true, "{first}");
+    assert_eq!(first["pane"]["id"], pane);
+    assert_eq!(first["ports"], heard["ports"]);
+
+    // Subscribing again is not joining again.
+    call(
+        &early,
+        method::EVENTS_SUBSCRIBE,
+        json!({ "names": ["ports_changed"] }),
+    )
+    .unwrap();
+    // Several looks later, neither heard the pane's list again.
+    std::thread::sleep(Duration::from_millis(1500));
+    let again = |rx: &Receiver<(String, Value)>| {
+        rx.try_iter()
+            .filter(|(n, p)| n == notice::EVENT && p["event"] == "ports_changed" && p["id"] == pane)
+            .count()
+    };
+    assert_eq!(
+        again(&early_rx),
+        0,
+        "the early subscriber heard the list again"
+    );
+    assert_eq!(
+        again(&late_rx),
+        0,
+        "the late subscriber heard the list twice"
+    );
+}
+
+/// A host the app lost, or an app that quit, leaves no lists standing: each of their panes a
+/// plugin heard of gets an empty list, not complete. Panes the next app knows are its to tell.
+#[test]
+fn a_lost_host_or_app_ends_its_remote_lists() {
+    let env = Env::new("ext-remote-ports-end");
+    let _d = env.start();
+    let caps = [CAP_EXT, CAP_EXT_UI, CAP_EXT_FORWARDS];
+    let (first, _first_rx) = forwarding_app(&env, &caps);
+    let (second, _second_rx) = forwarding_app(&env, &caps);
+    let (plugin, rx) = ext_client(&env, "plugin");
+    call(
+        &plugin,
+        method::EVENTS_SUBSCRIBE,
+        json!({ "names": ["ports_changed"] }),
+    )
+    .unwrap();
+    let vite =
+        |port: u16| json!([{ "port": port, "address": "127.0.0.1", "pid": 9, "command": "vite" }]);
+    let report = |app: &Client, host: &str, pane: u64, ports: Value| {
+        call(
+            app,
+            method::PORTS_REPORT,
+            json!({ "host": host, "pane": pane, "ports": ports, "complete": true }),
+        )
+        .unwrap();
+    };
+    report(&first, "devbox", 1, vite(5173));
+    report(&first, "devbox", 2, vite(5174));
+    report(&first, "pi", 3, vite(3000));
+    report(&first, "nas", 4, vite(8080));
+    report(&second, "nas", 4, vite(8080));
+    for _ in 0..4 {
+        next_event(&rx, "ports_changed");
+    }
+
+    // The app lost devbox: both its panes end, pi stands.
+    call(
+        &first,
+        method::PORTS_REPORT,
+        json!({ "host": "devbox", "gone": true }),
+    )
+    .map(|answer| assert_eq!(answer, json!({ "heard": true })))
+    .unwrap();
+    let mut ended: Vec<u64> = (0..2)
+        .map(|_| {
+            let ev = next_event(&rx, "ports_changed");
+            assert_eq!(ev["host"], "devbox", "{ev}");
+            assert_eq!(
+                (ev["ports"].clone(), ev["complete"].clone()),
+                (json!([]), json!(false))
+            );
+            assert_eq!(ev["gone"], true, "{ev}");
+            ev["id"].as_u64().unwrap()
+        })
+        .collect();
+    ended.sort_unstable();
+    assert_eq!(ended, [1, 2]);
+
+    // A host the second app lost is not the plugins' news: it does not hold them.
+    let answer = call(
+        &second,
+        method::PORTS_REPORT,
+        json!({ "host": "nas", "gone": true }),
+    )
+    .unwrap();
+    assert_eq!(answer, json!({ "heard": false }));
+    // The first quits: pi, which the second doesn't know, ends. nas, which the second has
+    // forgotten too, ends; nothing else is said.
+    drop(first);
+    let mut hosts: Vec<String> = (0..2)
+        .map(|_| {
+            let ev = next_event(&rx, "ports_changed");
+            assert_eq!(ev["ports"], json!([]), "{ev}");
+            assert_eq!(ev["complete"], false, "{ev}");
+            assert_eq!(ev["gone"], true, "{ev}");
+            ev["host"].as_str().unwrap().to_owned()
+        })
+        .collect();
+    hosts.sort();
+    assert_eq!(hosts, ["nas", "pi"]);
+    no_more_ports(&plugin, &rx);
+}
+
+/// A plugin that subscribes while the app's report of a host's list is under way hears that
+/// list first as running already (its replay), never as a change ahead of it.
+#[test]
+fn a_report_under_way_does_not_overtake_a_new_subscribers_lists() {
+    let env = Env::new("ext-report-race");
+    let _d = env.start_with(&[("THURM_EXT_REPORT_DELAY_MS", Path::new("800"))]);
+    let (app, _app_rx) = forwarding_app(&env, &[CAP_EXT, CAP_EXT_UI, CAP_EXT_FORWARDS]);
+    let reporting = std::thread::spawn({
+        let app = app.clone();
+        move || {
+            call(
+                &app,
+                method::PORTS_REPORT,
+                json!({ "host": "devbox", "pane": 1, "complete": true,
+                        "ports": [{ "port": 5173, "address": "127.0.0.1", "pid": 9, "command": "vite" }] }),
+            )
+        }
+    });
+    // The report holds the lists now; the plugin subscribes meanwhile.
+    std::thread::sleep(Duration::from_millis(200));
+    let (plugin, rx) = ext_client(&env, "plugin");
+    call(
+        &plugin,
+        method::EVENTS_SUBSCRIBE,
+        json!({ "names": ["ports_changed"] }),
+    )
+    .unwrap();
+    reporting.join().unwrap().unwrap();
+    let first = next_event(&rx, "ports_changed");
+    assert_eq!(
+        first["initial"], true,
+        "a change came before the lists: {first}"
+    );
+    assert_eq!(first["ports"][0]["port"], 5173);
+    no_more_ports(&plugin, &rx);
+}
+
+/// A plugin that subscribes while a look of the watch is under way hears none of that look's
+/// changes before its own first lists.
+#[test]
+fn a_look_under_way_does_not_reach_a_new_subscriber_first() {
+    require_python();
+    let env = Env::new("ext-look-race");
+    let _d = env.start_with(&[
+        ("THURM_PORTS_INTERVAL_MS", Path::new("200")),
+        ("THURM_PORTS_LOOK_DELAY_MS", Path::new("1500")),
+    ]);
+    let (early, early_rx) = ext_client(&env, "early");
+    call(
+        &early,
+        method::EVENTS_SUBSCRIBE,
+        json!({ "names": ["ports_changed"] }),
+    )
+    .unwrap();
+    // The early subscriber's own first look is done.
+    std::thread::sleep(Duration::from_millis(2000));
+    // A new pane starts a look (it pokes the watch), whose scan comes once its listener runs;
+    // the late plugin subscribes while that look is under way.
+    let pane = listener_pane(&early, &env);
+    std::thread::sleep(Duration::from_millis(100));
+    let (late, late_rx) = ext_client(&env, "late");
+    call(
+        &late,
+        method::EVENTS_SUBSCRIBE,
+        json!({ "names": ["ports_changed"] }),
+    )
+    .unwrap();
+    let change = loop {
+        let ev = next_event(&early_rx, "ports_changed");
+        if ev["id"] == pane {
+            break ev;
+        }
+    };
+    assert!(change.get("initial").is_none(), "{change}");
+    let first = loop {
+        let ev = next_event(&late_rx, "ports_changed");
+        if ev["id"] == pane {
+            break ev;
+        }
+    };
+    assert_eq!(
+        first["initial"], true,
+        "a change came before the lists: {first}"
+    );
+}
+
+/// A remote pane whose read missed some processes and found nothing is kept: a plugin that
+/// subscribes later hears it, as running already and not complete, before the next list.
+#[test]
+fn a_late_subscriber_hears_an_incomplete_empty_remote_list() {
+    let env = Env::new("ext-remote-incomplete");
+    let _d = env.start();
+    let (app, _app_rx) = forwarding_app(&env, &[CAP_EXT, CAP_EXT_UI, CAP_EXT_FORWARDS]);
+    call(
+        &app,
+        method::PORTS_REPORT,
+        json!({ "host": "devbox", "pane": 1, "complete": false, "ports": [] }),
+    )
+    .unwrap();
+    let (plugin, rx) = ext_client(&env, "plugin");
+    call(
+        &plugin,
+        method::EVENTS_SUBSCRIBE,
+        json!({ "names": ["ports_changed"] }),
+    )
+    .unwrap();
+    let first = next_event(&rx, "ports_changed");
+    assert_eq!(first["initial"], true, "{first}");
+    assert_eq!(first["complete"], false, "{first}");
+    assert_eq!(first["ports"], json!([]), "{first}");
+    // A complete empty list forgets it.
+    call(
+        &app,
+        method::PORTS_REPORT,
+        json!({ "host": "devbox", "pane": 1, "complete": true, "ports": [] }),
+    )
+    .unwrap();
+    next_event(&rx, "ports_changed");
+    let (later, later_rx) = ext_client(&env, "later");
+    call(
+        &later,
+        method::EVENTS_SUBSCRIBE,
+        json!({ "names": ["ports_changed"] }),
+    )
+    .unwrap();
+    no_more_ports(&later, &later_rx);
+}
+
+/// When the app that holds plugins' lists quits, the next one's lists go out as they came to it:
+/// running already only when its host said so, a change otherwise, and nothing for a pane it
+/// lists as plugins last heard it.
+#[test]
+fn the_next_apps_lists_keep_what_they_were() {
+    let env = Env::new("ext-remote-takeover");
+    let _d = env.start();
+    let caps = [CAP_EXT, CAP_EXT_UI, CAP_EXT_FORWARDS];
+    let (first, _first_rx) = forwarding_app(&env, &caps);
+    let (second, _second_rx) = forwarding_app(&env, &caps);
+    let (plugin, rx) = ext_client(&env, "plugin");
+    call(
+        &plugin,
+        method::EVENTS_SUBSCRIBE,
+        json!({ "names": ["ports_changed"] }),
+    )
+    .unwrap();
+    let vite =
+        |port: u16| json!([{ "port": port, "address": "127.0.0.1", "pid": 9, "command": "vite" }]);
+    let report = |app: &Client, pane: u64, ports: Value, initial: bool| {
+        call(
+            app,
+            method::PORTS_REPORT,
+            json!({ "host": "devbox", "pane": pane, "ports": ports, "complete": true, "initial": initial }),
+        )
+        .unwrap()
+    };
+    // Plugins hear the first app's, and the answer says so.
+    assert_eq!(
+        report(&first, 3, vite(9000), true),
+        json!({ "heard": true })
+    );
+    assert_eq!(
+        report(&first, 4, vite(7000), false),
+        json!({ "heard": true })
+    );
+    next_event(&rx, "ports_changed");
+    next_event(&rx, "ports_changed");
+    // The second's: a server it heard start in pane 1, pane 2 running as it connected, pane 3 as
+    // the first had it, pane 4 known to listen on nothing. Plugins hear none of it yet, and the
+    // answer says so (the app sends it again as it came, should it connect to the daemon again).
+    assert_eq!(
+        report(&second, 1, vite(5173), false),
+        json!({ "heard": false })
+    );
+    report(&second, 2, vite(8080), true);
+    report(&second, 3, vite(9000), true);
+    report(&second, 4, json!([]), false);
+    // Pane 5: known to listen on nothing, never heard of by plugins: no news.
+    report(&second, 5, json!([]), false);
+    drop(first);
+    let mut heard: Vec<(u64, bool, Value, Value)> = (0..3)
+        .map(|_| {
+            let ev = next_event(&rx, "ports_changed");
+            (
+                ev["id"].as_u64().unwrap(),
+                ev["initial"] == true,
+                ev["complete"].clone(),
+                ev["gone"].clone(),
+            )
+        })
+        .collect();
+    heard.sort_unstable_by_key(|h| h.0);
+    let plain = |id: u64, initial: bool| (id, initial, json!(true), Value::Null);
+    // Pane 4: an empty list the next app knows, not `gone`.
+    assert_eq!(heard, [plain(1, false), plain(2, true), plain(4, false)]);
+    no_more_ports(&plugin, &rx);
+}
+
+/// A pane asked for has a list even when its processes were not looked at: one whose program
+/// ended listens on nothing, and says so as complete.
+#[test]
+fn ports_of_a_pane_not_looked_at_are_its_own() {
+    let env = Env::new("ext-ports-dead");
+    let _d = env.start();
+    let (c, _rx) = ext_client(&env, "plugin");
+    let pane = match c
+        .request(Request::CreatePane(CreatePane {
+            command: Some(vec!["/bin/sh".into(), "-c".into(), "exit 0".into()]),
+            cwd: Some(env.dir.display().to_string()),
+            hold: true,
+            ..Default::default()
+        }))
+        .unwrap()
+    {
+        Response::PaneCreated { pane } => pane,
+        other => panic!("{other:?}"),
+    };
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while matches!(
+        c.request(Request::PaneInfo { pane }),
+        Ok(Response::PaneInfo(ref info)) if info.alive
+    ) {
+        assert!(Instant::now() < deadline, "the pane's program did not end");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let list = call(&c, method::PORTS_LIST, json!({ "pane": pane })).unwrap();
+    assert_eq!(
+        list,
+        json!([{ "pane": pane, "ports": [], "complete": true }]),
+        "{list}"
+    );
+}
+
+/// A plugin that subscribes to `ports_changed`, leaves and subscribes again before the watch's
+/// next look gets its first lists once, not once per subscription.
+#[test]
+fn subscribing_again_before_the_look_gets_the_lists_once() {
+    require_python();
+    let env = Env::new("ext-ports-resubscribe");
+    let _d = env.start_with(&[
+        ("THURM_PORTS_INTERVAL_MS", Path::new("200")),
+        ("THURM_PORTS_LOOK_DELAY_MS", Path::new("800")),
+    ]);
+    let (c, rx) = ext_client(&env, "plugin");
+    let pane = listener_pane(&c, &env);
+    wait_match(&c, pane, r"port=\d+");
+    let sub = |names: Value| call(&c, method::EVENTS_SUBSCRIBE, json!({ "names": names })).unwrap();
+    sub(json!(["ports_changed"]));
+    call(
+        &c,
+        method::EVENTS_UNSUBSCRIBE,
+        json!({ "names": ["ports_changed"] }),
+    )
+    .unwrap();
+    sub(json!(["ports_changed"]));
+    let first = loop {
+        let ev = next_event(&rx, "ports_changed");
+        if ev["id"] == pane {
+            break ev;
+        }
+    };
+    assert_eq!(first["initial"], true, "{first}");
+    // Two looks later, nothing more of that pane.
+    std::thread::sleep(Duration::from_millis(2200));
+    call(
+        &c,
+        method::EVENTS_SUBSCRIBE,
+        json!({ "names": ["test.sentinel"] }),
+    )
+    .unwrap();
+    call(&c, method::EVENTS_EMIT, json!({ "name": "test.sentinel" })).unwrap();
+    loop {
+        let ev = next(&rx, notice::EVENT);
+        assert!(
+            !(ev["event"] == "ports_changed" && ev["id"] == pane),
+            "the first lists came twice: {ev}"
+        );
+        if ev["event"] == "test.sentinel" {
+            break;
+        }
+    }
+}
+
+/// A remote pane plugins never heard listen on anything, listing nothing, is no news (as many
+/// come as the app connects to a host); one whose servers go is, once.
+#[test]
+fn an_empty_remote_list_is_news_only_after_ports() {
+    let env = Env::new("ext-remote-empty");
+    let _d = env.start();
+    let (app, _app_rx) = forwarding_app(&env, &[CAP_EXT, CAP_EXT_UI, CAP_EXT_FORWARDS]);
+    let (plugin, rx) = ext_client(&env, "plugin");
+    call(
+        &plugin,
+        method::EVENTS_SUBSCRIBE,
+        json!({ "names": ["ports_changed"] }),
+    )
+    .unwrap();
+    let report = |ports: Value, initial: bool| {
+        call(
+            &app,
+            method::PORTS_REPORT,
+            json!({ "host": "devbox", "pane": 7, "ports": ports, "complete": true, "initial": initial }),
+        )
+        .unwrap()
+    };
+    let vite = json!([{ "port": 5173, "address": "127.0.0.1", "pid": 9, "command": "vite" }]);
+    // As the app connects: an empty pane, said to nobody.
+    assert_eq!(report(json!([]), true), json!({ "heard": true }));
+    no_more_ports(&plugin, &rx);
+    // A server starts, then goes: both news.
+    report(vite.clone(), false);
+    assert_eq!(next_event(&rx, "ports_changed")["ports"][0]["port"], 5173);
+    report(json!([]), false);
+    assert_eq!(next_event(&rx, "ports_changed")["ports"], json!([]));
+    // Empty again: nothing new.
+    report(json!([]), false);
+    no_more_ports(&plugin, &rx);
+}
+
+/// A plugin that unsubscribes while its first look sends the lists, and subscribes again
+/// before that look is done, still gets its first lists: the look that left it out queues it
+/// again.
+#[test]
+fn a_subscriber_back_before_its_skipped_look_is_done_gets_its_lists() {
+    let env = Env::new("ext-resubscribe-race");
+    let _d = env.start_with(&[
+        ("THURM_PORTS_INTERVAL_MS", Path::new("200")),
+        ("THURM_PORTS_LOOK_DELAY_MS", Path::new("800")),
+        ("THURM_EXT_SERVED_DELAY_MS", Path::new("1500")),
+    ]);
+    let (plugin, rx) = ext_client(&env, "plugin");
+    let pane = match plugin
+        .request(Request::CreatePane(CreatePane {
+            command: Some(vec!["/bin/sh".into(), "-c".into(), "sleep 600".into()]),
+            cwd: Some(env.dir.display().to_string()),
+            ..Default::default()
+        }))
+        .unwrap()
+    {
+        Response::PaneCreated { pane } => pane,
+        other => panic!("{other:?}"),
+    };
+    let ports = json!({ "names": ["ports_changed"] });
+    call(&plugin, method::EVENTS_SUBSCRIBE, ports.clone()).unwrap();
+    // Out before the look sends its lists, back in after it sent them and before it is done.
+    std::thread::sleep(Duration::from_millis(300));
+    call(&plugin, method::EVENTS_UNSUBSCRIBE, ports.clone()).unwrap();
+    std::thread::sleep(Duration::from_millis(1500));
+    call(&plugin, method::EVENTS_SUBSCRIBE, ports).unwrap();
+    let first = loop {
+        let ev = next_event(&rx, "ports_changed");
+        if ev["id"] == pane {
+            break ev;
+        }
+    };
+    assert_eq!(first["initial"], true, "{first}");
+}
+
+/// The first app quits while the next one reports a change: plugins hear the next app's
+/// forwards as theirs before that change, so the last event matches what is listed.
+#[test]
+fn forward_events_keep_the_order_of_their_changes() {
+    let env = Env::new("ext-forwards-order");
+    let _d = env.start_with(&[("THURM_EXT_FORWARD_EVENT_DELAY_MS", Path::new("800"))]);
+    let (plugin, rx) = ext_client(&env, "plugin");
+    call(
+        &plugin,
+        method::EVENTS_SUBSCRIBE,
+        json!({ "names": ["forward_opened", "forward_closed"] }),
+    )
+    .unwrap();
+    let caps = [CAP_EXT, CAP_EXT_UI, CAP_EXT_FORWARDS];
+    let (first, _first_rx) = forwarding_app(&env, &caps);
+    let (second, _second_rx) = forwarding_app(&env, &caps);
+    let forward = json!({
+        "id": 7, "host": "devbox", "remote_port": 5173, "local_port": 5174,
+        "url": "http://localhost:5174/",
+    });
+    call(
+        &second,
+        method::FORWARDS_REPORT,
+        json!({ "forwards": [forward] }),
+    )
+    .unwrap();
+    // The first quits: telling of the second's forward takes a while; the second closes it
+    // meanwhile.
+    drop(first);
+    std::thread::sleep(Duration::from_millis(300));
+    call(&second, method::FORWARDS_REPORT, json!({ "forwards": [] })).unwrap();
+    let opened = next(&rx, notice::EVENT);
+    assert_eq!(opened["event"], "forward_opened", "{opened}");
+    let closed = next(&rx, notice::EVENT);
+    assert_eq!(closed["event"], "forward_closed", "{closed}");
+    assert_eq!(
+        call(&plugin, method::FORWARDS_LIST, Value::Null).unwrap(),
+        json!([])
+    );
+}
+
+/// A report of the next app while the first app's handover is under way is heard once: as the
+/// holder's, after the handover, which does not tell it again.
+#[test]
+fn a_report_during_a_handover_is_heard_once() {
+    let env = Env::new("ext-handover-report");
+    let _d = env.start_with(&[("THURM_EXT_HANDOVER_DELAY_MS", Path::new("800"))]);
+    let caps = [CAP_EXT, CAP_EXT_UI, CAP_EXT_FORWARDS];
+    let (first, _first_rx) = forwarding_app(&env, &caps);
+    let (second, _second_rx) = forwarding_app(&env, &caps);
+    let (plugin, rx) = ext_client(&env, "plugin");
+    call(
+        &plugin,
+        method::EVENTS_SUBSCRIBE,
+        json!({ "names": ["ports_changed"] }),
+    )
+    .unwrap();
+    // The first quits: its handover takes a while; a server starts in the second's pane meanwhile.
+    drop(first);
+    std::thread::sleep(Duration::from_millis(300));
+    let vite = json!([{ "port": 5173, "address": "127.0.0.1", "pid": 9, "command": "vite" }]);
+    assert_eq!(
+        call(
+            &second,
+            method::PORTS_REPORT,
+            json!({ "host": "devbox", "pane": 1, "ports": vite, "complete": true, "initial": false }),
+        )
+        .unwrap(),
+        json!({ "heard": true })
+    );
+    let ev = next_event(&rx, "ports_changed");
+    assert_eq!(ev["id"], 1, "{ev}");
+    assert_ne!(ev["initial"], true, "{ev}");
+    // The handover is done by now, and told nothing more.
+    std::thread::sleep(Duration::from_millis(800));
+    no_more_ports(&plugin, &rx);
+}

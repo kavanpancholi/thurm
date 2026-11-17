@@ -252,6 +252,9 @@ pub trait Host: Send + Sync + 'static {
     fn send_ports(&self, event: Event, except: &[u64]);
     /// Sends `event` to client `client` alone.
     fn send_ports_to(&self, client: u64, event: Event);
+    /// The look that sent `joined` their first lists (if they had any) is done: from now on they
+    /// hear changes like everyone.
+    fn served(&self, _joined: &[u64]) {}
     fn watcher(&self) -> &Watcher;
     /// One look at the system ([`look`]).
     fn look(&self, roots: &[(PaneId, u32)]) -> Option<HashMap<PaneId, Seen>> {
@@ -265,6 +268,8 @@ struct State {
     poked: bool,
     /// Clients subscribed since the last look: each gets every list, on its own.
     joined: Vec<u64>,
+    /// Asleep until someone listens.
+    idle: bool,
 }
 
 /// What one look sends: `broadcast` to the clients that had subscribed before it (by the per-pane
@@ -326,6 +331,24 @@ impl Watcher {
         }
     }
 
+    /// Whether the watcher runs and sleeps until someone listens.
+    #[cfg(test)]
+    pub fn idle(&self) -> bool {
+        let st = self.state.lock();
+        st.started && st.idle
+    }
+
+    /// Client `client` waits for its first lists again (a look left it out): the next look,
+    /// soon, sends them. Only while the watcher runs.
+    pub fn rejoin(&self, client: u64) {
+        let mut st = self.state.lock();
+        if st.started {
+            st.joined.push(client);
+            st.poked = true;
+            self.wake.notify_all();
+        }
+    }
+
     /// Client `client`, which wants port events, connected: start the watcher if it isn't
     /// running, and send that client every pane's list.
     /// The watcher holds the daemon (which lives as long as the process) for as long as it runs.
@@ -357,6 +380,18 @@ fn after_poke(next: Instant, last_look: Option<Instant>, interval: Duration) -> 
     }
 }
 
+/// Test builds: `var` as a number of milliseconds, for a step that takes a while on purpose (a
+/// look, a report). Release builds never read it.
+pub(crate) fn test_delay(var: &str) -> Option<Duration> {
+    if !cfg!(debug_assertions) {
+        return None;
+    }
+    std::env::var(var)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .map(Duration::from_millis)
+}
+
 fn min_interval() -> Duration {
     interval_from(std::env::var("THURM_PORTS_INTERVAL_MS").ok().as_deref())
 }
@@ -386,9 +421,11 @@ fn run<H: Host>(h: Arc<H>) {
                     // Nobody listens: forget what was sent, and sleep until someone does.
                     tracker.reset();
                     st.poked = false;
+                    st.idle = true;
                     w.wake.wait(&mut st);
                     continue;
                 }
+                st.idle = false;
                 // A client that joined waits for its lists: look now.
                 if !st.joined.is_empty() {
                     break;
@@ -412,6 +449,10 @@ fn run<H: Host>(h: Arc<H>) {
             joined.append(&mut st.joined);
             joined
         };
+        // Tests: a look that takes a while, for what happens while it is under way.
+        if let Some(delay) = test_delay("THURM_PORTS_LOOK_DELAY_MS") {
+            std::thread::sleep(delay);
+        }
         let roots = h.pane_roots();
         last_look = Some(Instant::now());
         let changed = match h.look(&roots) {
@@ -424,6 +465,7 @@ fn run<H: Host>(h: Arc<H>) {
                 for (client, ev) in d.initial {
                     h.send_ports_to(client, ev);
                 }
+                h.served(&joined);
                 let retry = d.retry;
                 let wait = backoff.looked(changed);
                 next = retry.map_or(Instant::now() + wait, |r| r.min(Instant::now() + wait));

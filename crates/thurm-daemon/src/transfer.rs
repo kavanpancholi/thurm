@@ -917,12 +917,14 @@ impl Transfers {
         let paths: Vec<String> = b
             .files
             .values()
-            .map(|f| crate::shell::shell_quote(&f.path.display().to_string()))
+            .map(|f| f.path.display().to_string())
             .collect();
-        let (client, pane, text) = (b.client, b.pane, paths.join(" ") + " ");
+        let quoted: Vec<String> = paths.iter().map(|p| crate::shell::shell_quote(p)).collect();
+        let (client, pane, text) = (b.client, b.pane, quoted.join(" ") + " ");
         drop(st);
         let typed = daemon.paste_for(client, pane, &text);
         let mut st = self.state.lock();
+        let mut uploaded = false;
         if let Some(b) = st.batches.get_mut(&serial) {
             b.pasting = false;
             b.pulse.touch(self.epoch);
@@ -932,9 +934,15 @@ impl Transfers {
                     b.outcome = Some(Ok(()));
                     st.kept_seen = None;
                     self.changed.notify_all();
+                    uploaded = true;
                 }
                 Err(e) => self.fail(&mut st, serial, e),
             }
+        }
+        drop(st);
+        // Only once the paths were typed: a batch that failed, or whose sender left, is not.
+        if uploaded {
+            daemon.files_uploaded(pane, paths);
         }
     }
 

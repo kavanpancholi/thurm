@@ -14,11 +14,17 @@ use parking_lot::Mutex;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use thurm_proto::ext::{self, method, notice};
-use thurm_proto::{CreatePane, Event, PaneId, PaneInfo, Request, Response, ServerMessage};
+use thurm_proto::{
+    CreatePane, Event, PaneId, PaneInfo, PortEntry, Request, Response, ServerMessage,
+};
 
 use super::{Client, Daemon};
 use crate::user_exec;
 use registry::{Provider, Registry};
+
+const PORTS_CHANGED: &str = "ports_changed";
+const FORWARD_OPENED: &str = "forward_opened";
+const FORWARD_CLOSED: &str = "forward_closed";
 
 /// How deep actions may run one another.
 const MAX_DEPTH: u32 = 16;
@@ -42,6 +48,62 @@ pub struct Ext {
     /// client and where its answer goes.
     pending: Mutex<HashMap<u64, Pending>>,
     next: AtomicU64,
+    /// Every app that forwards (by client), with the forwards it reported last
+    /// ([`method::FORWARDS_REPORT`]). Its ids are that app's own: plugins see only the first
+    /// app's (see [`Daemon::forwarding_app`]).
+    forwards: Mutex<HashMap<u64, Vec<ext::ForwardInfo>>>,
+    /// Held from a change of `forwards` until its `forward_opened` and `forward_closed` are
+    /// sent (a report, an app gone): plugins hear the changes in the order they were made.
+    /// Taken before any other of these locks.
+    forward_events: Mutex<()>,
+    /// The remote hosts' port lists each app relayed last ([`method::PORTS_REPORT`]), by
+    /// client, host and pane: what a new subscriber is told first. Taken before `forwards`,
+    /// whose first app is the one whose lists plugins hear.
+    remote_ports: Mutex<HashMap<u64, RemoteLists>>,
+    /// Subscribers to `ports_changed` waiting for the look that sends them their first lists:
+    /// until it is done, they hear none of the watch's changes (a look under way when they
+    /// subscribed may have a change they would take for a server just started). With each,
+    /// whether that look left it out (it had unsubscribed meanwhile): back by the time the
+    /// look is done, it is queued again.
+    ports_joining: Mutex<HashMap<u64, bool>>,
+}
+
+/// A remote host's panes' lists: by host and pane, the ports and whether they are complete.
+type RemoteLists = std::collections::BTreeMap<(String, u64), RemoteList>;
+
+/// A remote pane's list as its app reported it last.
+#[derive(Clone, PartialEq)]
+struct RemoteList {
+    ports: Vec<PortEntry>,
+    complete: bool,
+    /// Its host's daemon sent it as running already (`initial`), not as a change.
+    initial: bool,
+}
+
+/// `ports_changed` as plugins hear it: of pane `id`, with `initial` when it was sent as running
+/// already. A local pane adds `pane` (its info), a remote one `host`.
+fn ports_changed(id: u64, ports: &[PortEntry], complete: bool, initial: bool) -> Value {
+    let mut payload =
+        json!({ "event": PORTS_CHANGED, "id": id, "ports": ports, "complete": complete });
+    if initial {
+        payload["initial"] = true.into();
+    }
+    payload
+}
+
+impl RemoteList {
+    /// Listens on nothing, for sure (an empty, complete list).
+    fn is_known_empty(&self) -> bool {
+        self.ports.is_empty() && self.complete
+    }
+}
+
+/// `ports_changed` of remote `host`'s `pane`; `initial` as given (what its daemon said, or that
+/// a new subscriber hears it as running already).
+fn remote_payload(host: &str, pane: u64, list: &RemoteList, initial: bool) -> Value {
+    let mut payload = ports_changed(pane, &list.ports, list.complete, initial);
+    payload["host"] = host.into();
+    payload
 }
 
 pub use thurm_proto::ext::method_blocks as blocks;
@@ -60,6 +122,48 @@ fn client_is_tailnet(client: &Client) -> bool {
         .lock()
         .as_ref()
         .is_some_and(|p| p.kind == thurm_proto::PrincipalKind::Tailscale)
+}
+
+/// `key` of `v` as an unsigned integer (an id): none when absent or null, refused when it is
+/// anything else (`-1`, `"3"`), rather than taken for none.
+fn opt_u64(v: &Value, key: &str) -> Result<Option<u64>, String> {
+    match v.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(x) => x
+            .as_u64()
+            .map(Some)
+            .ok_or_else(|| format!("bad {key:?}: {x} is not an id")),
+    }
+}
+
+/// `key` of `v` as a boolean: none when absent or null, refused when it is anything else.
+fn opt_bool(v: &Value, key: &str) -> Result<Option<bool>, String> {
+    match v.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(x) => x
+            .as_bool()
+            .map(Some)
+            .ok_or_else(|| format!("bad {key:?}: {x} is not true or false")),
+    }
+}
+
+/// The remote lists `app` relayed, as `ports_changed` payloads of servers running already (for
+/// a subscriber that just came: whatever they were, they run now).
+fn remote_lists(all: &HashMap<u64, RemoteLists>, app: Option<u64>) -> Vec<Value> {
+    app.and_then(|a| all.get(&a))
+        .into_iter()
+        .flatten()
+        .map(|((host, pane), list)| remote_payload(host, *pane, list, true))
+        .collect()
+}
+
+/// Refuses `method` unless `client` is the app, which opens forwards.
+fn only_the_app(client: &Client, method: &str) -> Result<(), String> {
+    if client.ext_forwards.load(Ordering::Relaxed) {
+        Ok(())
+    } else {
+        Err(format!("{method} is only for the Thurm app"))
+    }
 }
 
 fn params<T: DeserializeOwned + Default>(v: Value) -> Result<T, String> {
@@ -176,12 +280,17 @@ impl Daemon {
                 }
                 Ok(Value::Null)
             }
-            method::EVENTS_SUBSCRIBE => {
-                self.ext_registry(client)?.subscribe(client.id, names(&p))?;
-                Ok(Value::Null)
-            }
+            method::EVENTS_SUBSCRIBE => self.ext_subscribe(client, names(&p)),
             method::EVENTS_UNSUBSCRIBE => {
-                self.ext.registry.lock().unsubscribe(client.id, &names(&p));
+                // A client waiting for its first lists stays marked: it is still queued in the
+                // watch, whose look clears the mark (`ext_ports_served`), and a subscription
+                // again meanwhile is not queued twice.
+                let names = names(&p);
+                self.ext.registry.lock().unsubscribe(client.id, &names);
+                // The last to hear of ports may have left: the watch sees whether to go on.
+                if names.is_empty() || names.iter().any(|n| n == PORTS_CHANGED) {
+                    self.ports.poke();
+                }
                 Ok(Value::Null)
             }
             method::EVENTS_EMIT => {
@@ -263,8 +372,416 @@ impl Daemon {
                 }
                 Ok(Value::Null)
             }
+            method::PORTS_LIST => {
+                // No pane is every pane; a pane that is not one is refused, not taken for none.
+                let pane = opt_u64(&p, "pane")?;
+                let mut list = match self.answer(client, Request::Ports { pane })? {
+                    Response::Ports(list) => list,
+                    other => return Err(format!("unexpected answer: {other:?}")),
+                };
+                // A pane asked for whose processes were not looked at (it has none yet, or no
+                // more) has a list too: empty, and complete only when nothing runs in it.
+                if let Some(p) = pane
+                    && !list.iter().any(|e| e.pane == p)
+                {
+                    let alive = self.pane(p).is_some_and(|x| x.state.lock().info.alive);
+                    list.push(thurm_proto::PanePorts {
+                        pane: p,
+                        ports: Vec::new(),
+                        complete: !alive,
+                    });
+                }
+                Ok(json!(list))
+            }
+            method::PORTS_REPORT => {
+                only_the_app(client, method)?;
+                let host = str_param(&p, "host")?;
+                // The app's connection to the host is gone: what it listed is not known now.
+                // Plugins that heard its lists hear them end: nothing is known of them now.
+                // The lists are kept and sent under their lock: what plugins hear of a pane is in
+                // the order it was kept, whoever sends it (a report, a replay).
+                if opt_bool(&p, "gone")? == Some(true) {
+                    let mut all = self.ext.remote_ports.lock();
+                    let mut ended = Vec::new();
+                    if let Some(lists) = all.get_mut(&client.id) {
+                        lists.retain(|(h, pane), list| {
+                            // Plugins know an empty pane listens on nothing: no news.
+                            if h == host && !list.is_known_empty() {
+                                ended.push((h.clone(), *pane));
+                            }
+                            h != host
+                        });
+                    }
+                    let heard = self.forwarding_app_id() == Some(client.id);
+                    if heard {
+                        self.remote_lists_ended(&ended);
+                    }
+                    return Ok(json!({ "heard": heard }));
+                }
+                let pane = opt_u64(&p, "pane")?.ok_or("missing \"pane\"")?;
+                let ports: Vec<PortEntry> =
+                    serde_json::from_value(p.get("ports").cloned().unwrap_or(json!([])))
+                        .map_err(|e| format!("bad ports: {e}"))?;
+                let complete = opt_bool(&p, "complete")?.unwrap_or(true);
+                let initial = opt_bool(&p, "initial")? == Some(true);
+                let mut all = self.ext.remote_ports.lock();
+                // Not for an app that went: its lists went with it (`ext_client_gone`, which takes
+                // this lock after the flag is set), and none are made for it again.
+                if client.gone.load(Ordering::SeqCst) {
+                    return Err("this client was disconnected".into());
+                }
+                let lists = all.entry(client.id).or_default();
+                let at = (host.to_owned(), pane);
+                // An empty list that could not read every process may have missed servers: kept,
+                // so a later subscriber knows the pane is unsure, until a complete one or the
+                // host going says otherwise.
+                let list = RemoteList {
+                    ports,
+                    complete,
+                    initial,
+                };
+                let holder = self.forwarding_app_id() == Some(client.id);
+                // Kept even when empty for another app: one that takes over lists what it knows,
+                // an empty pane too, rather than leave plugins guessing (a pane it never listed is
+                // `gone`). The holder's empty pane is dropped once plugins heard it (a closed
+                // pane's would pile up): what it said is all there is to say.
+                // A pane plugins never heard listen on anything, still listening on nothing: no news
+                // (as many come as the app connects to a host: a list for each of its panes).
+                let unheard = !lists.contains_key(&at);
+                if holder && list.is_known_empty() {
+                    lists.remove(&at);
+                    if unheard {
+                        return Ok(json!({ "heard": true }));
+                    }
+                } else {
+                    lists.insert(at, list.clone());
+                }
+                // Only the app that holds plugins' forwards is heard, as with its forwards. The
+                // answer says whether plugins heard it: an app sends one they did not again as it
+                // came.
+                if !holder {
+                    return Ok(json!({ "heard": false }));
+                }
+                // Tests: a report that takes a while, for what happens while it holds the lock.
+                if let Some(delay) = crate::ports::test_delay("THURM_EXT_REPORT_DELAY_MS") {
+                    std::thread::sleep(delay);
+                }
+                // `initial`: listening already when the app connected to the host, not news.
+                self.emit(
+                    PORTS_CHANGED,
+                    None,
+                    remote_payload(host, pane, &list, list.initial),
+                );
+                drop(all);
+                Ok(json!({ "heard": true }))
+            }
+            method::FORWARDS_REPORT => {
+                only_the_app(client, method)?;
+                let report: ext::ForwardsReport = params(p)?;
+                self.forwards_reported(client, report);
+                Ok(Value::Null)
+            }
+            method::FORWARDS_LIST => {
+                let app = self.forwarding_app()?;
+                let forwards = self.ext.forwards.lock();
+                let mut list: Vec<&ext::ForwardInfo> =
+                    forwards.get(&app.id).into_iter().flatten().collect();
+                list.sort_by_key(|f| f.id);
+                Ok(json!(list))
+            }
+            method::FORWARDS_OPEN => {
+                let open: ext::ForwardOpen = params(p)?;
+                if open.host.is_empty() || open.port == 0 {
+                    return Err("a host and a port to forward".into());
+                }
+                let app = self.forwarding_app()?;
+                self.ask(&app, client, |id| ext::UiRequest::ForwardOpen { id, open })
+            }
+            method::FORWARDS_CLOSE => {
+                let forward = opt_u64(&p, "id")?.ok_or("missing \"id\"")?;
+                let app = self.forwarding_app()?;
+                self.ask(&app, client, |id| ext::UiRequest::ForwardClose {
+                    id,
+                    forward,
+                })
+            }
             other => self.plugin_method(client, other, p),
         }
+    }
+
+    /// `events.subscribe`: `client` hears `names` from now on.
+    ///
+    /// Locks, always in this order: the remote lists' (`ports.report` takes it first too), the
+    /// registry's, then `ports_joining`. For `ports_changed`, the remote lists' lock is held from
+    /// before the registration until the replay is sent, so a report cannot reach a new
+    /// subscriber between the two; other subscriptions don't wait on reports.
+    fn ext_subscribe(
+        self: &Arc<Self>,
+        client: &Arc<Client>,
+        names: Vec<String>,
+    ) -> Result<Value, String> {
+        let ports = names.iter().any(|n| n == PORTS_CHANGED);
+        // Only one that joins (it does not hear `ports_changed` yet) takes the remote lists' lock;
+        // a subscription that joins nothing does not wait on reports.
+        let joining = ports && !self.ext.registry.lock().has(client.id, PORTS_CHANGED);
+        let mut all = joining.then(|| self.ext.remote_ports.lock());
+        // Only a new subscriber joins: one that has the lists keeps hearing changes.
+        // `queue`: not waiting in the watch already (subscribed, out and in again before the look
+        // that serves it): queued once, it gets its first lists once.
+        let (joins, queue) = {
+            let mut reg = self.ext_registry(client)?;
+            let mut joins = ports && !reg.has(client.id, PORTS_CHANGED);
+            // It stopped hearing them since the look above (another call of the same client):
+            // the lock first, in its order, then the registry again.
+            if joins && all.is_none() {
+                drop(reg);
+                all = Some(self.ext.remote_ports.lock());
+                reg = self.ext_registry(client)?;
+                joins = !reg.has(client.id, PORTS_CHANGED);
+            }
+            // Waiting for its first lists before it is a listener: no change of a look under way
+            // reaches it first.
+            let queue = joins
+                && match self.ext.ports_joining.lock().entry(client.id) {
+                    std::collections::hash_map::Entry::Vacant(v) => {
+                        v.insert(false);
+                        true
+                    }
+                    std::collections::hash_map::Entry::Occupied(_) => false,
+                };
+            if let Err(e) = reg.subscribe(client.id, names) {
+                if queue {
+                    self.ext.ports_joining.lock().remove(&client.id);
+                }
+                return Err(e);
+            }
+            (joins, queue)
+        };
+        // Its panes' ports are watched only while someone hears of them. A new subscriber joins
+        // the watch as a client does: the next look sends it alone every pane's list, empty ones
+        // too (`ext_ports_to`), as running already. Of remote hosts, it gets the lists the app
+        // relayed so far, the same way.
+        if joins && let Some(all) = &all {
+            if queue {
+                self.ports.subscribed(self.clone(), client.id);
+            } else {
+                // Still queued from before: the watch may have gone to sleep meanwhile (nobody
+                // listened); wake it to serve the queue.
+                self.ports.poke();
+            }
+            for payload in remote_lists(all, self.forwarding_app_id()) {
+                send_ext(client, notice::EVENT, &payload);
+            }
+        }
+        drop(all);
+        Ok(Value::Null)
+    }
+
+    /// The app that holds plugins' forwards, connected or leaving now.
+    fn forwarding_app_id(&self) -> Option<u64> {
+        self.ext.forwards.lock().keys().min().copied()
+    }
+
+    /// Remote panes whose lists plugins heard and nobody keeps up now (the app lost the host,
+    /// or quit): each gets an empty list, not complete, as nothing is known of its ports, with
+    /// `gone` (an incomplete list is otherwise a read that missed some processes).
+    fn remote_lists_ended(&self, panes: &[(String, u64)]) {
+        let payloads = panes.iter().map(|(host, pane)| {
+            let mut payload = remote_payload(
+                host,
+                *pane,
+                &RemoteList {
+                    ports: Vec::new(),
+                    complete: false,
+                    initial: false,
+                },
+                false,
+            );
+            payload["gone"] = true.into();
+            payload
+        });
+        self.deliver_ports(payloads.collect());
+    }
+
+    /// Sends `ports_changed` payloads to its subscribers, who are looked up once for all.
+    fn deliver_ports(&self, payloads: Vec<Value>) {
+        if payloads.is_empty() {
+            return;
+        }
+        let listeners = self.ext.registry.lock().listeners(PORTS_CHANGED);
+        for payload in &payloads {
+            self.send_event(&listeners, payload);
+        }
+    }
+
+    /// An app that forwards connected ([`thurm_proto::CAP_EXT_FORWARDS`]).
+    pub(super) fn ext_forwarding_app_came(&self, client: u64) {
+        self.ext.forwards.lock().entry(client).or_default();
+    }
+
+    /// The app that holds plugins' forwards: the one that connected first, for as long as it
+    /// stays. Each app numbers its own forwards, so listing, opening, closing and the forward
+    /// events all go by this one app's; another app's are heard once it is the first.
+    fn forwarding_app(&self) -> Result<Arc<Client>, String> {
+        let first = self.ext.forwards.lock().keys().min().copied();
+        first
+            .and_then(|id| self.clients.lock().get(&id).cloned())
+            .filter(|c| !c.gone.load(Ordering::SeqCst))
+            .ok_or_else(|| "no Thurm app that forwards ports is open (or it is too old)".into())
+    }
+
+    /// The forwards app `client` has now. Of the first app's, the ones that came are
+    /// `forward_opened`, the ones that went `forward_closed`, with why when the report says;
+    /// another app's are only kept.
+    fn forwards_reported(&self, app: &Client, report: ext::ForwardsReport) {
+        let client = app.id;
+        let _ordered = self.ext.forward_events.lock();
+        let changed = report.change.get("forward").and_then(|f| f.get("id"));
+        let why = report
+            .change
+            .get("why")
+            .and_then(Value::as_str)
+            .unwrap_or("closed");
+        let old = {
+            let mut forwards = self.ext.forwards.lock();
+            // Not for an app that went: its forwards went with it.
+            if app.gone.load(Ordering::SeqCst) {
+                return;
+            }
+            let old = forwards
+                .insert(client, report.forwards.clone())
+                .unwrap_or_default();
+            if forwards.keys().min() != Some(&client) {
+                return;
+            }
+            old
+        };
+        for f in old
+            .iter()
+            .filter(|f| !report.forwards.iter().any(|n| n.id == f.id))
+        {
+            let why = if changed.and_then(Value::as_u64) == Some(f.id) {
+                why
+            } else {
+                "closed"
+            };
+            self.forward_event(FORWARD_CLOSED, f, Some(why));
+        }
+        for f in report
+            .forwards
+            .iter()
+            .filter(|f| !old.iter().any(|o| o.id == f.id))
+        {
+            self.forward_event(FORWARD_OPENED, f, None);
+        }
+    }
+
+    fn forward_event(&self, event: &str, f: &ext::ForwardInfo, why: Option<&str>) {
+        let mut extra = json!(f);
+        if let Some(why) = why {
+            extra["why"] = why.into();
+        }
+        self.emit(event, None, extra);
+    }
+
+    /// Whether a subscriber wants its panes' ports watched: one that named `ports_changed`.
+    pub(super) fn ext_watches_ports(&self) -> bool {
+        self.ext.registry.lock().named(PORTS_CHANGED)
+    }
+
+    /// A change the watch found, for the extension API's subscribers but those in `except`:
+    /// the ones that joined at this look, which get every list on their own
+    /// ([`Daemon::ext_ports_to`]).
+    pub(super) fn ext_ports_changed(&self, event: &Event, except: &[u64]) {
+        // `ports_changed` has no `[[on]]` hooks: only the subscribers hear it. Left out: those still
+        // waiting for their first lists (they get them on their own, and a change must not come
+        // before them). With none, nothing is built.
+        let listeners: Vec<u64> = self.ext.registry.lock().listeners(PORTS_CHANGED);
+        let joining = self.ext.ports_joining.lock();
+        let listeners: Vec<u64> = listeners
+            .into_iter()
+            .filter(|c| !except.contains(c) && !joining.contains_key(c))
+            .collect();
+        drop(joining);
+        if listeners.is_empty() {
+            return;
+        }
+        if let Some(payload) = self.ports_payload(event) {
+            self.send_event(&listeners, &payload);
+        }
+    }
+
+    /// A list of the watch for `client` alone, which joined it by subscribing: sent as running
+    /// already, while it still hears `ports_changed`.
+    pub(super) fn ext_ports_to(&self, client: &Client, event: &Event) {
+        let reg = self.ext.registry.lock();
+        if !reg.has(client.id, PORTS_CHANGED) {
+            // Left out: queued again if it is back before the look is done. Under the
+            // registry's lock, as a subscription marks it.
+            if let Some(missed) = self.ext.ports_joining.lock().get_mut(&client.id) {
+                *missed = true;
+            }
+            return;
+        }
+        drop(reg);
+        if let Some(payload) = self.ports_payload(event) {
+            send_ext(client, notice::EVENT, &payload);
+        }
+    }
+
+    /// The look that sent `joined` their first lists is done: they hear changes now.
+    pub(super) fn ext_ports_served(&self, joined: &[u64]) {
+        // Tests: a look that takes a while to be done after it sent its lists.
+        if !joined.is_empty()
+            && let Some(delay) = crate::ports::test_delay("THURM_EXT_SERVED_DELAY_MS")
+        {
+            std::thread::sleep(delay);
+        }
+        let reg = self.ext.registry.lock();
+        let mut joining = self.ext.ports_joining.lock();
+        let mut again = Vec::new();
+        for c in joined {
+            // Left out by this look and subscribed again since: the next look serves it.
+            if joining.remove(c) == Some(true) && reg.has(*c, PORTS_CHANGED) {
+                joining.insert(*c, false);
+                again.push(*c);
+            }
+        }
+        drop(joining);
+        drop(reg);
+        for c in again {
+            self.ports.rejoin(c);
+        }
+    }
+
+    /// `ports_changed`'s payload for `event`, with `pane` while the pane is there, and
+    /// `initial` when the watch sent it as a list of what was listening already as the
+    /// subscriber joined.
+    fn ports_payload(&self, event: &Event) -> Option<Value> {
+        let Event::PortsChanged {
+            pane,
+            ports,
+            complete,
+            initial,
+        } = event
+        else {
+            return None;
+        };
+        let mut payload = ports_changed(*pane, ports, *complete, *initial);
+        if let Some(info) = self.pane(*pane).map(|p| p.state.lock().info.clone()) {
+            payload["pane"] = serde_json::to_value(info).unwrap_or_default();
+        }
+        Some(payload)
+    }
+
+    /// Files sent to `pane` landed and their paths were typed there.
+    pub(crate) fn files_uploaded(&self, pane: PaneId, paths: Vec<String>) {
+        let info = self.pane(pane).map(|p| p.state.lock().info.clone());
+        self.emit(
+            "files_uploaded",
+            info.as_ref(),
+            json!({ "id": pane, "paths": paths }),
+        );
     }
 
     /// The registry, to add what `client` provides or hears: refused once the client is gone.
@@ -466,9 +983,91 @@ impl Daemon {
     pub(super) fn ext_client_gone(&self, client: u64) {
         // Dropping the senders ends the waits on them.
         self.ext.pending.lock().retain(|_, p| p.to != client);
-        if self.ext.registry.lock().client_gone(client) {
+        // An app's forwards end with it; when it was the first, the next app's are plugins'
+        // now. Their events go out before any report of the next app changes them.
+        let ordered = self.ext.forward_events.lock();
+        // The lists' lock is taken before the next app holds them, as a report takes it before
+        // it asks who holds them: a report of the next app is heard as the holder's only after
+        // the handover, which then does not tell it again.
+        let mut all = self.ext.remote_ports.lock();
+        let (first, gone, next, next_app) = {
+            let mut forwards = self.ext.forwards.lock();
+            let first = forwards.keys().min() == Some(&client);
+            let gone = forwards.remove(&client).filter(|_| first);
+            let next_app = forwards.keys().min().copied().filter(|_| first);
+            let next = next_app.and_then(|id| forwards.get(&id).cloned());
+            (first, gone, next, next_app)
+        };
+        // Tests: a handover that takes a while, for a report of the next app meanwhile.
+        if next_app.is_some()
+            && let Some(delay) = crate::ports::test_delay("THURM_EXT_HANDOVER_DELAY_MS")
+        {
+            std::thread::sleep(delay);
+        }
+        // The panes only the app that held plugins' lists knew of: no one tells of them now.
+        // Under the lists' lock, as their reports: the next app's newer lists come after.
+        {
+            let had = all.remove(&client).unwrap_or_default();
+            let next_has = next_app.and_then(|a| all.get(&a));
+            let ended: Vec<(String, u64)> = had
+                .iter()
+                .filter(|(k, list)| {
+                    first && !list.is_known_empty() && !next_has.is_some_and(|n| n.contains_key(*k))
+                })
+                .map(|(k, _)| k.clone())
+                .collect();
+            self.remote_lists_ended(&ended);
+            // The remote lists heard from now on are that app's. Plugins heard the first app's:
+            // a pane the next one lists the same is no news; any other list goes as that app
+            // had it, a change or running already, as its host's daemon said.
+            let mut news = Vec::new();
+            for ((host, pane), list) in next_has.into_iter().flatten() {
+                let heard = had.get(&(host.clone(), *pane));
+                if heard.is_some_and(|h| h.ports == list.ports && h.complete == list.complete) {
+                    continue;
+                }
+                // A pane plugins never heard of that listens on nothing: no news either.
+                if heard.is_none() && list.is_known_empty() {
+                    continue;
+                }
+                news.push(remote_payload(host, *pane, list, list.initial));
+            }
+            self.deliver_ports(news);
+            // The next app holds plugins' lists now: its empty panes were said, or are no news.
+            if let Some(lists) = next_app.and_then(|a| all.get_mut(&a)) {
+                lists.retain(|_, list| !list.is_known_empty());
+            }
+        }
+        drop(all);
+        // Tests: an app gone takes a while to tell of the next app's forwards.
+        if next.as_ref().is_some_and(|n| !n.is_empty())
+            && let Some(delay) = crate::ports::test_delay("THURM_EXT_FORWARD_EVENT_DELAY_MS")
+        {
+            std::thread::sleep(delay);
+        }
+        for f in gone.iter().flatten() {
+            self.forward_event(FORWARD_CLOSED, f, Some("app"));
+        }
+        for f in next.iter().flatten() {
+            self.forward_event(FORWARD_OPENED, f, None);
+        }
+        drop(ordered);
+        let (changed, watched) = {
+            let mut registry = self.ext.registry.lock();
+            let watched = registry.has(client, PORTS_CHANGED);
+            (registry.client_gone(client), watched)
+        };
+        if changed {
             self.actions_changed();
         }
+        // The last to hear of ports may have gone without unsubscribing: the watch sees whether
+        // to go on, as on `events.unsubscribe`.
+        if watched {
+            self.ports.poke();
+        }
+        // After the registry's cleanup: a subscription under way holds the registry's lock while
+        // it marks the client as joining, so it is done by now, and its mark goes too.
+        self.ext.ports_joining.lock().remove(&client);
     }
 
     /// The config's `[[commands]]` as actions; called whenever the config is applied.
@@ -710,15 +1309,29 @@ impl Daemon {
         let app = self
             .ui_client()
             .ok_or("no Thurm window is open to ask in (or the app is too old)")?;
+        self.ask(&app, caller, make)
+    }
+
+    /// Sends `make(id)` to `app` and waits for its answer.
+    fn ask(
+        &self,
+        app: &Arc<Client>,
+        caller: &Client,
+        make: impl FnOnce(u64) -> ext::UiRequest,
+    ) -> Result<Value, String> {
+        // Nothing is asked for a caller that went: the app would act for no one.
+        if caller.gone.load(Ordering::SeqCst) {
+            return Err("the caller went away".into());
+        }
         let (id, rx) = self.ext_question(app.id, 0);
         if app.gone.load(Ordering::SeqCst) {
             self.ext.pending.lock().remove(&id);
             return Err("the app went away".into());
         }
-        send_ext(&app, notice::UI_REQUEST, &json!(make(id)));
+        send_ext(app, notice::UI_REQUEST, &json!(make(id)));
         let answer = self.ext_wait(id, &rx, "the app", caller);
         if answer.is_err() {
-            send_ext(&app, notice::UI_CANCEL, &json!({ "id": id }));
+            send_ext(app, notice::UI_CANCEL, &json!({ "id": id }));
         }
         answer
     }

@@ -200,6 +200,42 @@ function thurm.wait(pane, opts)
   return false, "exited", code
 end
 
+-- Ports and forwards --------------------------------------------------------------------------
+
+function thurm.ports(pane)
+  check(pane == nil or (math.type(pane) == "integer" and pane >= 0),
+    "usage: thurm.ports(pane) with a pane id, or thurm.ports() for every pane")
+  local list = call("ports.list", { pane = pane })
+  if pane == nil then
+    return list
+  end
+  local entry = list[1]
+  if entry == nil then
+    -- Not looked at: nothing is known.
+    return {}, false
+  end
+  return entry.ports, entry.complete
+end
+
+thurm.forward = {}
+
+function thurm.forward.open(host, port, opts)
+  check(type(host) == "string" and math.type(port) == "integer"
+      and (opts == nil or type(opts) == "table"),
+    "usage: thurm.forward.open(\"host\", 5173, { browse = true })")
+  opts = opts or {}
+  return call("forwards.open", { host = host, port = port, browse = opts.browse == true })
+end
+
+function thurm.forward.close(id)
+  check(math.type(id) == "integer", "usage: thurm.forward.close(forward.id)")
+  return call("forwards.close", { id = id })
+end
+
+function thurm.forward.list()
+  return call("forwards.list")
+end
+
 -- The user ------------------------------------------------------------------------------------
 
 thurm.ui = {}

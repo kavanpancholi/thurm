@@ -361,6 +361,8 @@ pub struct Client {
     pub ext: AtomicBool,
     /// Shows what plugins ask the user ([`thurm_proto::CAP_EXT_UI`]).
     pub ext_ui: AtomicBool,
+    /// Opens forwards for plugins and reports its own ([`thurm_proto::CAP_EXT_FORWARDS`]).
+    pub ext_forwards: AtomicBool,
     /// Hears which ports panes listen on ([`thurm_proto::CAP_PORT_EVENTS`]).
     pub port_events: AtomicBool,
     /// The plugin this client is the daemon's connection for.
@@ -831,6 +833,7 @@ impl Daemon {
             floating_minimize: AtomicBool::new(false),
             ext: AtomicBool::new(false),
             ext_ui: AtomicBool::new(false),
+            ext_forwards: AtomicBool::new(false),
             port_events: AtomicBool::new(false),
             plugin: Mutex::new(None),
             gone: AtomicBool::new(false),
@@ -2772,6 +2775,13 @@ impl Daemon {
                         .ext_ui
                         .store(local && desktop && app, Ordering::Relaxed);
                 }
+                if has(thurm_proto::CAP_EXT_FORWARDS) {
+                    let trusted = client.ext_ui.load(Ordering::Relaxed);
+                    client.ext_forwards.store(trusted, Ordering::Relaxed);
+                    if trusted {
+                        self.ext_forwarding_app_came(client.id);
+                    }
+                }
                 log::info!(
                     "client {} hello: {name} (protocol {version}{}{}{}{}{})",
                     client.id,
@@ -3942,10 +3952,13 @@ fn command_name(line: &str) -> Option<&str> {
 
 impl crate::ports::Host for Daemon {
     fn wants_ports(&self) -> bool {
-        self.clients
-            .lock()
-            .values()
-            .any(|c| c.port_events.load(Ordering::Relaxed) && !c.gone.load(Ordering::Relaxed))
+        // Not under the clients lock: the registry's is taken alone.
+        self.ext_watches_ports()
+            || self
+                .clients
+                .lock()
+                .values()
+                .any(|c| c.port_events.load(Ordering::Relaxed) && !c.gone.load(Ordering::Relaxed))
     }
 
     fn pane_roots(&self) -> Vec<(PaneId, u32)> {
@@ -3963,6 +3976,7 @@ impl crate::ports::Host for Daemon {
     }
 
     fn send_ports(&self, event: Event, except: &[u64]) {
+        self.ext_ports_changed(&event, except);
         let clients: Vec<_> = self.clients.lock().values().cloned().collect();
         for c in clients {
             if c.port_events.load(Ordering::Relaxed) && !except.contains(&c.id) {
@@ -3972,10 +3986,18 @@ impl crate::ports::Host for Daemon {
     }
 
     fn send_ports_to(&self, client: u64, event: Event) {
-        let c = self.clients.lock().get(&client).cloned();
-        if let Some(c) = c.filter(|c| c.port_events.load(Ordering::Relaxed)) {
+        let Some(c) = self.clients.lock().get(&client).cloned() else {
+            return;
+        };
+        // A plugin (or socket client) that joined by subscribing to `ports_changed`.
+        self.ext_ports_to(&c, &event);
+        if c.port_events.load(Ordering::Relaxed) {
             c.send(ServerMessage::Event(event));
         }
+    }
+
+    fn served(&self, joined: &[u64]) {
+        self.ext_ports_served(joined);
     }
 
     fn watcher(&self) -> &crate::ports::Watcher {
@@ -4723,6 +4745,7 @@ mod tests {
             floating_minimize: AtomicBool::new(false),
             ext: AtomicBool::new(false),
             ext_ui: AtomicBool::new(false),
+            ext_forwards: AtomicBool::new(false),
             port_events: AtomicBool::new(false),
             plugin: Mutex::new(None),
             gone: AtomicBool::new(false),
@@ -4781,6 +4804,80 @@ mod tests {
                 result: Ok(Response::Ok)
             })
         ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The last plugin to hear of ports unsubscribes: the watch stops at once, not at its next
+    /// look (seconds or minutes away).
+    #[test]
+    fn the_port_watch_stops_when_its_last_subscriber_leaves() {
+        let dir = std::env::temp_dir().join(format!("thurm-ports-leave-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let daemon = Daemon::new(
+            Config::default(),
+            dir.join("s.sock"),
+            dir.join("state"),
+            Arc::new(AtomicBool::new(false)),
+        );
+        let (client, _rx) = daemon.add_client();
+        client.ext.store(true, Ordering::SeqCst);
+        let ext = |method: &str| Request::Ext {
+            method: method.into(),
+            params: r#"{"names":["ports_changed"]}"#.into(),
+        };
+        let wait = |idle: bool| {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while daemon.ports.idle() != idle {
+                assert!(Instant::now() < deadline, "the watch is not idle={idle}");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        };
+        daemon.handle(&client, 1, ext(thurm_proto::ext::method::EVENTS_SUBSCRIBE));
+        wait(false);
+        // Its first look is done: the next is the shortest wait away.
+        std::thread::sleep(Duration::from_millis(500));
+        daemon.handle(
+            &client,
+            2,
+            ext(thurm_proto::ext::method::EVENTS_UNSUBSCRIBE),
+        );
+        wait(true);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The watch stops as soon as its last subscriber goes without unsubscribing, too.
+    #[test]
+    fn the_port_watch_stops_when_its_last_subscriber_goes() {
+        let dir = std::env::temp_dir().join(format!("thurm-ports-gone-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let daemon = Daemon::new(
+            Config::default(),
+            dir.join("s.sock"),
+            dir.join("state"),
+            Arc::new(AtomicBool::new(false)),
+        );
+        let (client, _rx) = daemon.add_client();
+        client.ext.store(true, Ordering::SeqCst);
+        let wait = |idle: bool| {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while daemon.ports.idle() != idle {
+                assert!(Instant::now() < deadline, "the watch is not idle={idle}");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        };
+        daemon.handle(
+            &client,
+            1,
+            Request::Ext {
+                method: thurm_proto::ext::method::EVENTS_SUBSCRIBE.into(),
+                params: r#"{"names":["ports_changed"]}"#.into(),
+            },
+        );
+        wait(false);
+        // Its first look is done: the next is the shortest wait away.
+        std::thread::sleep(Duration::from_millis(500));
+        daemon.remove_client(client.id);
+        wait(true);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -81,6 +81,31 @@ pub mod method {
     /// [`super::RunScript`]: runs a Lua script to its end. Its log lines come as
     /// [`super::notice::SCRIPT_LOG`] to a socket caller.
     pub const SCRIPT_RUN: &str = "script.run";
+    /// `{pane?}`: the TCP ports the programs in this daemon's panes (or in `pane`) listen on,
+    /// as `[PanePorts]` ([`crate::PanePorts`]).
+    pub const PORTS_LIST: &str = "ports.list";
+    /// `{host, pane, ports, complete, initial?}`: a remote host's pane listed these ports
+    /// ([`crate::Event::PortsChanged`] from that host's daemon); `initial` when that daemon
+    /// marked it so (sent as the app joined its watch), or the app sends it again to this daemon
+    /// on connecting. The result is `{heard}`: whether plugins heard it (only the lists of the
+    /// app that holds plugins' forwards are passed on). `{host, gone: true}`: the app's
+    /// connection to the host is gone (answered `{heard}` the same way). The daemon keeps each pane's latest list for new
+    /// subscribers and for an app taking over. Only from the app
+    /// ([`crate::CAP_EXT_FORWARDS`]), which hears them; subscribers hear `ports_changed` with
+    /// `host`.
+    pub const PORTS_REPORT: &str = "ports.report";
+    /// [`super::ForwardsReport`]: the app's forwards now, and what changed. Only from the app
+    /// ([`crate::CAP_EXT_FORWARDS`]); subscribers hear `forward_opened` and `forward_closed`.
+    pub const FORWARDS_REPORT: &str = "forwards.report";
+    /// The forwards of the app that holds plugins' forwards (the one that connected first; ids
+    /// are that app's own): `[ForwardInfo]`. Fails when no app that forwards is connected.
+    pub const FORWARDS_LIST: &str = "forwards.list";
+    /// [`super::ForwardOpen`]: the app opens a remote host's port on this Mac (or finds the
+    /// forward that has it). The result is a [`super::ForwardInfo`] with one more field, `new`:
+    /// true when the forward was opened now.
+    pub const FORWARDS_OPEN: &str = "forwards.open";
+    /// `{id}`: the app closes that forward. The result is its [`super::ForwardInfo`].
+    pub const FORWARDS_CLOSE: &str = "forwards.close";
 }
 
 /// What the daemon sends on its own: the `name` of an [`crate::Event::Ext`], or the method of
@@ -107,6 +132,23 @@ pub mod notice {
 /// `event` (the name). The agent events, `command_finished`, `pane_exited`, `pane_created`,
 /// `pane_changed` and `pane_focused` have the pane's [`crate::PaneInfo`] in `pane`;
 /// `pane_closed`, `bell` and `notification` have only its id, in `id`.
+///
+/// - `ports_changed`: `{id, ports, complete}` ([`crate::PanePorts`]), the whole list of a pane's
+///   ports (empty once they went), with `pane` while the pane is there. A remote host's pane
+///   (reported by the app) has `host`, and no `pane`, and `initial` for the lists its daemon
+///   sent the app as it joined that daemon's watch. Subscribing to it by name starts the
+///   daemon's watch of its panes' ports. A new subscriber gets every pane's list first, empty
+///   ones too, on its own (the others hear nothing again), and the remote hosts' lists known so
+///   far (but panes plugins already heard listen on nothing), all with `initial`. When the app loses a host (or quits), each of its panes heard
+///   of gets an empty list, `complete` false, with `gone`.
+/// - `files_uploaded`: `{id, paths}`, the files sent to a pane, once their paths were typed
+///   there, with `pane` while it is there.
+/// - `forward_opened` and `forward_closed`: [`ForwardInfo`] (its `id` is the forward's, not a
+///   pane's), as the app that holds plugins'
+///   forwards reports them (the one that connected first; when it quits, the next app's are
+///   heard as opened);
+///   `forward_closed` with `why`: `closed` (by someone), `host` (removed or disabled), `gone`
+///   (the port went away) or `app` (the app quit).
 pub const EVENTS: &[&str] = &[
     "agent_working",
     "agent_waiting",
@@ -123,6 +165,10 @@ pub const EVENTS: &[&str] = &[
     "bell",
     "notification",
     "config_reloaded",
+    "ports_changed",
+    "files_uploaded",
+    "forward_opened",
+    "forward_closed",
 ];
 
 /// An action: something with a name that the command palette lists, a key can run, and the
@@ -321,6 +367,53 @@ pub enum UiRequest {
         #[serde(flatten)]
         confirm: Confirm,
     },
+    /// Open a forward ([`method::FORWARDS_OPEN`]); answered with its [`ForwardInfo`] and `new`.
+    /// Only to an app that said [`crate::CAP_EXT_FORWARDS`], as are the next.
+    ForwardOpen {
+        id: u64,
+        #[serde(flatten)]
+        open: ForwardOpen,
+    },
+    /// Close forward `forward` ([`method::FORWARDS_CLOSE`]); answered with its [`ForwardInfo`].
+    ForwardClose { id: u64, forward: u64 },
+}
+
+/// A remote host's TCP port opened on this Mac's loopback by the app.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+#[serde(default)]
+pub struct ForwardInfo {
+    /// The app's id for it, for [`method::FORWARDS_CLOSE`].
+    pub id: u64,
+    /// The `[[remote]]` host.
+    pub host: String,
+    pub remote_port: u16,
+    /// The port on `127.0.0.1`.
+    pub local_port: u16,
+    /// Where it opens: the link it was last opened for, on its local port
+    /// (`http://localhost:<local_port>/app`), else `http://localhost:<local_port>/`.
+    pub url: String,
+}
+
+/// Parameters of [`method::FORWARDS_OPEN`].
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(default)]
+pub struct ForwardOpen {
+    /// The `[[remote]]` host.
+    pub host: String,
+    pub port: u16,
+    /// Open its URL in the browser too.
+    pub browse: bool,
+}
+
+/// Parameters of [`method::FORWARDS_REPORT`].
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(default)]
+pub struct ForwardsReport {
+    /// Every forward open now.
+    pub forwards: Vec<ForwardInfo>,
+    /// What changed, when one did: `{change: "opened"|"closed", forward, why?}`. Its `why`
+    /// goes with the `forward_closed` of that forward.
+    pub change: Value,
 }
 
 /// Parameters of [`method::UI_PICK`].
@@ -443,6 +536,9 @@ pub fn method_blocks(method: &str) -> bool {
             | method::PLUGINS_RELOAD
             | method::PLUGINS_ENABLE
             | method::PLUGINS_DISABLE
+            | method::PORTS_LIST
+            | method::FORWARDS_OPEN
+            | method::FORWARDS_CLOSE
     )
 }
 
