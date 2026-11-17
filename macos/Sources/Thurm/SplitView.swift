@@ -274,6 +274,10 @@ final class TabContentView: NSView {
     /// The cards on screen: none while hidden, and never the minimized ones.
     private var shownCards: [FloatingCard] { floatingHidden ? [] : floating.filter { !$0.minimized } }
     let minimizedBar = MinimizedCardsBar()
+    private(set) lazy var pluginSlots: [PluginSlotHost] = PluginViews.slots.map { slot in
+        PluginSlotHost(slot: slot) { name, args in SessionManager.shared.runUserCommand(name, args: args) }
+    }
+    private var pluginViewsObserver: NSObjectProtocol?
     /// The chips of minimized cards dragged out of the row, by pane.
     private(set) var placedChips: [PaneKey: MinimizedCardChip] = [:]
     /// Each card's fill and outline, by pane.
@@ -459,6 +463,14 @@ final class TabContentView: NSView {
         addSubview(focusRing)
         addSubview(dockIndicator)
         addSubview(minimizedBar)
+        for host in pluginSlots { addSubview(host) }
+        pluginViewsObserver = NotificationCenter.default.addObserver(
+            forName: .pluginViewsChanged, object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.needsLayout = true
+            // SwiftUI sizes the new views on its next pass.
+            DispatchQueue.main.async { self?.needsLayout = true }
+        }
         minimizedBar.onRestore = { [weak self] pane in self?.focus(pane) }
         minimizedBar.onPress = { [weak self] pane, event in self?.trackChipDrag(pane, from: event) ?? false }
         registerForDraggedTypes([TabSidebarViewController.dragType])
@@ -558,6 +570,7 @@ final class TabContentView: NSView {
             set(cardParts[id]?.rim, base + 3)
         }
         set(minimizedBar, 40_000)
+        for host in pluginSlots { set(host, 40_002) }
         for chip in placedChips.values { set(chip, 40_001) }
         set(dockIndicator, 50_000)
         withUnsafeMutablePointer(to: &rank) { ranks in
@@ -681,6 +694,26 @@ final class TabContentView: NSView {
 
     private func layoutBottomRight(in full: NSRect) {
         var bottom = full.maxY - 10
+        for host in pluginSlots {
+            host.isHidden = host.isEmpty
+            guard !host.isHidden else { continue }
+            let size = host.fittingSize
+            let x: CGFloat
+            let y: CGFloat
+            switch host.slot {
+            case "window.bottom_leading":
+                x = full.minX + 12
+                y = full.maxY - 10 - size.height
+            case "window.top_trailing":
+                x = full.maxX - size.width - 12
+                y = full.minY + (showsHeaders ? 40 : 10)
+            default:
+                x = full.maxX - size.width - 12
+                y = full.maxY - 10 - size.height
+                bottom -= size.height + 6
+            }
+            host.frame = NSRect(x: x, y: y, width: size.width, height: size.height)
+        }
         layoutPlacedChips(in: full)
         // Chips show while the cards are hidden too: they take no room, and are the way back.
         let chips = floating.filter { $0.minimized && $0.chip == nil }.map(\.pane)
@@ -1039,6 +1072,9 @@ final class TabContentView: NSView {
             return super.hitTest(point)
         }
         if !minimizedBar.isHidden, minimizedBar.frame.contains(local) {
+            return super.hitTest(point)
+        }
+        if pluginSlots.contains(where: { !$0.isHidden && $0.frame.contains(local) }) {
             return super.hitTest(point)
         }
         if placedChips.values.contains(where: { !$0.isHidden && $0.frame.contains(local) }) {
