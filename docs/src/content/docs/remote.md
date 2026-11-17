@@ -40,6 +40,7 @@ host = "me@devbox.example.org"   # a Host alias, user@host, or ssh://user@host:p
 # socket = "/run/user/1000/thurm-1000/thurmd.sock"   # discovered when unset
 # enabled = true
 # clipboard_read = "ask"   # "ask", "always" or "never"
+# forward_links = true     # ⌘-click on a localhost link forwards that port here
 # tailnet = "wss://devbox.YOUR-TAILNET.ts.net/v1/connect"   # over Tailscale instead of ssh
 ```
 
@@ -53,6 +54,8 @@ commands:
 | `thurm remote install NAME` | Install this build there, and upgrade its daemon in place |
 | `thurm remote doctor [NAME]` | Check what the host needs; `--fix` offers each fix, `--yes` runs them |
 | `thurm remote remove NAME` | Forget a host; its daemon and panes keep running there |
+| `thurm remote ports NAME` | The ports programs in the host's panes listen on |
+| `thurm remote forward NAME PORT\|URL` | Open one of the host's ports on this Mac (see [Ports](#ports)) |
 
 **Thurm › Remotes…** lists the same hosts with their state and build, and the
 selected host's checklist with a **Fix** button for each problem.
@@ -349,6 +352,55 @@ Launch presets in a remote workspace (⌘⇧P, ⌘⇧A) are the host's.
   to a private file on the host (in the daemon's runtime directory), and its
   path is pasted.
 
+## Ports
+
+A dev server on the host prints `http://localhost:5173`. That is the host's
+port 5173, not the Mac's. ⌘-click the link and Thurm opens the host's port on
+this Mac first: it listens on port 5173 of this Mac's loopback, `127.0.0.1` and
+`[::1]` both, so `localhost` reaches it whichever address the browser tries
+(another free port when 5173 is taken on either, kept for next time), carries
+each connection to the host's daemon, which connects to
+port 5173 on the host's own loopback, and opens the link pointed at it. The
+first time, a toast on that pane says where it went (`devbox:5173 →
+localhost:5173`), with **Copy Link**; an alert does when the pane is gone by then,
+or when there was none (Forward Port… with no window open). Links to `localhost`, `127.0.0.1`, `[::1]` and `0.0.0.0` are
+forwarded. The host's daemon connects to `127.0.0.1`, then `[::1]`; a link to
+`127.0.0.1` or `[::1]` reaches that address only, through a forward of its own,
+so two programs on the same port, one per address, each open as linked (a
+daemon older than this build tries both for those too). Set `forward_links = false` in the host's `[[remote]]` (or turn off
+**Open localhost links through a forward** in its details) to open them on the
+Mac instead.
+
+Other ways to open one:
+
+- **Shell › Forward Port…** (⌘⇧P, **Forward Port…**) lists the ports the
+  focused host's panes listen on, and takes a port number or a link. With a
+  pane of this Mac focused and more than one host connected, it asks which host
+  first.
+- **Shell › Processes & Ports…**: double-click a remote row with a port.
+- `thurm remote forward devbox 5173` from a terminal, until Ctrl-C.
+  `--local PORT` picks the port on the Mac (an error if the port is forwarded to
+  another one already), `--no-open` only prints the URL, and `--json` prints
+  `{host, remote_port, local_port, url}` without opening it.
+  `thurm remote ports devbox` lists what listens there.
+
+Nothing is forwarded until you do one of these: a port that merely opens on the
+host stays there, and a host that is turned off gets no forwards. The host's
+details in **Thurm › Remotes…** list its forwards, with **Open** (the link it
+was opened for), **Copy Link** and **Close**; ⌘⇧P has **Copy Forward Link** and
+**Close Forward** for each too. Each checks first that the forward is still open
+on the same port: one that has closed meanwhile is neither opened nor copied (its
+port may be another program's by then). Closing a forward also ends the connections it
+carries. A forward also closes when the host is removed or turned off, and when
+the port has been gone from every pane of the host for 30 seconds with no
+connection open (while part of a host's processes can't be read, or the host is
+disconnected, that clock doesn't run). A forward to a port no pane listed (a
+container, a system service) stays until you close it. One forward carries at
+most 64 connections at a time.
+
+The host needs a Thurm daemon of this version or later; an older one is
+reported when you open the link.
+
 ## The CLI
 
 `--remote NAME` sends any pane command to the host's daemon through the tunnel
@@ -421,11 +473,29 @@ reach the Mac's disk, clipboard, or credentials without you doing something:
   "Always" writes `clipboard_read = "always"` to the host's `[[remote]]`. Your
   `terminal.osc52` setting caps every host.
 - **Clipboard writes** follow your `terminal.osc52` setting.
-- **Links.** ⌘-click opens `http` and `https` links from remote panes, asks for
+- **Links.** ⌘-click opens `http` and `https` links from remote panes (a link
+  to the host's `localhost` through a forward, see [Ports](#ports)), asks for
   other schemes, and never opens `file://` links (they are paths on the host):
   it offers to copy the path instead.
 - **ssh.** Agent forwarding, X11 forwarding, and remote and dynamic forwards
   are always off. The only forward is the local socket for the daemon.
+- **Ports.** The Mac only ever connects out to the host: a forward is a
+  connection through the daemon's socket, and the host never reaches a port of
+  the Mac. Forwards open only when you ask for one, and closing one ends its
+  connections. A forward listens on loopback only (`127.0.0.1` and `[::1]`), so
+  other machines can't use it, but loopback has no notion of users: any program on this Mac, run by
+  any account logged in to it, can connect to an open forward and reach the
+  host's port as you, the same as with `ssh -L`. On a Mac other people use, keep
+  forwards to services that trust their loopback (no password of their own)
+  closed when you don't need them.
+- **Forwarded sites in the browser.** A forwarded link opens at `localhost` or
+  `127.0.0.1` on this Mac, so the browser treats the site as one of this Mac's
+  loopback sites. Browsers don't keep cookies apart by port: cookies set for
+  `localhost` (by a local dev server, or another host's forward) are sent to the
+  forwarded site, which runs on the host, and cookies it sets reach those
+  sites. This is how any port forward behaves; a host you would not give those
+  cookies to should keep `forward_links = false`, and its links then open on the
+  Mac as they are.
 - **Files.** Only what you paste or drop goes to the host.
 - **Over Tailscale.** The host admits this Mac by its Tailscale identity. On
   this Mac, the tunnel's socket and Thurm's dial socket (next to the daemon's)

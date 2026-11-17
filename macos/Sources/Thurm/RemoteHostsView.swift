@@ -210,6 +210,34 @@ private struct HostDetails: View {
                             Text("Never").tag("never")
                         }
                         .help("Whether programs on this host may read this Mac's clipboard (OSC 52).")
+                        Toggle("Open localhost links through a forward", isOn: Binding(
+                            get: { host.forwardLinks },
+                            set: { save("forward_links", $0) }
+                        ))
+                        .help("Cmd-click on a localhost link in this host's panes opens that port of the host "
+                            + "on this Mac. Off: it opens this Mac's own port.")
+                    }
+                }
+                Section("Forwards") {
+                    let open = Remotes.shared.forwards.filter { $0.host == name }
+                    if open.isEmpty {
+                        Text("None. Cmd-click a localhost link in a pane of \(name), or use Forward Port\u{2026}.")
+                            .foregroundStyle(.secondary)
+                    }
+                    ForEach(open, id: \.id) { f in
+                        LabeledContent {
+                            HStack(spacing: 10) {
+                                Button("Open") { SessionManager.openForwardLink(f) }
+                                    .help(f.url)
+                                Button("Copy Link") { SessionManager.copyForwardLink(f) }
+                                Button("Close") {
+                                    SessionManager.closeForward(f.id)
+                                }
+                            }
+                        } label: {
+                            Text(ForwardText.toast(host: name, remotePort: f.remotePort, localPort: f.localPort))
+                                .font(.system(.body, design: .monospaced))
+                        }
                     }
                 }
                 if let status, status.remoteBuild != nil || status.os != nil {

@@ -10,6 +10,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use thurm_config::Config;
 use thurm_remote::doctor;
+use thurm_remote::forward::{self, Forwards};
 use thurm_remote::handoff::{self, Registry, SshHost};
 use thurm_remote::install::{self, Method};
 use thurm_remote::tunnel::{Supervisor, Transport};
@@ -24,9 +25,96 @@ struct Manager {
     supervisors: HashMap<String, Supervisor>,
     cb: thurm_remote_status_cb,
     ctx: Ctx,
+    /// Where each `[[remote]]` pointed at the last sync.
+    destinations: HashMap<String, Destination>,
+}
+
+/// Where a `[[remote]]` reaches its daemon: its ssh target, socket and tailnet address. A host
+/// whose destination changes under the same name is another machine to its forwards.
+type Destination = (String, Option<String>, Option<String>);
+
+fn destination(r: &thurm_config::RemoteConfig) -> Destination {
+    (r.host.clone(), r.socket.clone(), r.tailnet.clone())
+}
+
+/// The hosts of `cfg` that point elsewhere than they did in `before`.
+fn moved(before: &HashMap<String, Destination>, cfg: &Config) -> Vec<String> {
+    cfg.remote
+        .iter()
+        .filter(|r| before.get(&r.name).is_some_and(|d| *d != destination(r)))
+        .map(|r| r.name.clone())
+        .collect()
 }
 
 static MANAGER: Mutex<Option<Manager>> = Mutex::new(None);
+
+/// Where forward changes are reported: the status callback, kept apart from `MANAGER` because
+/// closing forwards happens under its lock (`sync`).
+static FORWARD_CB: Mutex<Option<(thurm_remote_status_cb, Ctx)>> = Mutex::new(None);
+
+/// This app's forwards ([`forward`]).
+fn forwards() -> &'static Forwards {
+    static FORWARDS: std::sync::OnceLock<Forwards> = std::sync::OnceLock::new();
+    FORWARDS.get_or_init(|| {
+        let f = Forwards::default();
+        report_changes(&f, |report| {
+            if let Some((cb, ctx)) = *FORWARD_CB.lock() {
+                emit(cb, ctx, report);
+            }
+        });
+        f
+    })
+}
+
+/// Reports each change of `f` to `out` as `{forwards, change}`: every open forward and what
+/// changed, each forward as the app reads it ([`forward_json`]). One report at a time, each
+/// built and sent together: one built earlier is never sent after one built later, so the last
+/// list the app gets is the one in force.
+fn report_changes(f: &Forwards, out: impl Fn(&str) + Send + Sync + 'static) {
+    let me = f.clone();
+    let in_order = Mutex::new(());
+    f.on_change(move |change| {
+        let _one_at_a_time = in_order.lock();
+        let report = json!({ "forwards": forward_list(&me), "change": change_json(&change) });
+        out(&report.to_string());
+    });
+}
+
+/// `change` with its forward as [`forward_json`] gives it (`local_port`, `url`).
+fn change_json(change: &forward::Change) -> Value {
+    match change {
+        forward::Change::Opened { forward } => {
+            json!({ "change": "opened", "forward": forward_json(forward, None) })
+        }
+        forward::Change::Linked { forward } => {
+            json!({ "change": "linked", "forward": forward_json(forward, None) })
+        }
+        forward::Change::Closed { forward, why } => {
+            json!({ "change": "closed", "why": why, "forward": forward_json(forward, None) })
+        }
+    }
+}
+
+/// Every forward, with the URL it opens at.
+fn forward_list(f: &Forwards) -> Vec<Value> {
+    f.list().iter().map(|fw| forward_json(fw, None)).collect()
+}
+
+/// The forward's JSON for the app; `url` the link it opens at: `url` (the link it was just
+/// opened for) or the one it was last opened for, rewritten to it; else its root over http.
+fn forward_json(fw: &forward::Forward, url: Option<&str>) -> Value {
+    let url = url
+        .or(fw.link.as_deref())
+        .and_then(|u| forward::rewrite(u, fw.local))
+        .unwrap_or_else(|| format!("http://localhost:{}/", fw.local));
+    json!({
+        "id": fw.id,
+        "host": fw.host,
+        "remote_port": fw.remote_port,
+        "local_port": fw.local,
+        "url": url,
+    })
+}
 
 /// Whether `socket` is the local end of a tailnet host's tunnel, a relay (see
 /// `thurm_remote::tunnel`) rather than an ssh forward.
@@ -46,10 +134,58 @@ fn emit(cb: thurm_remote_status_cb, ctx: Ctx, json: &str) {
     }
 }
 
+/// Brings `f` in line with the config: closes the forwards of a host pointed elsewhere (before
+/// its tunnel moves) and of a host removed or turned off, and remembers where each host points.
+/// A config that could not be read changes nothing: an empty list in its place would close
+/// every forward, though no host went anywhere.
+fn reconcile_forwards(
+    f: &Forwards,
+    destinations: &mut HashMap<String, Destination>,
+    cfg: Result<&Config, String>,
+) {
+    let cfg = match cfg {
+        Ok(c) => c,
+        Err(e) => {
+            log::warn!("forwards kept as they are: the config could not be read: {e}");
+            return;
+        }
+    };
+    // Before the supervisors move their tunnels: a forward opened for the old destination must
+    // not start reaching the new one.
+    for name in moved(destinations, cfg) {
+        f.host_moved(&name);
+    }
+    *destinations = cfg
+        .remote
+        .iter()
+        .map(|r| (r.name.clone(), destination(r)))
+        .collect();
+    let enabled: Vec<&str> = cfg
+        .remote
+        .iter()
+        .filter(|r| r.enabled)
+        .map(|r| r.name.as_str())
+        .collect();
+    f.retain_hosts(&enabled);
+}
+
 /// Starts or stops supervisors so they match the config's enabled remotes; updates changed
 /// ones.
 fn sync(m: &mut Manager) {
-    let cfg = Config::load().unwrap_or_default();
+    sync_with(m, Config::load().map_err(|e| e.to_string()));
+}
+
+/// [`sync`] with the config `loaded`. One that could not be read (being rewritten) changes
+/// nothing: taken for no hosts, it would stop every tunnel, and every forward with it.
+fn sync_with(m: &mut Manager, loaded: Result<Config, String>) {
+    let cfg = match loaded {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            log::warn!("remotes kept as they are: the config could not be read: {e}");
+            return;
+        }
+    };
+    reconcile_forwards(forwards(), &mut m.destinations, Ok(&cfg));
     let wanted: HashMap<String, thurm_config::RemoteConfig> = cfg
         .remote
         .iter()
@@ -68,11 +204,18 @@ fn sync(m: &mut Manager) {
     );
     for (name, r) in wanted {
         match m.supervisors.get(&name) {
-            Some(s) => {
-                if let Err(e) = s.update(r) {
+            Some(s) => match s.update(r) {
+                // Forwards to a moved host open again once a connection with these settings
+                // (the new destination's) is up.
+                Ok(()) => forwards().await_settings(&name, s.settings()),
+                // Not taken (an ssh target it can't use): the tunnel keeps where it goes, and
+                // the host's panes are still there, so its forwards may open once it is
+                // connected with the settings it has.
+                Err(e) => {
                     log::warn!("remote {name}: {e}");
+                    forwards().await_settings(&name, s.settings());
                 }
-            }
+            },
             None => {
                 let ssh = match Ssh::new(&r.host) {
                     Ok(s) => s,
@@ -82,7 +225,11 @@ fn sync(m: &mut Manager) {
                     }
                 };
                 let (cb, ctx) = (m.cb, m.ctx);
+                let tunnel = forwards().host_started(&name);
                 let sup = Supervisor::start(r, ssh, true, move |status| {
+                    if status.phase == thurm_remote::tunnel::Phase::Connected {
+                        forwards().host_connected(&status.name, tunnel, status.settings);
+                    }
                     if let Ok(j) = serde_json::to_string(status) {
                         emit(cb, ctx, &j);
                     }
@@ -116,6 +263,7 @@ fn stop_later(supervisors: Vec<Supervisor>) {
 /// on every change (on a background thread). Calling it again replaces the callback.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn thurm_remotes_start(on_status: thurm_remote_status_cb, ctx: *mut c_void) {
+    *FORWARD_CB.lock() = Some((on_status, Ctx(ctx)));
     let mut g = MANAGER.lock();
     if let Some(m) = g.as_mut() {
         m.cb = on_status;
@@ -129,6 +277,7 @@ pub unsafe extern "C" fn thurm_remotes_start(on_status: thurm_remote_status_cb, 
         supervisors: HashMap::new(),
         cb: on_status,
         ctx: Ctx(ctx),
+        destinations: HashMap::new(),
     };
     sync(&mut m);
     *g = Some(m);
@@ -147,6 +296,7 @@ pub extern "C" fn thurm_remotes_sync() {
 pub extern "C" fn thurm_remotes_stop() {
     let taken = MANAGER.lock().take();
     drop(taken);
+    *FORWARD_CB.lock() = None;
 }
 
 /// Retry `name` (NULL: every host) now. With `restart`, check a connected tunnel and replace
@@ -277,6 +427,80 @@ enum Call {
     /// Whether this Mac's `thurm` is found, and speaks our protocol, from the environment sshd
     /// gives a login (Pair iPhone's check of the command-line tool).
     LocalProbe,
+    /// Opens `host`'s `port` here (or the port of `url`, a link to its loopback), or returns
+    /// the forward that has it: `{id, host, remote_port, local_port, url, new}`, `url` being
+    /// `url` rewritten to the forward. Connects to the host's daemon first; call it off the
+    /// main thread.
+    ForwardOpen {
+        host: String,
+        #[serde(default)]
+        port: Option<u16>,
+        #[serde(default)]
+        url: Option<String>,
+        /// The local port to listen on; else the remote port's number when free.
+        #[serde(default)]
+        local: Option<u16>,
+    },
+    ForwardClose {
+        id: u64,
+    },
+    ForwardList,
+    /// Forward `id` as it is now (as `forward_list` lists it), or an error once it has closed:
+    /// asked before opening or copying a link the app has held on to.
+    ForwardGet {
+        id: u64,
+    },
+    /// A `PortsChanged` from `host`'s daemon.
+    PortsChanged {
+        host: String,
+        pane: u64,
+        ports: Vec<thurm_proto::PortEntry>,
+        complete: bool,
+    },
+    /// The ports `host`'s panes listen on, as its last `PortsChanged` said.
+    KnownPorts {
+        host: String,
+    },
+    /// The connection to `host` dropped: its port lists are unknown until the daemon sends them
+    /// again (every pane's, as the app joins the watch on connecting).
+    HostDisconnected {
+        host: String,
+    },
+    /// `host`'s panes on connecting (`ListPanes`): lists of others are dropped, and its
+    /// forwards are looked at again, a host with no pane included.
+    HostPanes {
+        host: String,
+        panes: Vec<u64>,
+    },
+}
+
+/// The port `forward_open` forwards for `host`: `port`, or `url`'s. Only a configured host that
+/// is turned on has forwards.
+fn forward_port(
+    cfg: &Config,
+    host: &str,
+    port: Option<u16>,
+    url: Option<&str>,
+) -> Result<u16, String> {
+    let r = cfg
+        .remote(host)
+        .ok_or_else(|| format!("no remote named {host:?}"))?;
+    forward::forwardable(r)?;
+    let from_url = url
+        .map(|u| {
+            policy::LocalUrl::parse(u)
+                .map(|l| l.port)
+                .ok_or_else(|| format!("{u} is not a link to {host}'s localhost"))
+        })
+        .transpose()?;
+    match (port, from_url) {
+        // Both: they must agree, or the link would open at another service's forward.
+        (Some(p), Some(u)) if p != u => Err(format!(
+            "port {p} and the link's port {u} differ; give one of them"
+        )),
+        (Some(p), _) | (None, Some(p)) => Ok(p),
+        (None, None) => Err("a port or a URL to forward".into()),
+    }
 }
 
 /// Runs scripts with the local `/bin/sh` in the PATH sshd gives a login, so the probe sees what
@@ -413,6 +637,7 @@ fn call(c: Call) -> Result<Value, String> {
                 enabled: true,
                 clipboard_read: thurm_config::ClipboardRead::Ask,
                 tailnet: None,
+                forward_links: true,
             };
             thurm_config::edit_remotes(|t| thurm_config::with_remote_added(t, &entry))?;
             if let Some(m) = MANAGER.lock().as_mut() {
@@ -483,7 +708,10 @@ fn call(c: Call) -> Result<Value, String> {
             let cfg = Config::load().unwrap_or_default();
             json!(policy::clipboard_write(&cfg, host.as_deref()))
         }
-        Call::Link { host, url } => json!(policy::link(host.as_deref(), &url)),
+        Call::Link { host, url } => {
+            static LINKS: policy::Links = policy::Links::new();
+            json!(LINKS.link(Config::load().ok(), host.as_deref(), &url))
+        }
         Call::HandoffPrepare { host, path, branch } => {
             let h = handoff::prepare_registered(
                 &host_for(&host)?,
@@ -573,6 +801,49 @@ fn call(c: Call) -> Result<Value, String> {
             let (_, ssh) = ssh_for(&name)?;
             json!(pairing::devices(&ssh).map_err(|e| e.to_string())?)
         }
+        Call::ForwardOpen {
+            host,
+            port,
+            url,
+            local,
+        } => {
+            let f = forwards();
+            // Before reading where the host is: if it is pointed elsewhere from here on, this
+            // open (checked against the old destination) is refused rather than attached to the
+            // new one.
+            let since = f.epoch(&host);
+            let cfg = Config::load().map_err(|e| e.to_string())?;
+            let port = forward_port(&cfg, &host, port, url.as_deref())?;
+            f.check(&host)?;
+            // With its link from the start: the change it reports lists the URL it opens at.
+            let (fw, new) = f.open_since(&host, port, local, url.as_deref(), since)?;
+            let mut v = forward_json(&fw, url.as_deref());
+            v["new"] = json!(new);
+            v
+        }
+        Call::ForwardClose { id } => json!(forward_json(&forwards().close(id)?, None)),
+        Call::ForwardList => json!(forward_list(forwards())),
+        Call::ForwardGet { id } => {
+            forward_json(&forwards().get(id).ok_or("that forward has closed")?, None)
+        }
+        Call::PortsChanged {
+            host,
+            pane,
+            ports,
+            complete,
+        } => {
+            forwards().ports_changed(&host, pane, ports, complete);
+            json!("Ok")
+        }
+        Call::KnownPorts { host } => json!(forwards().known(&host)),
+        Call::HostDisconnected { host } => {
+            forwards().host_disconnected(&host);
+            json!("Ok")
+        }
+        Call::HostPanes { host, panes } => {
+            forwards().host_panes(&host, &panes);
+            json!("Ok")
+        }
         Call::LocalProbe => {
             let host = thurm_remote::probe(&LocalShell).map_err(|e| e.to_string())?;
             json!({
@@ -591,7 +862,7 @@ fn remote_setting_literal(key: &str, value: &serde_json::Value) -> Result<String
             thurm_remote::ssh::validate_target(s.trim())?;
             Ok(json!(s.trim()).to_string())
         }
-        ("enabled", serde_json::Value::Bool(b)) => Ok(b.to_string()),
+        ("enabled" | "forward_links", serde_json::Value::Bool(b)) => Ok(b.to_string()),
         ("tailnet", serde_json::Value::String(s)) => {
             thurm_config::parse_remote_tailnet(s)?;
             Ok(json!(s.trim()).to_string())
@@ -627,6 +898,7 @@ fn add_tailnet(name: String, target: String, tailnet: &str) -> Result<Value, Str
         enabled: true,
         clipboard_read: thurm_config::ClipboardRead::Ask,
         tailnet: Some(checked.url.clone()),
+        forward_links: true,
     };
     thurm_config::edit_remotes(|t| thurm_config::with_remote_added(t, &entry))?;
     if let Some(m) = MANAGER.lock().as_mut() {
@@ -680,6 +952,18 @@ mod tests {
             r#"{"op":"revoke_device","name":"pi","device":"iPhone"}"#,
             r#"{"op":"paired_devices","name":"pi"}"#,
             r#"{"op":"local_probe"}"#,
+            r#"{"op":"forward_open","host":"pi","port":5173}"#,
+            r#"{"op":"forward_open","host":"pi","url":"http://localhost:5173/","local":5174}"#,
+            r#"{"op":"forward_close","id":3}"#,
+            r#"{"op":"forward_list"}"#,
+            r#"{"op":"forward_get","id":3}"#,
+            r#"{"op":"ports_changed","host":"pi","pane":2,"ports":[{"port":5173,"address":"127.0.0.1","pid":9,"command":"vite"}],"complete":true}"#,
+            r#"{"op":"known_ports","host":"pi"}"#,
+            // As the app relays a PortsChanged: with `initial`, a list like any other here.
+            r#"{"op":"ports_changed","host":"pi","pane":2,"ports":[],"complete":true,"initial":true}"#,
+            r#"{"op":"host_disconnected","host":"pi"}"#,
+            r#"{"op":"host_panes","host":"pi","panes":[]}"#,
+            r#"{"op":"host_panes","host":"pi","panes":[2,3]}"#,
         ] {
             serde_json::from_str::<Call>(s).unwrap_or_else(|e| panic!("{s}: {e}"));
         }
@@ -698,6 +982,236 @@ mod tests {
         })
         .unwrap_err();
         assert!(e.contains("not a Thurm device key"), "{e}");
+    }
+
+    #[test]
+    fn an_unreadable_config_stops_no_tunnel() {
+        let remote = |name: &str| thurm_config::RemoteConfig {
+            name: name.into(),
+            host: "me@nowhere".into(),
+            socket: None,
+            // Turned off: its supervisor makes no connection.
+            enabled: false,
+            clipboard_read: Default::default(),
+            tailnet: None,
+            forward_links: true,
+        };
+        let sup = Supervisor::start(
+            remote("devbox"),
+            Ssh::new("me@nowhere").unwrap(),
+            false,
+            |_| {},
+        );
+        let mut m = Manager {
+            supervisors: HashMap::from([("devbox".to_owned(), sup)]),
+            cb: None,
+            ctx: Ctx(std::ptr::null_mut()),
+            destinations: HashMap::new(),
+        };
+        // Being rewritten: nothing stops.
+        sync_with(&mut m, Err("expected `=`".into()));
+        assert!(m.supervisors.contains_key("devbox"));
+        // Read, without the host: its tunnel stops.
+        sync_with(&mut m, Ok(Config::parse("").unwrap()));
+        assert!(m.supervisors.is_empty());
+    }
+
+    #[test]
+    fn a_move_the_tunnel_cannot_take_does_not_shut_its_forwards_out_for_good() {
+        // A name of its own: the app's forwards are shared by these tests.
+        let name = "bad-move";
+        let remote = |host: &str| thurm_config::RemoteConfig {
+            name: name.into(),
+            host: host.into(),
+            socket: None,
+            enabled: false,
+            clipboard_read: Default::default(),
+            tailnet: None,
+            forward_links: true,
+        };
+        let cfg = |host: &str| {
+            let mut c = Config::parse("").unwrap();
+            c.remote = vec![remote(host)];
+            c
+        };
+        // Its tunnel, connected with the settings it starts with.
+        let tunnel = forwards().host_started(name);
+        let sup = Supervisor::start(remote("me@one"), Ssh::new("me@one").unwrap(), false, |_| {});
+        forwards().host_connected(name, tunnel, sup.settings());
+        let mut m = Manager {
+            supervisors: HashMap::from([(name.to_owned(), sup)]),
+            cb: None,
+            ctx: Ctx(std::ptr::null_mut()),
+            destinations: HashMap::new(),
+        };
+        sync_with(&mut m, Ok(cfg("me@one")));
+        assert_eq!(forwards().opens(name), Ok(()));
+        // Pointed at an ssh target the tunnel refuses: it keeps going where it went.
+        sync_with(&mut m, Ok(cfg("-oProxyCommand=x")));
+        assert_eq!(forwards().opens(name), Ok(()), "forwards shut out for good");
+    }
+
+    #[test]
+    fn reports_list_forwards_as_the_app_reads_them_and_in_order() {
+        let dir = std::env::temp_dir().join(format!("thurm-ffi-reports-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = Forwards::new(dir.join("forwards.json"), dir_socket);
+        let reports = std::sync::Arc::new(Mutex::new(Vec::<Value>::new()));
+        let theirs = reports.clone();
+        report_changes(&f, move |r| {
+            theirs.lock().push(serde_json::from_str(r).unwrap())
+        });
+        let (fw, _) = f.open("devbox", 7000, Some(0)).unwrap();
+        f.close(fw.id).unwrap();
+        {
+            let r = reports.lock();
+            assert_eq!(r[0]["change"]["change"], "opened");
+            assert_eq!(r[0]["change"]["forward"]["local_port"], fw.local);
+            assert_eq!(r[0]["forwards"][0]["local_port"], fw.local);
+            assert_eq!(r[1]["change"]["why"], "closed");
+            assert_eq!(r[1]["change"]["forward"]["local_port"], fw.local);
+            assert_eq!(r[1]["forwards"], json!([]));
+        }
+        // Forwards opened and closed on many threads at once: the last report is what is open.
+        let threads: Vec<_> = (0..8)
+            .map(|i| {
+                let f = f.clone();
+                std::thread::spawn(move || {
+                    for j in 0..10 {
+                        let (fw, _) = f.open(&format!("h{i}"), 8000 + j, Some(0)).unwrap();
+                        if j % 2 == 0 {
+                            f.close(fw.id).unwrap();
+                        }
+                    }
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
+        let last = reports.lock().last().unwrap()["forwards"].clone();
+        assert_eq!(last, json!(forward_list(&f)));
+        for fw in f.list() {
+            f.close(fw.id).unwrap();
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_unreadable_config_closes_no_forward() {
+        let dir = std::env::temp_dir().join(format!("thurm-ffi-reconcile-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = Forwards::new(dir.join("forwards.json"), dir_socket);
+        let (fw, _) = f.open("devbox", 7000, Some(0)).unwrap();
+        let on = Config::parse("[[remote]]\nname = \"devbox\"\nhost = \"a\"\n").unwrap();
+        let mut destinations = HashMap::new();
+        reconcile_forwards(&f, &mut destinations, Ok(&on));
+        assert_eq!(f.list(), vec![fw.clone()]);
+        // The config can't be read for a moment (being rewritten): nothing changes.
+        reconcile_forwards(&f, &mut destinations, Err("expected `=`".into()));
+        assert_eq!(f.list(), vec![fw.clone()]);
+        assert!(
+            destinations.contains_key("devbox"),
+            "where hosts point is kept"
+        );
+        // Read again, without the host: its forward closes.
+        let none = Config::parse("").unwrap();
+        reconcile_forwards(&f, &mut destinations, Ok(&none));
+        assert!(f.list().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn dir_socket(host: &str) -> std::path::PathBuf {
+        std::path::PathBuf::from(format!("/nonexistent/{host}.sock"))
+    }
+
+    #[test]
+    fn a_host_pointed_elsewhere_has_moved() {
+        let cfg = |devbox: &str| {
+            Config::parse(&format!(
+                "[[remote]]\nname = \"devbox\"\n{devbox}\n[[remote]]\nname = \"pi\"\nhost = \"pi\"\n"
+            ))
+            .unwrap()
+        };
+        let before: HashMap<String, Destination> = cfg("host = \"a\"")
+            .remote
+            .iter()
+            .map(|r| (r.name.clone(), destination(r)))
+            .collect();
+        // Settings that keep the destination: not moved.
+        assert!(
+            moved(
+                &before,
+                &cfg("host = \"a\"\nforward_links = false\nclipboard_read = \"never\"")
+            )
+            .is_empty()
+        );
+        assert!(moved(&before, &cfg("host = \"a\"\nenabled = false")).is_empty());
+        // Another ssh target, socket or tailnet address under the same name: moved.
+        assert_eq!(moved(&before, &cfg("host = \"b\"")), ["devbox"]);
+        assert_eq!(
+            moved(&before, &cfg("host = \"a\"\nsocket = \"/run/x.sock\"")),
+            ["devbox"]
+        );
+        assert_eq!(
+            moved(
+                &before,
+                &cfg("host = \"a\"\ntailnet = \"wss://devbox.tail1.ts.net/v1/connect\"")
+            ),
+            ["devbox"]
+        );
+        // A host added since: nothing to move.
+        assert!(moved(&HashMap::new(), &cfg("host = \"b\"")).is_empty());
+    }
+
+    #[test]
+    fn forwards_only_for_hosts_that_are_on() {
+        let cfg = Config::parse(
+            "[[remote]]\nname = \"on\"\nhost = \"a\"\n[[remote]]\nname = \"off\"\nhost = \"b\"\nenabled = false\n",
+        )
+        .unwrap();
+        assert_eq!(forward_port(&cfg, "on", Some(5173), None), Ok(5173));
+        assert_eq!(
+            forward_port(&cfg, "on", None, Some("https://localhost:8443/x")),
+            Ok(8443)
+        );
+        let e = forward_port(&cfg, "off", Some(5173), None).unwrap_err();
+        assert!(e.contains("turned off"), "{e}");
+        assert!(forward_port(&cfg, "gone", Some(5173), None).is_err());
+        assert!(forward_port(&cfg, "on", None, Some("https://example.com")).is_err());
+        assert!(forward_port(&cfg, "on", None, None).is_err());
+        // A port and a link that agree; and that don't.
+        assert_eq!(
+            forward_port(&cfg, "on", Some(8443), Some("https://localhost:8443/x")),
+            Ok(8443)
+        );
+        let e = forward_port(&cfg, "on", Some(5173), Some("http://localhost:3000/")).unwrap_err();
+        assert!(e.contains("differ"), "{e}");
+        assert!(forward_port(&cfg, "on", Some(5173), Some("https://example.com/")).is_err());
+    }
+
+    #[test]
+    fn a_listed_forward_opens_at_the_link_it_was_opened_for() {
+        let mut fw = forward::Forward {
+            id: 1,
+            host: "devbox".into(),
+            remote_port: 8443,
+            at: Default::default(),
+            local: 18443,
+            link: None,
+        };
+        assert_eq!(forward_json(&fw, None)["url"], "http://localhost:18443/");
+        fw.link = Some("https://localhost:8443/app".into());
+        assert_eq!(
+            forward_json(&fw, None)["url"],
+            "https://localhost:18443/app"
+        );
+        assert_eq!(
+            forward_json(&fw, Some("http://127.0.0.1:8443/b"))["url"],
+            "http://127.0.0.1:18443/b"
+        );
     }
 
     #[test]
@@ -720,6 +1234,10 @@ mod tests {
         assert!(remote_setting_literal("host", &json!(1)).is_err());
         assert!(remote_setting_literal("clipboard_read", &json!("maybe")).is_err());
         assert!(remote_setting_literal("enabled", &json!("yes")).is_err());
+        assert_eq!(
+            remote_setting_literal("forward_links", &json!(false)).unwrap(),
+            "false"
+        );
         assert!(remote_setting_literal("name", &json!("x")).is_err());
         assert_eq!(
             remote_setting_literal("tailnet", &json!("wss://bastion.tail1234.ts.net")).unwrap(),

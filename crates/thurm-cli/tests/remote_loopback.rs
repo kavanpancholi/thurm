@@ -244,6 +244,7 @@ fn remote(name: &str, socket: Option<String>) -> RemoteConfig {
         enabled: true,
         clipboard_read: Default::default(),
         tailnet: None,
+        forward_links: true,
     }
 }
 
@@ -511,6 +512,133 @@ fn remote_workspace_over_loopback_ssh() {
         !out.status.success(),
         "no implicit local pane with --remote"
     );
+
+    // 4b. `thurm remote ports` lists what a program in the remote pane listens on, with its
+    //     pane.
+    let pane_port = free_port();
+    c.request(Request::Input {
+        pane,
+        data: format!(
+            "python3 -c 'import socket,time; s=socket.socket(); s.bind((\"127.0.0.1\",{pane_port})); s.listen(); print(\"listening-\"+str(s.getsockname()[1]), flush=True); time.sleep(600)'\r"
+        )
+        .into_bytes(),
+    })
+    .unwrap();
+    wait_screen(&c, pane, &format!("listening-{pane_port}"));
+    let out = cli(&w, &["remote", "ports", "loop", "--json"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let listed: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let ours = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["pane"] == pane)
+        .unwrap_or_else(|| panic!("pane {pane} not listed: {listed}"));
+    assert_eq!(ours["complete"], true, "{listed}");
+    assert!(
+        ours["ports"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["port"] == pane_port && e["address"] == "127.0.0.1"),
+        "port {pane_port} not listed for pane {pane}: {listed}"
+    );
+    // The table, too.
+    let out = cli(&w, &["remote", "ports", "loop"]);
+    let table = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        table.lines().any(|l| l
+            .split_whitespace()
+            .take(2)
+            .eq([pane.to_string(), pane_port.to_string()])),
+        "{table}"
+    );
+    c.request(Request::Input {
+        pane,
+        data: b"\x03".to_vec(),
+    })
+    .unwrap();
+
+    // 4c. `thurm remote forward` opens a port here: an HTTP GET through it reaches the
+    //     "host"'s server. Its port number is taken here (host and Mac are one machine), so the
+    //     forward listens on another.
+    let http = TcpListener::bind("127.0.0.1:0").unwrap();
+    let http_port = http.local_addr().unwrap().port();
+    let server = std::thread::spawn(move || {
+        let (mut conn, _) = http.accept().unwrap();
+        let mut req = Vec::new();
+        let mut byte = [0u8; 1];
+        while !req.ends_with(b"\r\n\r\n") {
+            assert_eq!(std::io::Read::read(&mut conn, &mut byte).unwrap(), 1);
+            req.push(byte[0]);
+        }
+        assert!(req.starts_with(b"GET /hello?x=1 HTTP/1.1\r\n"));
+        std::io::Write::write_all(
+            &mut conn,
+            b"HTTP/1.1 200 OK\r\nContent-Length: 11\r\nConnection: close\r\n\r\nremote-page",
+        )
+        .unwrap();
+    });
+    let mut forward = Command::new(env!("CARGO_BIN_EXE_thurm"))
+        .args([
+            "remote",
+            "forward",
+            "loop",
+            &format!("http://localhost:{http_port}/hello?x=1"),
+            "--no-open",
+        ])
+        .env("THURM_REMOTE_DIR", w.base.join("local"))
+        .env("THURM_CONFIG_DIR", w.base.join("lconfig"))
+        .env("THURM_STATE_DIR", w.base.join("lstate"))
+        .env("THURM_SOCKET", w.base.join("local/nothing.sock"))
+        .env_remove("THURM_PANE_ID")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut line = String::new();
+    std::io::BufRead::read_line(
+        &mut std::io::BufReader::new(forward.stdout.take().unwrap()),
+        &mut line,
+    )
+    .unwrap();
+    let url = line.trim();
+    assert!(
+        url.starts_with("http://localhost:") && url.ends_with("/hello?x=1"),
+        "{url:?}"
+    );
+    let fwd_port: u16 = url["http://localhost:".len()..]
+        .split('/')
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert_ne!(fwd_port, http_port);
+    let mut conn = std::net::TcpStream::connect(("127.0.0.1", fwd_port)).unwrap();
+    std::io::Write::write_all(
+        &mut conn,
+        b"GET /hello?x=1 HTTP/1.1\r\nHost: localhost\r\n\r\n",
+    )
+    .unwrap();
+    let mut answer = String::new();
+    std::io::Read::read_to_string(&mut conn, &mut answer).unwrap();
+    assert!(answer.ends_with("remote-page"), "{answer:?}");
+    server.join().unwrap();
+    // The local port is remembered for next time.
+    let remembered = std::fs::read_to_string(w.base.join("lstate/forwards.json")).unwrap();
+    assert!(
+        remembered.contains(&format!("\"loop:{http_port}\": {fwd_port}")),
+        "{remembered}"
+    );
+    unsafe {
+        kill(forward.id() as i32, 15);
+    }
+    assert!(forward.wait().unwrap().success());
+    assert!(std::net::TcpStream::connect(("127.0.0.1", fwd_port)).is_err());
 
     // 5. The tunnel dies: reconnect with backoff; the remote pane is still there.
     let pid = s.tunnel_pid.expect("tunnel pid");
