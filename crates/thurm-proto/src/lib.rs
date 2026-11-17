@@ -87,6 +87,7 @@ pub const CAPABILITIES: &[&str] = &[
     CAP_DIAL_AT,
     CAP_TRANSFER,
     CAP_CLIP_QUERY,
+    CAP_COPY,
 ];
 
 /// The daemon accepts `SearchPaths` and returns `PathMatches` only for that request.
@@ -113,6 +114,10 @@ pub const CAP_PORT_EVENTS: &str = "port-events";
 /// The daemon takes files on streams and sends its files back: it answers
 /// [`Request::UploadBegin`] and [`Request::DownloadBegin`]. Implies [`CAP_STREAMS`].
 pub const CAP_TRANSFER: &str = "transfer";
+
+/// The daemon copies files to and from paths its caller names: it answers [`Request::CopyTo`]
+/// and [`Request::CopyFrom`] (`thurm cp`). Implies [`CAP_STREAMS`].
+pub const CAP_COPY: &str = "copy";
 
 /// How a [`Request::DownloadBegin`] error for a path with nothing at it ends, so a client can
 /// tell "not there" from every other failure.
@@ -632,6 +637,27 @@ pub enum Request {
     ClipboardClear {
         pane: PaneId,
     },
+    /// Reserve a stream that writes a file of exactly `size` bytes at `path` on the daemon's
+    /// host: `~` is the home directory of the daemon's user, and a relative path is under it. A
+    /// `path` that is a directory (or ends with `/`, which must be one) takes the file as
+    /// `name`, of which only the last component is kept. The folder it goes in must be there.
+    /// The file is written beside its place and moved there once whole, with the permission
+    /// bits `mode`; one already there is replaced only with `replace`, and only a regular file
+    /// is. The stream closes `Ok` once the file is in place. Answers [`Response::CopyTicket`].
+    /// Requires [`CAP_COPY`].
+    CopyTo {
+        path: String,
+        name: String,
+        size: u64,
+        mode: u32,
+        replace: bool,
+    },
+    /// Reserve a stream that sends the regular file at `path` on the daemon's host, read as
+    /// [`Request::CopyTo`] reads its own; a file larger than one `CopyTo` takes is refused.
+    /// Answers [`Response::Download`]. Requires [`CAP_COPY`].
+    CopyFrom {
+        path: String,
+    },
 }
 
 /// The most files a batch of [`Request::UploadBegin`] holds (its `count`).
@@ -800,6 +826,13 @@ pub enum Response {
     ClipboardData {
         #[serde(with = "bytes")]
         data: Vec<u8>,
+    },
+    /// The answer to [`Request::CopyTo`]: a [`Response::Ticket`], and `path`, where the file
+    /// goes on the daemon's host (inside the folder named, under its own name).
+    CopyTicket {
+        ticket: String,
+        expires_ms: u32,
+        path: String,
     },
 }
 

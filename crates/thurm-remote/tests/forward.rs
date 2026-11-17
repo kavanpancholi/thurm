@@ -70,6 +70,68 @@ fn closing_a_forward_ends_its_open_connections() {
 }
 
 #[test]
+fn a_forward_counts_its_connections_and_tells_of_changes() {
+    let d = dir("count");
+    let socket = d.join("d.sock");
+    fakes::daemon(&socket);
+    let theirs = socket.clone();
+    let f = Forwards::new(d.join("forwards.json"), move |_| theirs.clone());
+    f.check("devbox").unwrap();
+    let (fw, _) = f.open("devbox", 5173, Some(0)).unwrap();
+    // What each notice found the forward carrying, in the order they came.
+    let told = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let (heard, counted, id) = (told.clone(), f.clone(), fw.id);
+    f.on_connections(move || {
+        let now = counted.connections().get(&id).copied();
+        heard.lock().unwrap().push(now);
+    });
+    assert_eq!(f.connections().get(&fw.id), Some(&0));
+    assert!(told.lock().unwrap().is_empty());
+
+    let roundtrip = |conn: &mut TcpStream| {
+        conn.write_all(b"ping").unwrap();
+        let mut got = [0u8; 4];
+        conn.read_exact(&mut got).unwrap();
+    };
+    let mut one = TcpStream::connect(("127.0.0.1", fw.local)).unwrap();
+    let mut two = TcpStream::connect(("127.0.0.1", fw.local)).unwrap();
+    roundtrip(&mut one);
+    roundtrip(&mut two);
+    assert_eq!(f.connections().get(&fw.id), Some(&2));
+    let until = |what: &str, done: &dyn Fn() -> bool| {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !done() {
+            assert!(Instant::now() < deadline, "{what}");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    };
+    // A notice that found both: those of the two coming have all been sent by then, or are
+    // this one.
+    until("the connections were not told of", &|| {
+        told.lock().unwrap().last() == Some(&Some(2))
+    });
+    // Two that came together are told of together, not one by one.
+    assert!(told.lock().unwrap().len() <= 2);
+
+    drop(one);
+    until("a connection that ended is still counted", &|| {
+        f.connections().get(&fw.id) == Some(&1)
+    });
+    // Only a notice sent for the connection that ended finds one left: a late one for the two
+    // that came would have found two.
+    until("the connection that ended was not told of", &|| {
+        told.lock().unwrap().last() == Some(&Some(1))
+    });
+    f.close(fw.id).unwrap();
+    assert!(
+        f.connections().is_empty(),
+        "a closed forward is not counted"
+    );
+    drop(two);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
 fn a_link_to_one_loopback_dials_that_one() {
     use thurm_proto::stream::Loopback;
     let d = dir("family");

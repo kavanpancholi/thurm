@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use thurm_client::stream::{self, StreamReader, StreamWriter};
 use thurm_client::{Client, ClientError};
 use thurm_proto::stream::{MAX_DATA, StreamClose};
-use thurm_proto::{CAP_TRANSFER, DownloadInfo, PaneId, UploadBatch};
+use thurm_proto::{CAP_COPY, CAP_TRANSFER, DownloadInfo, PaneId, UploadBatch};
 
 /// A host's daemon: the connection that asks, and the socket streams open on (the tunnel's
 /// local end for a remote host).
@@ -166,14 +166,26 @@ fn plan(upload: &Upload) -> Result<Planned<'_>, TransferError> {
 
 /// Opens a planned upload to send it: still a regular file of the size planned.
 fn open_planned<'a>(planned: &Planned<'a>) -> Result<Source<'a>, TransferError> {
+    open_planned_with_mode(planned).map(|(source, _)| source)
+}
+
+/// [`open_planned`], with the permission bits of the file that was opened (none for bytes):
+/// read from the open file, so they are the bits of the bytes sent whatever its name leads to
+/// later.
+fn open_planned_with_mode<'a>(
+    planned: &Planned<'a>,
+) -> Result<(Source<'a>, Option<u32>), TransferError> {
     let path = match planned.upload {
         // Read where they are, not copied.
         Upload::Data { data, .. } => {
-            return Ok(Source {
-                name: planned.name.clone(),
-                size: planned.size,
-                reader: Box::new(std::io::Cursor::new(data.as_slice())),
-            });
+            return Ok((
+                Source {
+                    name: planned.name.clone(),
+                    size: planned.size,
+                    reader: Box::new(std::io::Cursor::new(data.as_slice())),
+                },
+                None,
+            ));
         }
         Upload::Path(path) | Upload::Named { path, .. } => path,
     };
@@ -192,11 +204,15 @@ fn open_planned<'a>(planned: &Planned<'a>) -> Result<Source<'a>, TransferError> 
             "{shown} changed since it was chosen"
         )));
     }
-    Ok(Source {
-        name: planned.name.clone(),
-        size: planned.size,
-        reader: Box::new(file),
-    })
+    let mode = std::os::unix::fs::PermissionsExt::mode(&meta.permissions()) & 0o777;
+    Ok((
+        Source {
+            name: planned.name.clone(),
+            size: planned.size,
+            reader: Box::new(file),
+        },
+        Some(mode),
+    ))
 }
 
 /// A batch name unlikely to meet another of this client's.
@@ -864,6 +880,189 @@ pub fn download(
     Ok(Downloaded::Saved(info))
 }
 
+/// What a copy says of a file it would have to replace, and was not told to.
+pub const COPY_EXISTS: &str = "is there already (--force replaces it)";
+
+/// Copies the file `src` to `dest` on the host ([`thurm_proto::CAP_COPY`]): a path of the
+/// host's user, `~` and relative ones under its home, the file's own name inside it when it is
+/// a folder. A file already there is replaced only with `replace`. The file is whole there or
+/// not there at all. Returns where it is on the host, and its size.
+pub fn copy_to(
+    host: Host,
+    src: &Path,
+    dest: &str,
+    replace: bool,
+    cancel: &Cancel,
+    mut progress: impl FnMut(Progress),
+) -> Result<(String, u64), TransferError> {
+    if !host.client.has_capability(CAP_COPY) {
+        return Err(TransferError::Unsupported);
+    }
+    let upload = Upload::Path(src.to_owned());
+    let planned = plan(&upload)?;
+    let (mut source, mode) = open_planned_with_mode(&planned)?;
+    let (ticket, landed) = host.client.copy_to_begin(
+        dest,
+        &source.name,
+        source.size,
+        mode.unwrap_or(0o644),
+        replace,
+    )?;
+    let (reader, writer, watch, handle) = open_watched(host.socket, &ticket.ticket, cancel)?;
+    let mut p = Progress {
+        done: 0,
+        total: source.size,
+    };
+    progress(p);
+    let writer = send_one(&mut source, writer, watch, &handle, cancel, |n| {
+        p.done += n;
+        progress(p);
+    })?;
+    wait_cancellable(reader, writer, handle, cancel)?;
+    Ok((landed, p.total))
+}
+
+/// Copies the file at `path` on the host ([`thurm_proto::CAP_COPY`], read as [`copy_to`] reads
+/// its destination) to `dest` here, under its own name inside `dest` when that is a folder. A
+/// file already there is replaced only with `replace`, and only a regular file is. Written
+/// beside its place first, then moved there. Returns where it is and its size.
+pub fn copy_from(
+    host: Host,
+    path: &str,
+    dest: &Path,
+    replace: bool,
+    cancel: &Cancel,
+    mut progress: impl FnMut(Progress),
+) -> Result<(PathBuf, u64), TransferError> {
+    if !host.client.has_capability(CAP_COPY) {
+        return Err(TransferError::Unsupported);
+    }
+    let info = host.client.copy_from_begin(path)?;
+    let ticket = info
+        .ticket
+        .as_deref()
+        .ok_or_else(|| TransferError::Remote("the daemon sent no ticket".into()))?;
+    // A copy refused here uses its ticket up (opened and dropped at once) rather than leave it
+    // to lapse, counted against this client's tickets for a minute.
+    let refuse = |e: TransferError| {
+        if let Ok(opened) = stream::open(host.socket, ticket) {
+            drop(opened);
+        }
+        e
+    };
+    let dest = if dest.is_dir() {
+        let name = Path::new(&info.name)
+            .file_name()
+            .ok_or_else(|| refuse(TransferError::Remote("the host's file has no name".into())))?;
+        dest.join(name)
+    } else {
+        dest.to_owned()
+    };
+    // Its mode once in place: the one of the file it replaces, else what a new file gets.
+    let mode = match std::fs::symlink_metadata(&dest) {
+        Ok(m) if !m.is_file() => {
+            return Err(refuse(TransferError::Local(format!(
+                "{} is not a regular file; it is not replaced",
+                dest.display()
+            ))));
+        }
+        Ok(_) if !replace => {
+            return Err(refuse(TransferError::Local(format!(
+                "{} {COPY_EXISTS}",
+                dest.display()
+            ))));
+        }
+        Ok(m) => std::os::unix::fs::PermissionsExt::mode(&m.permissions()) & 0o777,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => 0o644,
+        Err(e) => {
+            return Err(refuse(TransferError::Local(format!(
+                "{}: {e}",
+                dest.display()
+            ))));
+        }
+    };
+    let (part, file) = create_part(&dest).map_err(refuse)?;
+    // The part itself, kept beside the handle that writes it: its bits are set through it, and
+    // it tells whether the part's name is still this file.
+    let ours = match file.try_clone() {
+        Ok(ours) => ours,
+        Err(e) => {
+            let _ = std::fs::remove_file(&part);
+            return Err(refuse(TransferError::Local(format!(
+                "{}: {e}",
+                part.display()
+            ))));
+        }
+    };
+    let placed = fetch_into(host, ticket, file, &part, info.size, cancel, &mut progress)
+        .and_then(|()| land_copy(&part, &ours, &dest, mode, replace));
+    // Moved into place, the part's name is gone; linked there, or failed, it is not. Only
+    // while the name is still this copy's file: what someone put in its place is theirs.
+    if names(&part, &ours) {
+        let _ = std::fs::remove_file(&part);
+    }
+    placed.map(|()| (dest, info.size))
+}
+
+/// Whether `path` is still the name of `file` (not a link, nor another file, put in its place).
+fn names(path: &Path, file: &File) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (std::fs::symlink_metadata(path), file.metadata()) {
+        (Ok(at), Ok(ours)) => at.is_file() && (at.dev(), at.ino()) == (ours.dev(), ours.ino()),
+        _ => false,
+    }
+}
+
+/// Gives the whole file `ours`, written as `part`, the permission bits `mode` and puts it at
+/// `dest` ([`place_copy`]). The bits are set through the open file, not its name: in a folder
+/// others can change, the name may lead elsewhere by now, and a file of the user's must not get
+/// these bits in its place. A part whose name is no longer this file is not placed.
+fn land_copy(
+    part: &Path,
+    ours: &File,
+    dest: &Path,
+    mode: u32,
+    replace: bool,
+) -> Result<(), TransferError> {
+    ours.set_permissions(std::os::unix::fs::PermissionsExt::from_mode(mode))
+        .map_err(|e| TransferError::Local(format!("{}: {e}", dest.display())))?;
+    if !names(part, ours) {
+        return Err(TransferError::Local(format!(
+            "{} was changed while the file was written; nothing was copied",
+            part.display()
+        )));
+    }
+    place_copy(part, dest, replace)
+}
+
+/// Puts the whole file `part` at `dest`. With `replace`, over a regular file there, and only
+/// one: what is there is looked at again now, as a link or a folder may have come since the
+/// copy was asked for. Without, only where nothing is.
+fn place_copy(part: &Path, dest: &Path, replace: bool) -> Result<(), TransferError> {
+    let local = |e: std::io::Error| TransferError::Local(format!("{}: {e}", dest.display()));
+    if !replace {
+        // Into its place without replacing a file that came there meanwhile.
+        return std::fs::hard_link(part, dest).map_err(|e| match e.kind() {
+            std::io::ErrorKind::AlreadyExists => {
+                TransferError::Local(format!("{} {COPY_EXISTS}", dest.display()))
+            }
+            _ => local(e),
+        });
+    }
+    match std::fs::symlink_metadata(dest) {
+        Ok(m) if !m.is_file() => {
+            return Err(TransferError::Local(format!(
+                "{} is not a regular file; it is not replaced",
+                dest.display()
+            )));
+        }
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(local(e)),
+    }
+    std::fs::rename(part, dest).map_err(local)
+}
+
 /// Opens the stream `ticket` reserved and writes the `size` bytes it sends into `file` (`shown`
 /// in errors), Cancel cutting it short; a failed receive aborts the stream within bounds.
 /// Leaves cleaning up `file` to the caller, who alone knows what it is.
@@ -1167,6 +1366,124 @@ mod tests {
                 StreamFrame::Close(StreamClose::Aborted)
             ]
         );
+    }
+
+    #[test]
+    fn a_copy_sends_the_bits_of_the_file_it_opened() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = temp_dir("copy-mode");
+        let path = dir.join("secret.txt");
+        std::fs::write(&path, b"private").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let upload = Upload::Path(path.clone());
+        let planned = plan(&upload).unwrap();
+        let (mut source, mode) = open_planned_with_mode(&planned).unwrap();
+        // Another file takes the name once this one is open: the bytes and the bits sent are
+        // still the first one's.
+        std::fs::remove_file(&path).unwrap();
+        std::fs::write(&path, b"public!").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(mode, Some(0o600));
+        let mut sent = Vec::new();
+        source.reader.read_to_end(&mut sent).unwrap();
+        assert_eq!(sent, b"private");
+        // Bytes have no bits of their own.
+        let data = Upload::Data {
+            name: "a".into(),
+            data: vec![1],
+        };
+        let (_, mode) = open_planned_with_mode(&plan(&data).unwrap()).unwrap();
+        assert_eq!(mode, None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_link_in_a_parts_place_gets_neither_the_copys_bits_nor_removed() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = temp_dir("copy-swap");
+        let dest = dir.join("dest.txt");
+        let private = dir.join("private.key");
+        std::fs::write(&private, b"secret").unwrap();
+        std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+
+        // The part's name leads to a private file of the user's by the time the copy is whole.
+        let (part, mut file) = create_part(&dest).unwrap();
+        file.write_all(b"new").unwrap();
+        std::fs::remove_file(&part).unwrap();
+        std::os::unix::fs::symlink(&private, &part).unwrap();
+        let e = land_copy(&part, &file, &dest, 0o644, true).unwrap_err();
+        assert!(e.to_string().contains("was changed while"), "{e}");
+        assert_eq!(
+            mode(&private),
+            0o600,
+            "the link's target got the copy's bits"
+        );
+        assert_eq!(std::fs::read(&private).unwrap(), b"secret");
+        assert!(!dest.exists());
+        // Not this copy's to remove.
+        assert!(!names(&part, &file));
+        std::fs::remove_file(&part).unwrap();
+
+        // Another file under the part's name is no more this copy's than a link.
+        let (part, file) = create_part(&dest).unwrap();
+        std::fs::remove_file(&part).unwrap();
+        std::fs::write(&part, b"theirs").unwrap();
+        assert!(land_copy(&part, &file, &dest, 0o644, false).is_err());
+        assert!(!dest.exists() && !names(&part, &file));
+        std::fs::remove_file(&part).unwrap();
+
+        // Left alone, the part lands with the bits asked for.
+        let (part, mut file) = create_part(&dest).unwrap();
+        file.write_all(b"new").unwrap();
+        assert!(names(&part, &file));
+        land_copy(&part, &file, &dest, 0o640, false).unwrap();
+        assert_eq!(std::fs::read(&dest).unwrap(), b"new");
+        assert_eq!(mode(&dest), 0o640);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_copy_replaces_only_a_regular_file_that_is_there_when_it_lands() {
+        let dir = temp_dir("copy-place");
+        let part = dir.join(".part");
+        let dest = dir.join("dest.txt");
+        let target = dir.join("target.txt");
+        std::fs::write(&target, b"kept").unwrap();
+        let fresh = || std::fs::write(&part, b"new").unwrap();
+
+        // A link that took the destination's place while the file came: kept, with its target.
+        fresh();
+        std::os::unix::fs::symlink(&target, &dest).unwrap();
+        let e = place_copy(&part, &dest, true).unwrap_err();
+        assert!(e.to_string().contains("not a regular file"), "{e}");
+        assert!(std::fs::symlink_metadata(&dest).unwrap().is_symlink());
+        assert_eq!(std::fs::read(&target).unwrap(), b"kept");
+        // A dangling link is a link all the same.
+        std::fs::remove_file(&dest).unwrap();
+        std::os::unix::fs::symlink(dir.join("nothing"), &dest).unwrap();
+        assert!(place_copy(&part, &dest, true).is_err());
+        assert!(!dir.join("nothing").exists());
+        // So is a folder.
+        std::fs::remove_file(&dest).unwrap();
+        std::fs::create_dir(&dest).unwrap();
+        assert!(place_copy(&part, &dest, true).is_err());
+        std::fs::remove_dir(&dest).unwrap();
+
+        // A regular file gives way, and nothing there is fine too.
+        std::fs::write(&dest, b"old").unwrap();
+        place_copy(&part, &dest, true).unwrap();
+        assert_eq!(std::fs::read(&dest).unwrap(), b"new");
+        std::fs::remove_file(&dest).unwrap();
+        fresh();
+        place_copy(&part, &dest, true).unwrap();
+        // Not to be replaced: a file that came meanwhile is kept.
+        fresh();
+        std::fs::write(&dest, b"theirs").unwrap();
+        let e = place_copy(&part, &dest, false).unwrap_err();
+        assert!(e.to_string().contains(COPY_EXISTS), "{e}");
+        assert_eq!(std::fs::read(&dest).unwrap(), b"theirs");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

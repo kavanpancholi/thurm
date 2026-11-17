@@ -628,6 +628,99 @@ fn remote_workspace_over_loopback_ssh() {
         "no implicit local pane with --remote"
     );
 
+    // 4a. `thurm cp` copies a file to the host and back through the same tunnel.
+    let cp_dir = w.base.join("cp");
+    std::fs::create_dir_all(cp_dir.join("there")).unwrap();
+    std::fs::create_dir_all(cp_dir.join("back")).unwrap();
+    let note = cp_dir.join("note.txt");
+    std::fs::write(&note, "copied-42\n").unwrap();
+    let there = format!("loop:{}", cp_dir.join("there").display());
+    let out = cli(&w, &["cp", note.to_str().unwrap(), &there, "--json"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let copied: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(copied[0]["bytes"], 10, "{copied}");
+    // Where the file landed in the folder, not the folder that was named.
+    let landed = |name: &str| {
+        let at = std::fs::canonicalize(cp_dir.join("there"))
+            .unwrap()
+            .join(name);
+        format!("loop:{}", at.display())
+    };
+    let to = |v: &serde_json::Value| {
+        let (host, path) = v["to"].as_str().unwrap().split_once(':').unwrap();
+        let path = std::fs::canonicalize(path).unwrap();
+        format!("{host}:{}", path.display())
+    };
+    assert_eq!(to(&copied[0]), landed("note.txt"), "{copied}");
+    // Several files into the folder: each with its own place.
+    let (one, two) = (cp_dir.join("one.txt"), cp_dir.join("two.txt"));
+    std::fs::write(&one, "1").unwrap();
+    std::fs::write(&two, "22").unwrap();
+    let out = cli(
+        &w,
+        &[
+            "cp",
+            one.to_str().unwrap(),
+            two.to_str().unwrap(),
+            &there,
+            "--json",
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let copied: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        (to(&copied[0]), to(&copied[1])),
+        (landed("one.txt"), landed("two.txt")),
+        "{copied}"
+    );
+    assert_eq!(copied[1]["bytes"], 2, "{copied}");
+    assert_eq!(
+        std::fs::read_to_string(cp_dir.join("there/note.txt")).unwrap(),
+        "copied-42\n"
+    );
+    // A file that is there is kept unless it is to be replaced.
+    let out = cli(&w, &["cp", note.to_str().unwrap(), &there]);
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("loop: ") && err.contains("is there already"),
+        "{err}"
+    );
+    let out = cli(&w, &["cp", "--force", note.to_str().unwrap(), &there]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let from = format!("{there}/note.txt");
+    let out = cli(&w, &["cp", &from, cp_dir.join("back").to_str().unwrap()]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(cp_dir.join("back/note.txt")).unwrap(),
+        "copied-42\n"
+    );
+    let out = cli(&w, &["cp", "nobody:a", cp_dir.to_str().unwrap()]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success() && err.contains("no remote named \"nobody\""),
+        "{err}"
+    );
+    // The forwards are the app's: with none open, and no daemon of this machine, it says so.
+    let out = cli(&w, &["remote", "forwards"]);
+    assert!(!out.status.success());
+
     // 4b. `thurm remote ports` lists what a program in the remote pane listens on, with its
     //     pane.
     let pane_port = free_port();
