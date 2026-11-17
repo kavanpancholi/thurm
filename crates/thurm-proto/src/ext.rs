@@ -416,7 +416,7 @@ pub struct MountedView {
 /// ignored, and a type the app does not know is drawn as nothing.
 ///
 /// - `row`, `column`, `stack`: `children` side by side, one above another, or on top of each
-///   other (centered), `spacing` points apart.
+///   other (aligned to the top right, where a `badge` goes), `spacing` points apart.
 /// - `text`: `text`, `size` points (the app's text size when 0), `weight` (`regular`,
 ///   `medium`, `bold`), `color`.
 /// - `icon`: the SF Symbol called `symbol`, `size` points, `color`.
@@ -424,7 +424,9 @@ pub struct MountedView {
 /// - `ring`: a ring `size` points across, filled to `value` (0 to 1) in `color`, with its
 ///   `children` drawn inside it.
 /// - `bar`: a bar `width` points wide (the row's width when 0), filled to `value` in `color`.
-/// - `badge`: a small dot with `text` (one or two characters) in it, in `color`.
+/// - `badge`: a small dot with `text` (one or two characters) in it, in `color`, over the top
+///   right corner of what it is stacked on.
+/// - `divider`: a line `width` by `height` points (1 by 18 when not given), in `color`.
 /// - `spacer`: empty room that grows in a row or a column.
 ///
 /// Any node may have `padding`, a `background` (`pill`, `card`, or none), a `tooltip`, an

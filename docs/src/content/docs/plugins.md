@@ -222,13 +222,14 @@ shows what this one knows.
 
 | Type | Draws | Its fields |
 | --- | --- | --- |
-| `row`, `column`, `stack` | Its `children` side by side, one above another, or on top of each other | `spacing` |
+| `row`, `column`, `stack` | Its `children` side by side, one above another, or on top of each other (aligned to the top right) | `spacing` |
 | `text` | `text` | `size`, `weight` (`regular`, `medium`, `bold`), `color` |
 | `icon` | The SF Symbol named `symbol` | `size`, `color` |
 | `image` | A PNG, base64 in `image` | `width`, `height` |
 | `ring` | A ring filled to `value` (0 to 1), with its `children` inside | `size`, `color` |
 | `bar` | A bar filled to `value` | `width` (the column's width when not set), `height`, `color` |
-| `badge` | A dot with one or two characters of `text` | `color` |
+| `badge` | A dot with one or two characters of `text`, over the top right corner of what it is stacked on | `color` |
+| `divider` | A thin line, 1 by 18 points unless set | `width`, `height`, `color` |
 | `spacer` | Room that grows in a row or a column | `width` (the least room) |
 
 Any node can also have `padding`, a `background` (`pill` or `card`), a

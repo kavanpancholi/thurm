@@ -180,7 +180,7 @@ struct PluginNodeView: View {
         case "column":
             VStack(alignment: .leading, spacing: spacing) { children }
         case "stack":
-            ZStack { children }
+            ZStack(alignment: .topTrailing) { children }
         case "text":
             Text(node.text)
                 .font(.system(size: node.size > 0 ? node.size : 12, weight: fontWeight))
@@ -225,6 +225,11 @@ struct PluginNodeView: View {
                 .foregroundStyle(.black)
                 .frame(minWidth: 14, minHeight: 14)
                 .background(Circle().fill(color(default: .white)))
+                .offset(x: 6, y: -6)
+        case "divider":
+            Rectangle()
+                .fill(color(default: Color.primary.opacity(0.2)))
+                .frame(width: node.width > 0 ? node.width : 1, height: node.height > 0 ? node.height : 18)
         case "spacer":
             Spacer(minLength: node.width > 0 ? node.width : 0)
         default:

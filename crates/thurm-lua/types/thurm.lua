@@ -182,7 +182,7 @@ thurm.ui = {}
 function thurm.ui.toast(text, pane) end
 
 ---@class thurm.ViewNode
----@field type "row"|"column"|"stack"|"text"|"icon"|"image"|"ring"|"bar"|"badge"|"spacer"
+---@field type "row"|"column"|"stack"|"text"|"icon"|"image"|"ring"|"bar"|"badge"|"divider"|"spacer"
 ---@field children thurm.ViewNode[]?
 ---@field text string?
 ---@field symbol string? An SF Symbol name, for `icon`
