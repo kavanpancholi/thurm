@@ -215,12 +215,13 @@ and a plugin's views go when it stops, is disabled or is reloaded.
 | Node `type` | Draws |
 | --- | --- |
 | `row`, `column`, `stack` | Its `children` side by side, one above another, or on top of each other, placed by `align` (`center`, `top`, `bottom`, `leading`, `trailing`, `top_leading`, `top_trailing`, `bottom_leading`, `bottom_trailing`); `spacing` apart |
-| `text` | `text`, at `size` points, in `weight` (`regular`, `medium`, `bold`) and `color` |
+| `text` | `text`, at `size` points, in `weight` (`regular`, `medium`, `bold`) and `color`; on one line, unless it has a `width` to wrap in |
 | `icon` | The SF Symbol named `symbol`, at `size` points, in `color` |
 | `image` | A PNG, base64 in `image`: anything else the plugin draws itself |
 | `spacer` | Room that grows in a row or a column |
 
-Any node can also have `width`, `height`, `padding`, a `fill` color with a
+Any node can also have `width` and `height` (its content placed in them by
+`align`), `padding`, a `fill` color with a
 `corner` radius, a `border` color, a `tooltip`, an `action` (`{name, args}`,
 run when the node is clicked, for the focused pane) and a `popover` (a view
 shown next to it while the pointer is over it). Colors are `primary`,

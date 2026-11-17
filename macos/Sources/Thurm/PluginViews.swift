@@ -144,7 +144,8 @@ struct PluginNodeView: View {
 
     var body: some View {
         content
-            .frame(width: node.width > 0 ? node.width : nil, height: node.height > 0 ? node.height : nil)
+            .frame(width: node.width > 0 ? node.width : nil, height: node.height > 0 ? node.height : nil,
+                   alignment: alignment)
             .padding(node.padding)
             .background(Self.color(node.fill).map { RoundedRectangle(cornerRadius: node.corner).fill($0) })
             .overlay(Self.color(node.border).map { RoundedRectangle(cornerRadius: node.corner).strokeBorder($0) })
@@ -170,6 +171,7 @@ struct PluginNodeView: View {
             Text(node.text)
                 .font(.system(size: node.size > 0 ? node.size : 12, weight: fontWeight))
                 .foregroundStyle(Self.color(node.color) ?? .primary)
+                .fixedSize(horizontal: node.width == 0, vertical: false)
         case "icon":
             Image(systemName: node.symbol)
                 .font(.system(size: node.size > 0 ? node.size : 13, weight: fontWeight))
