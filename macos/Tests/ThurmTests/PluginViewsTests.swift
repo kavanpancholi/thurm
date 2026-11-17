@@ -16,9 +16,9 @@ final class PluginViewsTests: XCTestCase {
     }
 
     private let json: Any = [[
-        "client": 4, "owner": "plugin:usage", "id": "claude", "slot": "window.bottom_trailing",
+        "client": 4, "id": "claude", "slot": "window.bottom_trailing",
         "view": [
-            "type": "ring", "value": 0.4, "color": "#ff9f0a", "later": true,
+            "type": "stack", "align": "top_trailing", "fill": "#ff9f0acc", "corner": 17, "later": true,
             "children": [["type": "icon", "symbol": "sparkle"]],
             "action": ["name": "usage.refresh", "args": ["tool": "claude"]],
             "popover": ["type": "column", "children": [["type": "text", "text": "5-hour limit"]]],
@@ -29,13 +29,18 @@ final class PluginViewsTests: XCTestCase {
         let views = PluginViews.decode(json)
         let view = try XCTUnwrap(views.first)
         XCTAssertEqual(view.key, "4/claude")
-        XCTAssertEqual(view.view.type, "ring")
-        XCTAssertEqual(view.view.value, 0.4)
+        XCTAssertEqual(view.view.type, "stack")
+        XCTAssertEqual(view.view.align, "top_trailing")
+        XCTAssertEqual(view.view.corner, 17)
         XCTAssertEqual(view.view.children.first?.symbol, "sparkle")
         XCTAssertEqual(view.view.action?.name, "usage.refresh")
         XCTAssertEqual(view.view.action?.args.flatMap { JSON.decode($0) as? [String: String] }, ["tool": "claude"])
         XCTAssertEqual(view.view.popover?.node.children.first?.text, "5-hour limit")
+        XCTAssertEqual(PluginSlot.allCases.map(\.rawValue),
+                       ["window.bottom_trailing", "window.bottom_leading", "window.top_trailing"])
         XCTAssertNotNil(PluginNodeView.color("#ff9f0a"))
+        XCTAssertNotNil(PluginNodeView.color("#ff9f0acc"))
+        XCTAssertNil(PluginNodeView.color("orange"))
         XCTAssertNil(PluginNodeView.color("#nope"))
         XCTAssertEqual(PluginViews.decode(["not": "a list"]), [])
         let png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg=="
@@ -52,7 +57,7 @@ final class PluginViewsTests: XCTestCase {
         content.frame = CGRect(x: 0, y: 0, width: 1000, height: 600)
         defer { content.detachAll() }
         content.layoutSubtreeIfNeeded()
-        let dock = try XCTUnwrap(content.pluginSlots.first { $0.slot == "window.bottom_trailing" })
+        let dock = try XCTUnwrap(content.pluginSlots.first { $0.slot == .bottomTrailing })
         XCTAssertTrue(dock.isHidden, "no views, no slot")
         let barAlone = content.minimizedBar.frame
 
@@ -65,7 +70,7 @@ final class PluginViewsTests: XCTestCase {
         XCTAssertEqual(dock.frame.maxY, content.paneArea.maxY - 10, accuracy: 0.5)
         XCTAssertLessThan(content.minimizedBar.frame.maxY, dock.frame.minY + 0.5, "the chips move up over it")
         XCTAssertLessThan(content.minimizedBar.frame.minY, barAlone.minY)
-        XCTAssertTrue(content.pluginSlots.filter { $0.slot != "window.bottom_trailing" }.allSatisfy(\.isHidden))
+        XCTAssertTrue(content.pluginSlots.filter { $0.slot != .bottomTrailing }.allSatisfy(\.isHidden))
 
         PluginViews.shared.apply([])
         RunLoop.main.run(until: Date().addingTimeInterval(0.2))

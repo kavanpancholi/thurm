@@ -176,75 +176,63 @@ runs for 5 seconds without waiting is stopped, and a plugin may use at most
 ## Views in the window
 
 A plugin can draw in the window itself. Thurm has a few **slots**, places over
-the terminal area, and a plugin **mounts** a view in one. The view is a small
-tree of nodes that the plugin builds as a table (or JSON), and the app draws
-it natively, in the theme's colors. Thurm knows nothing about what a view is
-for: a dock of usage rings, a build status, a timer are all the plugin's.
+the corners of a tab, and a plugin **mounts** a view in one. A view is a small
+tree of plain nodes (boxes, text, icons and images) that the plugin builds as
+a table, and the app lays it out. What the view shows and how it looks is up
+to the plugin: Thurm only places it, routes its clicks and shows its popovers.
 
 ```lua
--- A ring in the bottom right corner: 40% left, with a popover and a click.
+-- A box in the bottom right corner, with a popover and a click.
 thurm.ui.mount("window.bottom_trailing", "build", {
-  type = "row", background = "pill", padding = 6, spacing = 8,
+  type = "row", fill = "#1e1e1ee6", corner = 20, padding = 8, spacing = 8,
   children = {
-    {
-      type = "ring", size = 30, value = 0.4, color = "orange",
-      children = { { type = "icon", symbol = "hammer.fill", size = 12 } },
-      action = { name = "build.refresh" },
-      popover = {
-        type = "column", spacing = 6,
-        children = {
-          { type = "text", text = "Build", size = 14, weight = "bold" },
-          { type = "bar", value = 0.4, color = "orange", width = 200 },
-          { type = "text", text = "Click to refresh.", color = "secondary" },
-        },
-      },
+    { type = "icon", symbol = "hammer.fill" },
+    { type = "text", text = "Build passing", weight = "medium" },
+  },
+  action = { name = "build.refresh" },
+  popover = {
+    type = "column", spacing = 4,
+    children = {
+      { type = "text", text = "main · 2 minutes ago", color = "secondary" },
+      { type = "text", text = "Click to refresh." },
     },
   },
 })
 ```
 
 Mounting the same `id` again replaces the view in its place, so a plugin
-updates it by mounting it again (from a timer, an event, an action). Views in
-one slot line up side by side, in the order they were first mounted.
-`thurm.ui.unmount(id)` takes a view down, and a plugin's views go when it
-stops, is disabled or is reloaded. `thurm.ui.mount` returns whether an app
-that draws views is connected.
+updates it by mounting it again. Views in one slot line up side by side, in
+the order they were first mounted. `thurm.ui.unmount(id)` takes a view down,
+and a plugin's views go when it stops, is disabled or is reloaded.
+`thurm.ui.mount` returns whether an app that draws views is connected.
 
 | Slot | Where |
 | --- | --- |
-| `window.bottom_trailing` | The bottom right corner of a tab, above the minimized cards and notices |
+| `window.bottom_trailing` | The bottom right corner of a tab, below the minimized cards and notices |
 | `window.bottom_leading` | The bottom left corner of a tab |
 | `window.top_trailing` | The top right corner of a tab, below the pane headers |
 
-Every node has a `type`. Fields a type does not use are ignored, and a type
-the app does not know draws nothing, so a view made for a newer Thurm still
-shows what this one knows.
+| Node `type` | Draws |
+| --- | --- |
+| `row`, `column`, `stack` | Its `children` side by side, one above another, or on top of each other, placed by `align` (`center`, `top`, `bottom`, `leading`, `trailing`, `top_leading`, `top_trailing`, `bottom_leading`, `bottom_trailing`); `spacing` apart |
+| `text` | `text`, at `size` points, in `weight` (`regular`, `medium`, `bold`) and `color` |
+| `icon` | The SF Symbol named `symbol`, at `size` points, in `color` |
+| `image` | A PNG, base64 in `image`: anything else the plugin draws itself |
+| `spacer` | Room that grows in a row or a column |
 
-| Type | Draws | Its fields |
-| --- | --- | --- |
-| `row`, `column`, `stack` | Its `children` side by side, one above another, or on top of each other (aligned to the top right) | `spacing` |
-| `text` | `text` | `size`, `weight` (`regular`, `medium`, `bold`), `color` |
-| `icon` | The SF Symbol named `symbol` | `size`, `color` |
-| `image` | A PNG, base64 in `image` | `width`, `height` |
-| `ring` | A ring filled to `value` (0 to 1), with its `children` inside | `size`, `color` |
-| `bar` | A bar filled to `value` | `width` (the column's width when not set), `height`, `color` |
-| `badge` | A dot with one or two characters of `text`, over the top right corner of what it is stacked on | `color` |
-| `divider` | A thin line, 1 by 18 points unless set | `width`, `height`, `color` |
-| `spacer` | Room that grows in a row or a column | `width` (the least room) |
-
-Any node can also have `padding`, a `background` (`pill` or `card`), a
-`tooltip`, an `action` (`{name, args}`: an action run when the node is
-clicked, for the focused pane) and a `popover` (a view shown next to the node
-while the pointer is over it). Colors are `primary`, `secondary`, `accent`,
-`green`, `yellow`, `orange`, `red`, `white`, or `#rrggbb`.
+Any node can also have `width`, `height`, `padding`, a `fill` color with a
+`corner` radius, a `border` color, a `tooltip`, an `action` (`{name, args}`,
+run when the node is clicked, for the focused pane) and a `popover` (a view
+shown next to it while the pointer is over it). Colors are `primary`,
+`secondary`, `accent` (the theme's), or `#rrggbb` and `#rrggbbaa`. A type the
+app does not know draws nothing.
 
 A view has at most 512 nodes, nests at most 16 deep and is at most 512 KiB as
-JSON; a plugin has at most 16 views mounted. A node's `size`, `width` and
-`height` go up to 480 points, its `spacing` and `padding` up to 48, and an
-image is drawn at most 512 pixels on a side. A view the app could not draw (an
-unknown slot, a `value` outside 0 to 1, a size out of range) is refused with
-an error. Only the app reads the views plugins mount: another plugin cannot. Views
-show on the Mac app; the phone does not draw them yet.
+JSON, and a plugin has at most 16 views mounted. `size`, `width`, `height` and
+`corner` go up to 480 points, `spacing` and `padding` up to 48, and an image
+is drawn from at most 512 pixels on a side. A view out of these bounds, or in
+an unknown slot, is refused with an error. Only the app reads the views
+plugins mount; another plugin cannot. Views show on the Mac app.
 
 ## Scripts
 
@@ -391,7 +379,6 @@ JSON.
 | `ui.input`, `ui.confirm` | `{title, placeholder, value}`, `{title, body, ok, cancel}` | The text or null; true or false |
 | `ui.mount` | `{slot, id, view}`; see [Views in the window](#views-in-the-window) | `{shown}` |
 | `ui.unmount` | `{id}` | |
-| `ui.views` | | Every mounted view: `[{owner, id, slot, view}]` (for the app that draws them) |
 | `exec` | `{argv, cwd, env, stdin, timeout_ms}` | `{ok, code, signal, stdout, stderr, timed_out}` |
 | `log` | `{level, message}` | |
 | `plugins.list` | | `[{name, kind, state, version, path, error, actions}]` |

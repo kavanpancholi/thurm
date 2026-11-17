@@ -274,7 +274,7 @@ final class TabContentView: NSView {
     /// The cards on screen: none while hidden, and never the minimized ones.
     private var shownCards: [FloatingCard] { floatingHidden ? [] : floating.filter { !$0.minimized } }
     let minimizedBar = MinimizedCardsBar()
-    private(set) lazy var pluginSlots: [PluginSlotHost] = PluginViews.slots.map { slot in
+    let pluginSlots = PluginSlot.allCases.map { slot in
         PluginSlotHost(slot: slot) { name, args in SessionManager.shared.runUserCommand(name, args: args) }
     }
     private var pluginViewsObserver: NSObjectProtocol?
@@ -467,8 +467,7 @@ final class TabContentView: NSView {
         pluginViewsObserver = NotificationCenter.default.addObserver(
             forName: .pluginViewsChanged, object: nil, queue: .main
         ) { [weak self] _ in
-            self?.needsLayout = true
-            // SwiftUI sizes the new views on its next pass.
+            // After SwiftUI has sized the new views.
             DispatchQueue.main.async { self?.needsLayout = true }
         }
         minimizedBar.onRestore = { [weak self] pane in self?.focus(pane) }
@@ -692,34 +691,33 @@ final class TabContentView: NSView {
             bar.frame = NSRect(x: full.maxX - width - 12, y: full.minY + 8, width: width,
                                height: max(size.height, 34))
         }
+        layoutPluginSlots(in: full)
         layoutBottomRight(in: full)
         updateBackdrop()
     }
 
-    private func layoutBottomRight(in full: NSRect) {
-        var bottom = full.maxY - 10
+    /// Plugins' views over the tab's corners, kept inside it.
+    private func layoutPluginSlots(in full: NSRect) {
         for host in pluginSlots {
-            host.isHidden = host.isEmpty
+            host.isHidden = PluginViews.shared.views(in: host.slot).isEmpty
             guard !host.isHidden else { continue }
             let fit = host.fittingSize
             let size = NSSize(width: min(fit.width, max(0, full.width - 24)),
                               height: min(fit.height, max(0, full.height / 2)))
-            let x: CGFloat
-            let y: CGFloat
-            switch host.slot {
-            case "window.bottom_leading":
-                x = full.minX + 12
-                y = full.maxY - 10 - size.height
-            case "window.top_trailing":
-                x = full.maxX - size.width - 12
-                y = full.minY + (showsHeaders ? 40 : 10)
-            default:
-                x = full.maxX - size.width - 12
-                y = full.maxY - 10 - size.height
-                bottom -= size.height + 6
+            let origin = switch host.slot {
+            case .bottomTrailing: NSPoint(x: full.maxX - size.width - 12, y: full.maxY - 10 - size.height)
+            case .bottomLeading: NSPoint(x: full.minX + 12, y: full.maxY - 10 - size.height)
+            case .topTrailing: NSPoint(x: full.maxX - size.width - 12,
+                                       y: splitArea.minY + (showsHeaders ? PaneHeader.height : 0) + 10)
             }
-            host.frame = NSRect(x: x, y: y, width: size.width, height: size.height)
+            host.frame = NSRect(origin: origin, size: size)
         }
+    }
+
+    private func layoutBottomRight(in full: NSRect) {
+        // Above the plugins' views in the corner.
+        let dock = pluginSlots.first { $0.slot == .bottomTrailing && !$0.isHidden }
+        var bottom = dock.map { $0.frame.minY - 6 } ?? full.maxY - 10
         layoutPlacedChips(in: full)
         // Chips show while the cards are hidden too: they take no room, and are the way back.
         let chips = floating.filter { $0.minimized && $0.chip == nil }.map(\.pane)
@@ -1074,16 +1072,10 @@ final class TabContentView: NSView {
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         let local = convert(point, from: superview)
-        if let bar = findBar, !bar.isHidden, bar.frame.contains(local) {
-            return super.hitTest(point)
-        }
-        if !minimizedBar.isHidden, minimizedBar.frame.contains(local) {
-            return super.hitTest(point)
-        }
-        if pluginSlots.contains(where: { !$0.isHidden && $0.frame.contains(local) }) {
-            return super.hitTest(point)
-        }
-        if placedChips.values.contains(where: { !$0.isHidden && $0.frame.contains(local) }) {
+        // Overlays take their clicks before the cards' edges and the dividers under them.
+        let overlays: [NSView] = [findBar as NSView?, minimizedBar].compactMap { $0 } + pluginSlots
+            + Array(placedChips.values)
+        if overlays.contains(where: { !$0.isHidden && $0.frame.contains(local) }) {
             return super.hitTest(point)
         }
         if cardEdges(at: local) != nil || dividerAt(local) != nil {

@@ -631,15 +631,15 @@ fn a_plugin_mounts_and_unmounts_a_view() {
     let f = fixture();
     let r = run(
         &f,
-        r#"
+        r##"
         local shown = thurm.ui.mount("window.bottom_trailing", "usage", {
-          type = "ring", value = 0.4, color = "orange",
+          type = "stack", fill = "#202020",
           children = { { type = "icon", symbol = "sparkle" } },
           action = { name = "usage.refresh" },
         })
         thurm.ui.unmount("usage")
         return shown
-        "#,
+        "##,
     )
     .unwrap();
     assert_eq!(r, json!(true));

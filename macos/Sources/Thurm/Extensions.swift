@@ -76,7 +76,6 @@ final class Extensions {
         registering = false
         registerAppActions()
         refresh()
-        PluginViews.shared.refresh()
     }
 
     /// The connection to this Mac's daemon is gone: its questions go, unanswered, and so do
@@ -90,7 +89,7 @@ final class Extensions {
         actions = []
         bindings = []
         appActions = []
-        PluginViews.shared.clear()
+        PluginViews.shared.apply([])
         if had { SessionManager.shared.applyKeys() }
     }
 
@@ -323,7 +322,7 @@ final class Extensions {
         case "action.invoke":
             invoke(payload)
         case "ui.views.changed":
-            PluginViews.shared.refresh()
+            PluginViews.shared.apply(PluginViews.decode(payload["views"]))
         case "ui.request":
             show(payload)
         case "ui.cancel":

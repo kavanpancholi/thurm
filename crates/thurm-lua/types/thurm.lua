@@ -182,20 +182,22 @@ thurm.ui = {}
 function thurm.ui.toast(text, pane) end
 
 ---@class thurm.ViewNode
----@field type "row"|"column"|"stack"|"text"|"icon"|"image"|"ring"|"bar"|"badge"|"divider"|"spacer"
+---@field type "row"|"column"|"stack"|"text"|"icon"|"image"|"spacer"
 ---@field children thurm.ViewNode[]?
 ---@field text string?
 ---@field symbol string? An SF Symbol name, for `icon`
 ---@field image string? A PNG, base64, for `image`
----@field value number? How full a `ring` or `bar` is, from 0 to 1
----@field color string? `primary`, `secondary`, `accent`, `green`, `yellow`, `orange`, `red` or `#rrggbb`
+---@field color string? `primary`, `secondary`, `accent` or `#rrggbb[aa]`
 ---@field size number?
 ---@field weight "regular"|"medium"|"bold"?
 ---@field width number?
 ---@field height number?
 ---@field spacing number?
 ---@field padding number?
----@field background "pill"|"card"?
+---@field align string? Where a `stack` puts its children: `center`, `top_trailing`, ...
+---@field fill string? A color behind the node
+---@field corner number? The fill's and border's corner radius
+---@field border string? A color around the node
 ---@field tooltip string?
 ---@field action { name: string, args: any }? Run when the node is clicked
 ---@field popover thurm.ViewNode? Shown next to the node while the pointer is over it

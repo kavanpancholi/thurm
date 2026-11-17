@@ -2733,6 +2733,13 @@ impl Daemon {
                     client
                         .ext_ui
                         .store(local && desktop && app, Ordering::Relaxed);
+                    if local && desktop && app {
+                        ext::send_ext(
+                            client,
+                            thurm_proto::ext::notice::VIEWS_CHANGED,
+                            &self.views_notice(),
+                        );
+                    }
                 }
                 log::info!(
                     "client {} hello: {name} (protocol {version}{}{}{}{}{})",
