@@ -1398,10 +1398,18 @@ final class SessionManager: NSObject, CoreDelegate {
                 pb.clearContents()
                 pb.setString(text, forType: .string)
             }
+        case "ClipboardWrite":
+            if let key, let id = jsonUInt64(dict?["id"]) {
+                Remotes.shared.clipboardWrite(key, id: id, text: jsonString(dict?["text"]))
+            }
         case "ClipboardRequest":
             if let id = key { Remotes.shared.clipboardRequest(id) }
         case "PortsChanged":
             remotePortsChanged(dict, host: host)
+        case "ClipboardQuery":
+            if let key, let id = jsonUInt64(dict?["id"]), let mime = jsonString(dict?["mime"]) {
+                Remotes.shared.clipboardQuery(key, id: id, mime: mime)
+            }
         case "Ui":
             handleUi(payload, host: host)
         case "Ext":

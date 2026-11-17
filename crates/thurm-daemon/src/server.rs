@@ -220,6 +220,7 @@ fn handle_client(daemon: Arc<Daemon>, stream: UnixStream) {
                     crate::daemon::message_weight(msg).min(counter.queued.load(Ordering::Relaxed)),
                     Ordering::Relaxed,
                 );
+                counter.clip_written(msg);
             };
             'write: while let Ok(msg) = rx.recv() {
                 if write_msg(&mut w, &msg, &deflate).is_err() {
@@ -244,11 +245,12 @@ fn handle_client(daemon: Arc<Daemon>, stream: UnixStream) {
                     let _ = pending.try_update(Ordering::AcqRel, Ordering::Acquire, flushed);
                 }
             }
-            // Nothing still queued will reach the socket, so a shutdown must not wait for it.
-            // Dropped first: later sends then fail, and reset the count themselves.
+            // Nothing still queued will reach the socket, so a shutdown must not wait for it,
+            // and none of it counts as queued. Dropped first: later sends then fail, and give
+            // back what they counted.
             drop(rx);
             if let Some(counter) = counter.upgrade() {
-                counter.unflushed.store(0, Ordering::Release);
+                counter.writer_ended();
             }
         });
 

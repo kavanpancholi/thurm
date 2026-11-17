@@ -1,4 +1,5 @@
 import AppKit
+import ImageIO
 import Network
 import CThurm
 
@@ -125,6 +126,9 @@ private let remoteStatusCallback: thurm_remote_status_cb = { _, json in
 /// Every remote host's state in the app. Main thread only.
 final class Remotes {
     static let shared = Remotes()
+
+    /// The hosts whose clipboard question is on screen: one at a time each.
+    private var asking = AskGate()
 
     private(set) var statuses: [HostId: RemoteStatus] = [:]
     /// Agent presets of each connected host (its own config decides what runs there).
@@ -347,43 +351,242 @@ final class Remotes {
 
     /// OSC 52 read: this Mac's panes as before; a remote pane asks (per `clipboard_read`).
     func clipboardRequest(_ key: PaneKey) {
-        let reply = { (text: String) in
-            Core.shared.send(object: ["ClipboardReply": ["pane": key.number, "text": text]], host: key.host)
-        }
-        let clipboard = { NSPasteboard.general.string(forType: .string) ?? "" }
-        guard key.isRemote else {
-            reply(clipboard())
-            return
-        }
-        let decision = Core.shared.remoteCall(["op": "clipboard_read", "host": key.host]) as? String ?? "deny"
-        switch decision {
-        case "allow":
-            reply(clipboard())
-        case "ask":
-            let alert = NSAlert()
-            alert.messageText = "\(key.host) wants to read your clipboard"
-            alert.informativeText = "A program in a pane on \(key.host) asked for the contents of this Mac's "
-                + "clipboard (OSC 52)."
-            alert.addButton(withTitle: "Allow Once")
-            alert.addButton(withTitle: "Always for \(key.host)")
-            alert.addButton(withTitle: "Deny")
-            switch alert.runModal() {
-            case .alertFirstButtonReturn:
-                reply(clipboard())
-            case .alertSecondButtonReturn:
-                if let e = (Core.shared.remoteCall(["op": "allow_clipboard", "name": key.host]) as? [String: Any])?["error"] {
-                    tlog("could not save the clipboard permission: \(e)")
-                }
-                reply(clipboard())
-            default:
-                reply("")
-            }
-        default:
-            reply("")
+        let allowed = clipboardReadAllowed(key, asker: "OSC 52")
+        let text = allowed ? NSPasteboard.general.string(forType: .string) ?? "" : ""
+        Core.shared.send(object: ["ClipboardReply": ["pane": key.number, "text": text]], host: key.host)
+    }
+
+    /// What a read of this Mac's clipboard from a pane gets, an OSC 52 read and a clipboard tool's
+    /// paste alike.
+    enum ClipboardRead: Equatable { case allow, ask, deny }
+
+    /// The decision for a read: `policy` is `policy::clipboard_read` for a remote pane's host
+    /// ("allow", "ask" or "deny": this Mac's `terminal.osc52` must allow pastes, then the host's
+    /// `clipboard_read` decides), nil for this Mac's own panes, whose daemon applied this Mac's
+    /// `terminal.osc52` already. Listing the types (`listing`) is not asked about, but is refused
+    /// where reads are.
+    static func clipboardRead(policy: String?, listing: Bool) -> ClipboardRead {
+        guard let policy else { return .allow }
+        switch policy {
+        case "allow": return .allow
+        case "ask": return listing ? .allow : .ask
+        default: return .deny
         }
     }
 
-    /// OSC 52 write from `host`: follows this Mac's `terminal.osc52`.
+    /// `policy::clipboard_read` for `key`'s host; nil for this Mac's own panes.
+    private func clipboardReadPolicy(_ key: PaneKey) -> String? {
+        guard key.isRemote else { return nil }
+        return Core.shared.remoteCall(["op": "clipboard_read", "host": key.host]) as? String ?? "deny"
+    }
+
+    /// Whether a program in `key`'s pane may read this Mac's clipboard (see ``clipboardRead``),
+    /// asking first when the policy says so. `asker` says how the program asked, in the question.
+    private func clipboardReadAllowed(_ key: PaneKey, asker: String) -> Bool {
+        switch Self.clipboardRead(policy: clipboardReadPolicy(key), listing: false) {
+        case .allow:
+            return true
+        case .ask:
+            // One question on screen per host: another read from it meanwhile is refused, not
+            // stacked behind it.
+            guard let token = asking.begin(key.host) else { return false }
+            defer { asking.end(key.host, token) }
+            let alert = NSAlert()
+            alert.messageText = "\(key.host) wants to read your clipboard"
+            alert.informativeText = "A program in a pane on \(key.host) asked for the contents of this Mac's "
+                + "clipboard (\(asker))."
+            alert.addButton(withTitle: "Allow Once")
+            alert.addButton(withTitle: "Always for \(key.host)")
+            alert.addButton(withTitle: "Deny")
+            // Gone before the daemon stops waiting for the answer: unanswered, it is a Deny.
+            // Only this alert's own session is ended: while another modal is on top of it, the
+            // timer tries again until it is the one in front. Expired, it no longer holds the
+            // host's turn, so a later read from that host can ask though it is still up.
+            let timer = Timer(timeInterval: Self.askTimeout, repeats: false) { [weak self] _ in
+                self?.asking.end(key.host, token)
+                Self.abortWhenFront(alert.window)
+            }
+            RunLoop.main.add(timer, forMode: .modalPanel)
+            defer { timer.invalidate() }
+            let deadline = Date().addingTimeInterval(Self.askTimeout)
+            switch Self.questionAnswer(alert.runModal(), deadline: deadline) {
+            case .once:
+                return true
+            case .always:
+                if let e = (Core.shared.remoteCall(["op": "allow_clipboard", "name": key.host]) as? [String: Any])?["error"] {
+                    tlog("could not save the clipboard permission: \(e)")
+                }
+                return true
+            case .deny:
+                return false
+            }
+        case .deny:
+            return false
+        }
+    }
+
+    /// How long a clipboard question stays up: less than the 30 s a host's daemon waits for the
+    /// answer, so it is never answered after nobody waits for it.
+    static let askTimeout: TimeInterval = 25
+
+    /// What the user answered a clipboard question with.
+    enum QuestionAnswer: Equatable { case once, always, deny }
+
+    /// The answer `response` gives, taken at `now`: a Deny once `deadline` has passed, whichever
+    /// button it was. A question kept up behind another modal past its time is answered for a
+    /// request the daemon has given up on, and must not allow, or save, anything.
+    static func questionAnswer(_ response: NSApplication.ModalResponse, deadline: Date,
+                               now: Date = Date()) -> QuestionAnswer {
+        guard now <= deadline else { return .deny }
+        switch response {
+        case .alertFirstButtonReturn: return .once
+        case .alertSecondButtonReturn: return .always
+        default: return .deny
+        }
+    }
+
+    /// Ends the modal session of `window`, once it is the one in front.
+    private static func abortWhenFront(_ window: NSWindow) {
+        // Answered or closed meanwhile: nothing to end.
+        guard window.isVisible, NSApp.modalWindow != nil else { return }
+        if NSApp.modalWindow === window {
+            NSApp.abortModal()
+            return
+        }
+        let retry = Timer(timeInterval: 0.5, repeats: false) { _ in abortWhenFront(window) }
+        RunLoop.main.add(retry, forMode: .modalPanel)
+    }
+
+    /// The hosts with a live question on screen: one each. A question's turn ends when it is
+    /// answered or when it expires, whichever comes first; its token makes sure the end of an
+    /// expired one never ends the turn of a question asked after it.
+    struct AskGate {
+        private(set) var open: [HostId: UInt64] = [:]
+        private var next: UInt64 = 0
+
+        /// A token for `host`'s question, or nil while its last one is still live.
+        mutating func begin(_ host: HostId) -> UInt64? {
+            guard open[host] == nil else { return nil }
+            next += 1
+            open[host] = next
+            return next
+        }
+
+        /// The question `token` is answered or expired: `host` may ask again.
+        mutating func end(_ host: HostId, _ token: UInt64) {
+            if open[host] == token { open[host] = nil }
+        }
+    }
+
+    /// A clipboard tool in `key`'s pane (pbpaste, xclip -o, wl-paste) asks for this Mac's
+    /// clipboard: decided as an OSC 52 read is (``clipboardRead``). Listing the types it holds
+    /// asks nothing, unless reads from that host are refused.
+    func clipboardQuery(_ key: PaneKey, id: UInt64, mime: String) {
+        let pb = NSPasteboard.general
+        let answer = { (data: Data?) in Core.shared.clipboardAnswer(host: key.host, id: id, data: data) }
+        if mime == Self.clipTargets {
+            let read = Self.clipboardRead(policy: clipboardReadPolicy(key), listing: true)
+            answer(read == .deny ? nil : Data(Self.clipboardTypes(pb).map { $0 + "\n" }.joined().utf8))
+            return
+        }
+        let tool = mime == Self.clipPNG ? "an image, through a clipboard tool" : "a clipboard tool such as xclip or pbpaste"
+        answer(clipboardReadAllowed(key, asker: tool) ? Self.clipboardData(pb, mime: mime) : nil)
+    }
+
+    static let clipText = "text/plain"
+    static let clipPNG = "image/png"
+    static let clipTargets = "TARGETS"
+    /// The most a clipboard tool gets (the daemon refuses more).
+    static let clipMax = 32 * 1024 * 1024
+
+    /// A clipboard tool's copy (`text`) or clear (nil) from `key`'s pane: done when this Mac's
+    /// policy lets that host write its clipboard (``clipboardWriteAllowed``), and answered
+    /// either way, so the tool hears whether it was.
+    func clipboardWrite(_ key: PaneKey, id: UInt64, text: String?) {
+        let done = Self.clipboardWrite(NSPasteboard.general, text: text,
+                                       allowed: clipboardWriteAllowed(key.host))
+        Core.shared.clipboardAnswer(host: key.host, id: id, data: done ? Data() : nil)
+    }
+
+    /// Puts `text` on `pb` (through `put`, `setString` but in tests), or clears it when nil
+    /// (nothing left, no empty text a later paste would find), if `allowed`. Whether it did: a
+    /// copy the pasteboard refused is not one.
+    static func clipboardWrite(_ pb: NSPasteboard, text: String?, allowed: Bool,
+                               put: ((NSPasteboard, String) -> Bool)? = nil) -> Bool {
+        guard allowed else { return false }
+        // A pasteboard takes new contents only once cleared, so a copy it then refuses (which
+        // `setString` hardly ever does) leaves it empty; the tool hears it was not done. What it
+        // held is not read beforehand to put back: a host allowed to write the clipboard is not
+        // one allowed to make the app fetch every item on it.
+        pb.clearContents()
+        // Empty text is a clear: no text type left that a type listing would show.
+        guard let text, !text.isEmpty else { return true }
+        return (put ?? { $0.setString($1, forType: .string) })(pb, text)
+    }
+
+    /// The types a clipboard tool can paste from `pb`, without reading them: a large or lazily
+    /// provided clipboard is fetched only for a paste the user allowed.
+    static func clipboardTypes(_ pb: NSPasteboard) -> [String] {
+        var types: [String] = []
+        if pb.availableType(from: [.string]) != nil { types.append(clipText) }
+        if pb.availableType(from: [.png, .tiff]) != nil { types.append(clipPNG) }
+        return types
+    }
+
+    /// `pb`'s contents as `mime`: UTF-8 text (empty when there is none), or a PNG (converted from
+    /// TIFF, as screenshots copy). Nil for an image when it holds none, or more than ``clipMax``.
+    static func clipboardData(_ pb: NSPasteboard, mime: String) -> Data? {
+        let data: Data?
+        switch mime {
+        case clipText:
+            // The pasteboard hands over the whole string; measured before a second copy is made.
+            // No text is empty text, as pbpaste prints nothing and succeeds on a Mac.
+            let text = pb.string(forType: .string) ?? ""
+            data = text.utf8.count <= clipMax ? Data(text.utf8) : nil
+        case clipPNG:
+            // NSPasteboard tells no item's size before handing it over, so an image over the cap
+            // is let go here, before the answer: one at a time, as queries come on the main
+            // thread, the app never holds more than the one image the user copied.
+            data = autoreleasepool {
+                (pb.data(forType: .png) ?? pb.data(forType: .tiff).flatMap { pngFromTIFF($0) })
+                    .flatMap { $0.count <= clipMax ? $0 : nil }
+            }
+        default:
+            data = nil
+        }
+        return data.flatMap { $0.count <= clipMax ? $0 : nil }
+    }
+
+    /// The largest TIFF a tool's image paste converts, and the most pixels it decodes: 64 MP,
+    /// 256 MiB at four bytes each. Beyond that a paste gets nothing rather than the app holding
+    /// a decoded image of any size.
+    static let clipMaxTIFF = 256 * 1024 * 1024
+    static let clipMaxPixels = 64 * 1024 * 1024
+
+    /// `tiff` as a PNG, for a screenshot's paste: its size and its pixel count (from the file's
+    /// header, nothing decoded) checked first, then converted by ImageIO without keeping the
+    /// decoded image. Nil when either is over its limit, or it is no image.
+    static func pngFromTIFF(_ tiff: Data, maxBytes: Int = clipMaxTIFF, maxPixels: Int = clipMaxPixels) -> Data? {
+        let noCache = [kCGImageSourceShouldCache: false] as CFDictionary
+        guard tiff.count <= maxBytes,
+              let source = CGImageSourceCreateWithData(tiff as CFData, noCache),
+              CGImageSourceGetCount(source) > 0,
+              let props = CGImageSourceCopyPropertiesAtIndex(source, 0, noCache) as? [CFString: Any],
+              let width = props[kCGImagePropertyPixelWidth] as? Int,
+              let height = props[kCGImagePropertyPixelHeight] as? Int,
+              width > 0, height > 0
+        else { return nil }
+        let (pixels, overflow) = width.multipliedReportingOverflow(by: height)
+        guard !overflow, pixels <= maxPixels else { return nil }
+        let out = NSMutableData()
+        guard let dest = CGImageDestinationCreateWithData(out, "public.png" as CFString, 1, nil) else { return nil }
+        CGImageDestinationAddImageFromSource(dest, source, 0, noCache)
+        guard CGImageDestinationFinalize(dest) else { return nil }
+        return out as Data
+    }
+
+    /// OSC 52 write, or a clipboard tool's copy or clear, from `host`: follows this Mac's
+    /// `terminal.osc52`.
     func clipboardWriteAllowed(_ host: HostId) -> Bool {
         guard host != localHost else { return true }
         return Core.shared.remoteCall(["op": "clipboard_write", "host": host]) as? String == "allow"

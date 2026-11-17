@@ -92,6 +92,25 @@ const AGENTS: &[Agent] = &[
     },
 ];
 
+/// The clipboard tools the shims are, for the scripts below: [`thurm_proto::CLIP_TOOLS`]
+/// (a test keeps the two the same).
+macro_rules! clip_tools {
+    () => {
+        "pbcopy pbpaste xclip xsel wl-copy wl-paste"
+    };
+}
+
+/// `case` patterns for a link that leads to a Thurm install, current or older: `$C` (the
+/// `thurm` on PATH as found), Thurm's own install, and Nix profiles and store paths. A link to
+/// anything else, even a program named `thurm`, is another program's. Thurm's own link in
+/// `~/.local/bin` (the Command-line tool fix) is one too: a shim linked when it was first on
+/// PATH leads there.
+macro_rules! thurm_link_patterns {
+    () => {
+        "\"$C\"|\"$TH/.local/share/thurm/bin/thurm\"|\"$TH/.local/bin/thurm\"|\"$HOME/.nix-profile/bin/thurm\"|\"$TH/.nix-profile/bin/thurm\"|/nix/store/*/bin/thurm|/nix/var/nix/profiles/*/bin/thurm|/run/current-system/sw/bin/thurm|/etc/profiles/per-user/*/bin/thurm"
+    };
+}
+
 /// Everything besides the install plan: PATH link, agents, sign-in, hooks and the skill. Agents are also
 /// looked up through the login shell (npm and bun install into places a plain ssh command
 /// does not have on PATH), except under `THURM_BASE_PATH` (the loopback tests).
@@ -108,6 +127,17 @@ const PROBE: &str = concat!(
     "{ [ -f \"${CLAUDE_CONFIG_DIR:-$TH/.claude}/.credentials.json\" ] || [ -n \"$ANTHROPIC_API_KEY\" ]; } && echo claude_login=1; ",
     "command -v thurm >/dev/null 2>&1 && echo \"hooks=$(HOME=\"$TH\" thurm hooks status --json 2>/dev/null | head -n 1)\"; ",
     "command -v thurm >/dev/null 2>&1 && echo \"skill=$(HOME=\"$TH\" thurm skill status --json 2>/dev/null | head -n 1)\"; ",
+    // No thurm found: C names none, so an empty link text (a file, not a link) matches no
+    // pattern and counts as another program's.
+    "C=\"$(command -v thurm 2>/dev/null)\"; B=; [ -n \"$C\" ] && B=\"$(readlink -f \"$C\")\"; C=\"${C:-/ no thurm}\"; n=0; o=; ",
+    "for t in ",
+    clip_tools!(),
+    "; do L=\"$TH/.local/share/thurm/shims/$t\"; ",
+    "if [ -L \"$L\" ] && [ -n \"$B\" ] && [ \"$(readlink -f \"$L\" 2>/dev/null)\" = \"$B\" ]; then n=$((n+1)); ",
+    "elif [ -e \"$L\" ] || [ -L \"$L\" ]; then case \"$(readlink \"$L\" 2>/dev/null)\" in ",
+    thurm_link_patterns!(),
+    ") ;; *) o=\"$o $t\";; esac; fi; done; ",
+    "echo \"shims=$n\"; echo \"shims_other=${o# }\"; ",
     "true"
 );
 
@@ -124,6 +154,10 @@ struct Probe {
     hooks: Vec<Value>,
     /// `thurm skill status --json` there (empty from a Thurm without `thurm skill`).
     skill: Vec<Value>,
+    /// How many of the clipboard tools in `~/.local/share/thurm/shims` lead to this `thurm`.
+    shims: usize,
+    /// The ones there that are something else: a file, or a link to another program.
+    shims_other: Vec<String>,
 }
 
 fn parse(out: &str) -> Probe {
@@ -139,6 +173,8 @@ fn parse(out: &str) -> Probe {
             "link" => p.link = true,
             "curl" => p.curl = true,
             "claude_login" => p.claude_login = true,
+            "shims" => p.shims = v.parse().unwrap_or(0),
+            "shims_other" => p.shims_other = v.split_whitespace().map(str::to_owned).collect(),
             "hooks" => {
                 p.hooks = serde_json::from_str::<Vec<Value>>(v).unwrap_or_default();
             }
@@ -563,6 +599,58 @@ fn checks(name: &str, plan: &Plan, probe: &Probe) -> Vec<Check> {
         }
         out.push(c);
     }
+
+    // Clipboard tools in panes there (opt-in): pbcopy, xclip and the rest reach this Mac's
+    // clipboard on a host without a display (see the daemon's `clip_shims`).
+    let tools = thurm_proto::CLIP_TOOLS.join(", ");
+    let mut c = check(
+        "clipboard",
+        "Clipboard tools",
+        State::Ok,
+        format!("{tools} reach this Mac's clipboard"),
+    );
+    if !thurm_there {
+        c.state = State::Skip;
+        c.detail = "needs Thurm".into();
+    } else if host.os != "Linux" {
+        c.state = State::Skip;
+        c.detail = "the host's own clipboard tools work there".into();
+    } else if !plan.installed {
+        // An older `thurm` does not act as the tools it would be linked as.
+        c.state = State::Skip;
+        c.detail = "needs this build of Thurm".into();
+    } else if let Some(build) = plan
+        .daemon
+        .as_ref()
+        .filter(|d| d.running)
+        .map(|d| d.build.as_deref().unwrap_or("another build"))
+        .filter(|b| !install::same_build(thurm_proto::BUILD, b))
+    {
+        // An older daemon starts panes without the tools on PATH, installed or not.
+        c.state = State::Skip;
+        c.detail = format!("the daemon there runs {build}: upgrade it first (Daemon above)");
+    } else if !probe.shims_other.is_empty() {
+        // Not Thurm's to replace: the fix would refuse too.
+        c.state = State::Warn;
+        c.detail = format!(
+            "{} in ~/{} are other programs; remove them to install the clipboard tools",
+            probe.shims_other.join(", "),
+            thurm_proto::CLIP_SHIMS_DIR
+        );
+    } else if probe.shims < thurm_proto::CLIP_TOOLS.len() {
+        c.state = State::Warn;
+        c.detail = format!("not installed: {tools} in panes there do not reach this Mac");
+        c.fix = Some(Fix {
+            label: "Install".into(),
+            confirm: Some(format!(
+                "Programs in new panes on {name} will copy to and paste from this Mac's \
+                 clipboard through {tools}, as the clipboard settings for {name} allow: in \
+                 bash, zsh and fish with Thurm's shell integration, and in panes that run a \
+                 command."
+            )),
+        });
+    }
+    out.push(c);
     out
 }
 
@@ -603,6 +691,27 @@ const LINK: &str = concat!(
     "[ -x \"$B\" ] || { echo \"Thurm is not installed\" >&2; exit 3; }; ",
     "[ ! -e \"$L\" ] || [ -L \"$L\" ] || { echo \"$L is another file\" >&2; exit 3; }; ",
     "mkdir -p \"$TH/.local/bin\" && ln -sfn \"$B\" \"$L\""
+);
+
+/// Links the clipboard tools to `thurm` in the shims directory. Replaces only links to a Thurm
+/// install (`thurm_link_patterns`); anything else there is refused before a link changes.
+const SHIMS: &str = concat!(
+    "TH=\"${THURM_HOME:-$HOME}\"; ",
+    "PATH=\"$TH/.local/share/thurm/bin:$TH/.local/bin:${THURM_BASE_PATH:-$HOME/.nix-profile/bin:/etc/profiles/per-user/$USER/bin:/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:/usr/local/bin:$PATH}\"; export PATH; ",
+    "B=\"$(command -v thurm)\" || { echo \"Thurm is not installed\" >&2; exit 3; }; C=\"$B\"; ",
+    "R=\"$(readlink -f \"$B\")\"; S=\"$TH/.local/share/thurm/shims\"; ",
+    "for t in ",
+    clip_tools!(),
+    "; do ",
+    // A link that leads to this thurm, as the probe counts it (a relative one too), is ours.
+    "if [ -L \"$S/$t\" ] && [ \"$(readlink -f \"$S/$t\" 2>/dev/null)\" = \"$R\" ]; then :; ",
+    "elif [ -e \"$S/$t\" ] || [ -L \"$S/$t\" ]; then case \"$(readlink \"$S/$t\" 2>/dev/null)\" in ",
+    thurm_link_patterns!(),
+    ") ;; *) echo \"$S/$t is another program; remove it to install the clipboard tools\" >&2; exit 3;; esac; fi; done; ",
+    "mkdir -p \"$S\" || exit 1; ",
+    "for t in ",
+    clip_tools!(),
+    "; do ln -sfn \"$B\" \"$S/$t\" || exit 1; done"
 );
 
 /// Without a password prompt: logind lets you linger yourself on most distributions, else
@@ -688,6 +797,13 @@ pub fn fix(
             let out = ssh.run(SKILL, &[], None, Duration::from_secs(30))?;
             Ok(out.trim().to_owned())
         }
+        "clipboard" => ssh
+            .run(SHIMS, &[], None, Duration::from_secs(30))
+            .map(|_| "linked; new panes there have them".into())
+            .map_err(|e| match e {
+                SshError::Remote { stderr, .. } => FixError::Failed(stderr.trim().to_owned()),
+                e => FixError::Ssh(e),
+            }),
         _ => {
             if let Some(kind) = id.strip_prefix("hooks.") {
                 let agent = AGENTS
@@ -822,7 +938,7 @@ mod tests {
     fn a_ready_host() {
         let out = concat!(
             "user=me\nlocalbin=1\nlink=1\nagent_claude=/usr/bin/claude\nclaude_login=1\n",
-            "hooks=[{\"agent\":\"claude\",\"installed\":6,\"total\":6}]\n"
+            "hooks=[{\"agent\":\"claude\",\"installed\":6,\"total\":6}]\nshims=6\n"
         );
         let mut pl = plan(true);
         pl.host.linger = Some("yes".into());
@@ -832,6 +948,174 @@ mod tests {
         };
         assert!(r.healthy(), "{:#?}", r.checks);
         assert!(r.checks.iter().all(|c| c.fix.is_none()));
+    }
+
+    #[test]
+    fn clipboard_tools_are_offered_on_linux_hosts() {
+        let c = checks("pi", &plan(true), &parse("user=me\nshims=0\n"));
+        let clip = c.iter().find(|c| c.id == "clipboard").unwrap();
+        assert_eq!(clip.state, State::Warn);
+        let fix = clip.fix.as_ref().unwrap();
+        assert!(fix.confirm.is_some(), "asked before installing");
+        // Some links missing: offered again.
+        let c = checks("pi", &plan(true), &parse("shims=5\n"));
+        assert_eq!(state(&c, "clipboard"), State::Warn);
+        let c = checks("pi", &plan(true), &parse("shims=6\n"));
+        assert_eq!(state(&c, "clipboard"), State::Ok);
+        // This thurm installed, but an older daemon still runs: its panes would not have them.
+        let mut old = plan(true);
+        old.daemon.as_mut().unwrap().build = Some("0.0.1+1.abcdef0".into());
+        for shims in ["shims=0\n", "shims=6\n"] {
+            let c = checks("pi", &old, &parse(shims));
+            let clip = c.iter().find(|c| c.id == "clipboard").unwrap();
+            assert_eq!(clip.state, State::Skip, "{shims}");
+            assert!(
+                clip.fix.is_none(),
+                "not offered until the daemon is upgraded"
+            );
+            assert!(clip.detail.contains("upgrade it first"), "{}", clip.detail);
+        }
+        // A daemon that is not running starts as this build.
+        old.daemon.as_mut().unwrap().running = false;
+        assert_eq!(
+            state(&checks("pi", &old, &parse("shims=0\n")), "clipboard"),
+            State::Warn
+        );
+        assert_eq!(
+            state(&checks("pi", &plan(false), &parse("")), "clipboard"),
+            State::Skip
+        );
+        let mut mac = plan(true);
+        mac.host.os = "Darwin".into();
+        assert_eq!(
+            state(&checks("pi", &mac, &parse("")), "clipboard"),
+            State::Skip
+        );
+    }
+
+    #[test]
+    fn other_programs_among_the_clipboard_tools_are_left_alone() {
+        let p = parse("shims=4\nshims_other=xclip wl-paste\n");
+        assert_eq!(p.shims_other, ["xclip", "wl-paste"]);
+        let c = checks("pi", &plan(true), &p);
+        let clip = c.iter().find(|c| c.id == "clipboard").unwrap();
+        assert_eq!(clip.state, State::Warn);
+        assert!(clip.detail.contains("xclip, wl-paste"), "{}", clip.detail);
+        assert!(clip.fix.is_none(), "the fix would refuse them");
+        assert!(parse("shims_other=\n").shims_other.is_empty());
+    }
+
+    /// Runs `script` as the doctor would over ssh, with `th` as the home directory.
+    fn run_script(script: &str, th: &Path) -> std::process::Output {
+        std::process::Command::new("sh")
+            .arg("-c")
+            .arg(script)
+            .env("THURM_HOME", th)
+            .env("THURM_BASE_PATH", "/usr/bin:/bin")
+            .output()
+            .unwrap()
+    }
+
+    /// With no thurm to be found, a file among the tools is still another program's.
+    #[test]
+    fn the_probe_without_thurm_still_reports_other_programs() {
+        let th = std::env::temp_dir().join(format!("thurm-shims-none-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&th);
+        let shims = th.join(thurm_proto::CLIP_SHIMS_DIR);
+        std::fs::create_dir_all(&shims).unwrap();
+        std::fs::write(shims.join("xclip"), "mine").unwrap();
+        // The system's own directories only: no thurm there, nor in the empty home.
+        let out = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(PROBE)
+            .env("THURM_HOME", &th)
+            .env("THURM_BASE_PATH", "/usr/bin:/bin")
+            .output()
+            .unwrap();
+        let p = parse(&String::from_utf8_lossy(&out.stdout));
+        assert_eq!(p.shims, 0);
+        assert_eq!(p.shims_other, ["xclip"]);
+        let _ = std::fs::remove_dir_all(th);
+    }
+
+    #[test]
+    fn the_shim_scripts_count_and_link_only_thurm() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let th = std::env::temp_dir().join(format!("thurm-shims-doctor-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&th);
+        let bin = th.join(crate::ssh::REMOTE_BIN_DIR);
+        std::fs::create_dir_all(&bin).unwrap();
+        let thurm = bin.join("thurm");
+        std::fs::write(&thurm, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&thurm, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let shims = th.join(thurm_proto::CLIP_SHIMS_DIR);
+        std::fs::create_dir_all(&shims).unwrap();
+        let probe = || parse(&String::from_utf8_lossy(&run_script(PROBE, &th).stdout));
+
+        // Six links, none to this thurm: older installs' (dangling now), and other programs,
+        // one of them named thurm.
+        symlink(th.join(".nix-profile/bin/thurm"), shims.join("pbcopy")).unwrap();
+        symlink(
+            "/nix/store/0000-thurm-0.1.0/bin/thurm",
+            shims.join("pbpaste"),
+        )
+        .unwrap();
+        symlink("/bin/sh", shims.join("xclip")).unwrap();
+        symlink("/opt/other/bin/thurm", shims.join("xsel")).unwrap();
+        symlink("/bin/sh", shims.join("wl-copy")).unwrap();
+        std::fs::write(shims.join("wl-paste"), "mine").unwrap();
+        let p = probe();
+        assert_eq!(
+            p.shims, 0,
+            "links that do not lead to this thurm are not installed"
+        );
+        assert_eq!(p.shims_other, ["xclip", "xsel", "wl-copy", "wl-paste"]);
+
+        let out = run_script(SHIMS, &th);
+        assert!(!out.status.success());
+        assert!(String::from_utf8_lossy(&out.stderr).contains("another program"));
+        assert_eq!(
+            std::fs::read_link(shims.join("xclip")).unwrap(),
+            Path::new("/bin/sh"),
+            "another program's link is kept"
+        );
+        assert_eq!(
+            std::fs::read_link(shims.join("xsel")).unwrap(),
+            Path::new("/opt/other/bin/thurm"),
+            "another program named thurm is kept too"
+        );
+        assert_eq!(
+            std::fs::read_link(shims.join("pbcopy")).unwrap(),
+            th.join(".nix-profile/bin/thurm"),
+            "nothing changes while anything is refused"
+        );
+
+        for t in ["xclip", "xsel", "wl-copy", "wl-paste"] {
+            std::fs::remove_file(shims.join(t)).unwrap();
+        }
+        // A link to Thurm's own ~/.local/bin/thurm, made when that was first on PATH, is
+        // Thurm's: not another program's, and replaced by the fix.
+        symlink(th.join(".local/bin/thurm"), shims.join("xsel")).unwrap();
+        assert!(probe().shims_other.is_empty(), "{:?}", probe().shims_other);
+        // A relative link to this thurm counts as installed, and does not stop the fix for
+        // the ones missing.
+        symlink("../bin/thurm", shims.join("xclip")).unwrap();
+        assert_eq!(probe().shims, 1);
+        assert!(probe().shims_other.is_empty());
+        let out = run_script(SHIMS, &th);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let p = probe();
+        assert_eq!(
+            p.shims,
+            thurm_proto::CLIP_TOOLS.len(),
+            "older thurm links replaced"
+        );
+        assert!(p.shims_other.is_empty());
+        let _ = std::fs::remove_dir_all(&th);
     }
 
     #[test]
@@ -952,10 +1236,21 @@ mod tests {
 
     #[test]
     fn scripts_are_safe_to_quote() {
-        for s in [PROBE, LINK, LINGER, HOOKS, AGENT_INSTALL] {
+        for s in [PROBE, LINK, LINGER, HOOKS, AGENT_INSTALL, SHIMS] {
             crate::ssh::quote(s).unwrap_or_else(|e| panic!("{e}"));
         }
         assert!(PROBE.contains(PRELUDE) && PROBE.contains(REMOTE_PATH));
         assert!(HOOKS.contains(REMOTE_PATH));
+        assert!(SHIMS.contains(REMOTE_PATH));
+        assert_eq!(
+            clip_tools!(),
+            thurm_proto::CLIP_TOOLS.join(" "),
+            "one list of tools"
+        );
+        for t in thurm_proto::CLIP_TOOLS {
+            assert!(PROBE.contains(t) && SHIMS.contains(t), "{t}");
+        }
+        assert!(PROBE.contains(thurm_proto::CLIP_SHIMS_DIR));
+        assert!(SHIMS.contains(thurm_proto::CLIP_SHIMS_DIR));
     }
 }

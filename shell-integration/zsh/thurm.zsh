@@ -58,6 +58,20 @@ _thurm_preexec() {
 _thurm_precmd_last() {
   precmd_functions=(${precmd_functions:#_thurm_precmd} _thurm_precmd)
   precmd_functions=(${precmd_functions:#_thurm_precmd_last})
+  # Clipboard tools that reach the app's clipboard: first on PATH once .zprofile and .zshrc
+  # (which run after this file) have made their changes; off it when those set a display.
+  if [[ -n "${THURM_CLIP_SHIMS-}" ]]; then
+    # The directory as text: quoted for a pattern, read as one even under GLOB_SUBST.
+    # Quoted, so empty entries (the current directory) stay where they were.
+    local -a _thurm_rest=("${(@)path:#${~${(b)THURM_CLIP_SHIMS}}}")
+    if [[ -z "${DISPLAY-}${WAYLAND_DISPLAY-}" ]]; then
+      path=("$THURM_CLIP_SHIMS" "${(@)_thurm_rest}")
+    elif (( ${#_thurm_rest} )); then
+      # With a display and nothing but the shims on PATH, PATH stays: empty, it finds nothing.
+      path=("${(@)_thurm_rest}")
+    fi
+    export PATH
+  fi
   _thurm_precmd
 }
 

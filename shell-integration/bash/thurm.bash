@@ -28,6 +28,30 @@ if [[ -z "${_THURM_BASH_LOADED-}" ]]; then
   if [[ -n "${THURM_BIN_DIR-}" && ":$PATH:" != *":$THURM_BIN_DIR:"* ]]; then
     export PATH="$PATH:$THURM_BIN_DIR"
   fi
+  # Clipboard tools that reach the app's clipboard: first on PATH, after the startup files
+  # above made their changes; off it when those set a display, whose own tools then work.
+  if [[ -n "${THURM_CLIP_SHIMS-}" ]]; then
+    _thurm_p=":$PATH:"
+    # Again until none is left: two entries side by side share the colon between them.
+    while [[ "$_thurm_p" == *":$THURM_CLIP_SHIMS:"* ]]; do
+      _thurm_p=${_thurm_p//":$THURM_CLIP_SHIMS:"/:}
+    done
+    _thurm_p=${_thurm_p#:}
+    _thurm_p=${_thurm_p%:}
+    if [[ -z "${DISPLAY-}${WAYLAND_DISPLAY-}" ]]; then
+      # Nothing left but an empty entry (the current directory), as in PATH=: — kept.
+      if [[ -n "$_thurm_p" || ":$PATH:" == *"::"* ]]; then
+        _thurm_p="$THURM_CLIP_SHIMS:$_thurm_p"
+      else
+        _thurm_p=$THURM_CLIP_SHIMS
+      fi
+    elif [[ -z "$_thurm_p" && ":$PATH:" != *"::"* ]]; then
+      # A display, and nothing but the shims on PATH: PATH stays, an empty one finds nothing.
+      _thurm_p=$PATH
+    fi
+    export PATH="$_thurm_p"
+    builtin unset _thurm_p
+  fi
 
   _thurm_prompt_start() {
     _thurm_ret=$?

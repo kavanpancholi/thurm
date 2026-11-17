@@ -229,6 +229,14 @@ impl Daemon {
                 if matches!(req, Request::Hello { .. } | Request::Ext { .. }) {
                     return Err("not through `request`".into());
                 }
+                // Clipboard requests carry up to 32 MiB, which JSON would make many times that,
+                // past the daemon's bound on clipboard data: sent as themselves.
+                if req.carries_clipboard() {
+                    return Err(
+                        "not through `request`: send clipboard requests as requests of their own"
+                            .into(),
+                    );
+                }
                 let resp = self.answer(client, req)?;
                 serde_json::to_value(resp).map_err(|e| e.to_string())
             }
@@ -830,6 +838,11 @@ impl Daemon {
                 self.wait_agent_prompt(client.id, pane, ticket)
                     .map(Response::AgentPrompt)
             }
+            // Refused by the `request` method before this; anything else asking gets an error,
+            // not dispatch's unreachable arm.
+            req if req.carries_clipboard() => {
+                Err("clipboard requests are answered only as requests of their own".into())
+            }
             other => self.dispatch(client, other),
         }
     }
@@ -1346,19 +1359,7 @@ pub fn peer_is_our_app(stream: &std::os::unix::net::UnixStream) -> bool {
     #[cfg(target_os = "macos")]
     {
         use std::os::fd::AsRawFd;
-        let Some(app) = std::env::current_exe()
-            .ok()
-            .and_then(|e| e.canonicalize().ok())
-            .and_then(|exe| {
-                let helpers = exe.parent()?;
-                let contents = helpers.parent()?;
-                let bundle = contents.parent()?;
-                (helpers.file_name()? == "Helpers"
-                    && contents.file_name()? == "Contents"
-                    && bundle.extension()? == "app")
-                    .then(|| contents.join("MacOS").join("Thurm"))
-            })
-        else {
+        let Some(app) = bundle_app() else {
             return unverified_ui_allowed();
         };
         let mut pid: libc::pid_t = 0;
@@ -1387,6 +1388,33 @@ pub fn peer_is_our_app(stream: &std::os::unix::net::UnixStream) -> bool {
     {
         let _ = stream;
         unverified_ui_allowed()
+    }
+}
+
+/// The app executable of the bundle this daemon runs from (`Thurm.app/Contents/Helpers/thurmd`
+/// → `Contents/MacOS/Thurm`); `None` outside a bundle.
+#[cfg(target_os = "macos")]
+fn bundle_app() -> Option<std::path::PathBuf> {
+    let exe = std::env::current_exe().ok()?.canonicalize().ok()?;
+    let helpers = exe.parent()?;
+    let contents = helpers.parent()?;
+    let bundle = contents.parent()?;
+    (helpers.file_name()? == "Helpers"
+        && contents.file_name()? == "Contents"
+        && bundle.extension()? == "app")
+        .then(|| contents.join("MacOS").join("Thurm"))
+}
+
+/// Whether this daemon can tell its own app from other clients ([`peer_is_our_app`]): it runs
+/// from an app bundle. A remote host's daemon cannot.
+pub fn verifies_its_app() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        bundle_app().is_some()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
     }
 }
 

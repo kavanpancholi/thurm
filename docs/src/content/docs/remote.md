@@ -73,6 +73,7 @@ selected host's checklist with a **Fix** button for each problem.
 | Claude Code | Runs the official installer (`https://claude.ai/install.sh`), after asking |
 | Claude Code sign-in | Opens a tab running `claude` on the host, to sign in (Linux hosts) |
 | Claude Code / Codex hooks | Installs them for exact agent status |
+| Clipboard tools | Links `pbcopy`, `pbpaste`, `xclip`, `xsel`, `wl-copy` and `wl-paste` to `thurm` in `~/.local/share/thurm/shims`, after asking (Linux hosts whose daemon runs this build); other programs already there are left alone and reported |
 
 A fix that needs you at the host (a password, a sign-in) runs over `ssh -t`:
 in a tab of this Mac from the app, in your terminal from `thurm remote doctor
@@ -349,6 +350,54 @@ Launch presets in a remote workspace (⌘⇧P, ⌘⇧A) are the host's.
   meanwhile close with a notice; panes the host has that the layout doesn't know
   open as new tabs.
 - **Files.** See [Files](#files).
+- **Clipboard tools.** Programs on a Linux host that call `pbcopy`, `pbpaste`,
+  `xclip`, `xsel`, `wl-copy` or `wl-paste` reach this Mac's clipboard once the
+  doctor's **Clipboard tools** fix has linked them. New panes whose
+  environment has no `DISPLAY` or `WAYLAND_DISPLAY` (the daemon's, with the
+  host's `[terminal.env]` and what the client passes on top) have them first
+  on `PATH`, ahead of a `PATH` set in `[terminal.env]`. After the shell's
+  startup files they are put first again, or taken off `PATH` when those files
+  set a display, whose own tools then work: by the shell integration in bash,
+  zsh and fish, and for a pane that runs a command in any shell. In an
+  interactive shell without the integration (`terminal.shell_integration =
+  false`, or another shell), they stay first only if its startup files keep
+  the `PATH` they are given. Only the clipboard selection is this Mac's
+  clipboard: PRIMARY and SECONDARY are refused, and with them xclip's and
+  xsel's default (use `xclip -selection clipboard`, `xsel -b`). Text is UTF-8:
+  another charset, or X11's `STRING` (`xclip -noutf8`), is refused. With no text on
+  the clipboard, `pbpaste` and `xsel` print nothing and succeed, and `xclip` and
+  `wl-paste` fail, as each does with a display. What is checked, and where:
+
+  | | On the host (its daemon) | On this Mac (the app) |
+  | --- | --- | --- |
+  | Copy, clear | the host's `terminal.osc52` is `copy` or `copy-paste` | this Mac's `terminal.osc52` is `copy` or `copy-paste` |
+  | Paste | the host's `terminal.osc52` is `paste` or `copy-paste` | this Mac's `terminal.osc52` is `paste` or `copy-paste`, then the host's `clipboard_read`: asks, always, or never |
+  | List the types | as a paste | as a paste, but never asks |
+
+  These are the checks an OSC 52 copy or read gets, and both sides must allow
+  it. A copy, clear or paste goes to the Thurm app that last showed the pane
+  (the only one connected, if none has; with several and none of them, the
+  tool asks you to show the pane in one; a phone or an app without clipboard
+  tools showing it since changes nothing), which answers it, so the tool hears
+  whether it was done: anything refused,
+  on the host or on this Mac, fails the tool. Listing the types
+  (`xclip -selection clipboard -t TARGETS -o`, `wl-paste --list-types`) fails where reads from that
+  host are refused (`clipboard_read = "never"`, or pastes off in either
+  `terminal.osc52`). Pastes carry text or a PNG image (an agent's image paste
+  works; a screenshot, copied as TIFF, is converted when it is at most 256 MiB
+  and 64 megapixels), at most 32 MiB each, and at most 128 MiB at once on its way through
+  the host's daemon or queued there for a program or app that has not read it
+  yet (a paste or copy over that is refused, to try again).
+  A clear (`xsel -b --clear`, `wl-copy --clear`) empties
+  the clipboard, leaving no type. Options the tools cannot honour here are
+  refused rather than ignored: a copy meant to go away (`xclip -loops`,
+  `-wait`, `-sensitive`, `xsel --selectionTimeout`, `wl-copy --paste-once`),
+  `xsel --append`, `--follow` and `--exchange`, another X server
+  (`xclip -display`, `xsel --display`), and a pasteboard or format
+  other than the general one and text (`pbcopy -pboard find`,
+  `pbpaste -Prefer rtf`). `thurm clip copy`, `thurm clip paste [--type image/png]` and
+  `thurm clip clear` do the same on any host; on this Mac's own panes only
+  this Mac's `terminal.osc52` applies.
 
 ## Files
 
@@ -518,11 +567,25 @@ same from a terminal.
 Remote hosts are assumed to be yours and single-user. Even so, they cannot
 reach the Mac's disk, clipboard, or credentials without you doing something:
 
-- **Clipboard reads (OSC 52).** Every read from a remote pane asks: "devbox
-  wants to read your clipboard — Allow Once / Always for devbox / Deny".
-  "Always" writes `clipboard_read = "always"` to the host's `[[remote]]`. Your
-  `terminal.osc52` setting caps every host.
-- **Clipboard writes** follow your `terminal.osc52` setting.
+- **Clipboard reads (OSC 52 and clipboard tools).** A remote pane's read
+  follows the host's `clipboard_read`: with `ask` (the default) every OSC 52
+  read and every paste asks "devbox wants to read your clipboard — Allow Once /
+  Always for devbox / Deny" (one question per host at a time: another read
+  meanwhile is refused, and a question left unanswered closes after 25
+  seconds as Deny: an answer given later, as to one another window kept
+  covered, is a Deny too, and saves nothing, and from then on that host may
+  ask again); with `always` they go ahead without asking
+  ("Always" writes that to the host's `[[remote]]`); with `never` they are
+  refused. Listing the clipboard's types (`xclip -selection clipboard -t TARGETS -o`,
+  `wl-paste --list-types`) never asks: it says whether there is text or an
+  image, not what, and is refused wherever reads are. Your `terminal.osc52`
+  setting caps every host, and the host's own `terminal.osc52` can only be
+  stricter.
+- **Clipboard tools' requests** come only from programs on the host itself
+  (a phone or tailnet caller sending them is refused), and go to the Thurm app
+  that last showed the pane; this Mac's own daemon asks only the Thurm app.
+- **Clipboard writes** (a copy, or a clipboard tool's clear) follow your
+  `terminal.osc52` setting, and the host's.
 - **Links.** ⌘-click opens `http` and `https` links from remote panes (a link
   to the host's `localhost` through a forward, see [Ports](#ports)), asks for
   other schemes, and never opens `file://` links (they are paths on the host):

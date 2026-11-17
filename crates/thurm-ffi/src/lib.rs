@@ -634,6 +634,32 @@ pub unsafe extern "C" fn thurm_has_capability(
     c.client.has_capability(cap)
 }
 
+/// Answers the daemon's `ClipboardQuery` `id` with `len` bytes at `data`, or refuses it when
+/// `data` is NULL. Does not wait for the daemon.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn thurm_clipboard_answer(
+    client: *mut thurm_client,
+    id: u64,
+    data: *const u8,
+    len: usize,
+) {
+    let Some(c) = (unsafe { client_ref(client) }) else {
+        return;
+    };
+    let data = (!data.is_null()).then(|| unsafe { std::slice::from_raw_parts(data, len) }.to_vec());
+    // Up to 32 MiB over a tunnel that may be slow: written on a thread of its own, so the
+    // caller (the app's main thread) does not wait for it.
+    let client = c.client.clone();
+    let sent = std::thread::Builder::new()
+        .name("clipboard-answer".into())
+        .spawn(move || {
+            let _ = client.send(Request::ClipboardAnswer { id, data });
+        });
+    if let Err(e) = sent {
+        log::warn!("cannot send a clipboard answer: {e}");
+    }
+}
+
 /// Re-read this Mac's config into the connection's terminal copies (fonts aside, colors and
 /// terminal behavior): remote daemons don't send ConfigReloaded when the Mac's config changes.
 #[unsafe(no_mangle)]
@@ -2109,5 +2135,24 @@ mod tests {
         }
         let ev = serde_json::to_string(&Event::ConfigReloaded).unwrap();
         assert_eq!(ev, r#""ConfigReloaded""#);
+        let ev = serde_json::to_string(&Event::ClipboardQuery {
+            pane: 1,
+            id: 7,
+            mime: "text/plain".into(),
+        })
+        .unwrap();
+        assert_eq!(
+            ev, r#"{"ClipboardQuery":{"pane":1,"id":7,"mime":"text/plain"}}"#,
+            "as the header documents it"
+        );
+        assert_eq!(
+            serde_json::to_string(&Event::ClipboardWrite {
+                pane: 1,
+                id: 7,
+                text: None
+            })
+            .unwrap(),
+            r#"{"ClipboardWrite":{"pane":1,"id":7,"text":null}}"#
+        );
     }
 }

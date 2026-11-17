@@ -19,6 +19,26 @@ if status is-interactive; and not set -q __thurm_fish_loaded
     if set -q THURM_BIN_DIR; and not contains -- $THURM_BIN_DIR $PATH
         set -gx PATH $PATH $THURM_BIN_DIR
     end
+    # Clipboard tools that reach the app's clipboard: first on PATH at the first prompt, once
+    # config.fish (which runs after this file) has made its changes; off it when that set a
+    # display.
+    if set -q THURM_CLIP_SHIMS
+        function __thurm_clip_shims --on-event fish_prompt
+            functions -e __thurm_clip_shims
+            # Compared as text: the path may hold characters a pattern would read as a glob.
+            set -l rest
+            for p in $PATH
+                test "$p" = "$THURM_CLIP_SHIMS"; or set -a rest $p
+            end
+            if test -z "$DISPLAY$WAYLAND_DISPLAY"
+                set -gx PATH $THURM_CLIP_SHIMS $rest
+            else if set -q rest[1]
+                # With a display and nothing but the shims on PATH, PATH stays: empty, it
+                # finds nothing.
+                set -gx PATH $rest
+            end
+        end
+    end
 
     function __thurm_prompt --on-event fish_prompt
         printf '\e]7;file://%s%s\a' $hostname (string escape --style=url -- $PWD)

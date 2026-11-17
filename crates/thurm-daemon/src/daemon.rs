@@ -3,6 +3,7 @@
 #[path = "active_size.rs"]
 mod active_size;
 mod agent_prompt;
+pub mod clip;
 pub mod ext;
 mod focus;
 mod layouts;
@@ -388,6 +389,13 @@ pub struct Client {
     /// When the socket last took bytes from the writer: a client it still takes output on is not
     /// gone, though it says nothing (see `mobile_silence`).
     pub last_written: Arc<Mutex<Instant>>,
+    /// Answers clipboard tools' pastes ([`thurm_proto::CAP_CLIP_QUERY`]).
+    pub clip_query: AtomicBool,
+    /// That client is this daemon's own app (see `ext::peer_is_our_app`): asked before others.
+    pub clip_verified: AtomicBool,
+    /// Clipboard bytes queued in `tx` (see [`clip::clip_weight`]); the writer subtracts what it
+    /// wrote. Counted against the clipboard data the daemon holds at once.
+    pub clip_queued: std::sync::atomic::AtomicUsize,
 }
 
 impl Client {
@@ -420,11 +428,45 @@ impl Client {
         };
         self.queued
             .fetch_add(message_weight(&msg), Ordering::Relaxed);
+        let clip = clip::clip_weight(&msg);
+        self.clip_queued.fetch_add(clip, Ordering::SeqCst);
         self.unflushed.fetch_add(1, Ordering::AcqRel);
         if self.tx.send(msg).is_err() {
             self.queued.store(0, Ordering::Relaxed);
+            self.clip_give_back(clip);
             self.unflushed.store(0, Ordering::Release);
         }
+    }
+
+    /// A process of this daemon's user on this machine: not a tailnet caller, nor another user.
+    pub fn is_local_peer(&self) -> bool {
+        self.principal.lock().as_ref().is_none_or(|p| {
+            p.kind == thurm_proto::PrincipalKind::Peer && p.uid == Some(unsafe { libc::getuid() })
+        })
+    }
+
+    /// `n` clipboard bytes left the queue. Never below zero: after [`Client::writer_ended`]
+    /// set the count to zero, a send that counted its message and then failed gives it back
+    /// to nothing.
+    fn clip_give_back(&self, n: usize) {
+        let _ = self
+            .clip_queued
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |v| {
+                Some(v.saturating_sub(n))
+            });
+    }
+
+    /// The writer wrote `msg`.
+    pub fn clip_written(&self, msg: &ServerMessage) {
+        self.clip_give_back(clip::clip_weight(msg));
+    }
+
+    /// The writer stopped and its queue (`rx`, dropped before this) went with it: nothing is
+    /// queued any more, whatever its last message, the one it failed to write, or one sent
+    /// while it stopped.
+    pub fn writer_ended(&self) {
+        self.unflushed.store(0, Ordering::Release);
+        self.clip_queued.store(0, Ordering::SeqCst);
     }
 
     /// The client is far enough behind that it should get fresh state instead of output.
@@ -603,6 +645,13 @@ pub struct Daemon {
     ext: ext::Ext,
     /// The plugins and scripts the daemon runs.
     plugins: plugins::Plugins,
+    next_clip: AtomicU64,
+    /// Clipboard tools' pastes waiting for an app's answer.
+    pending_clips: Mutex<HashMap<u64, clip::PendingClip>>,
+    /// The pastes on threads of their own, at most `clip::MAX_PENDING`.
+    clip_slots: Arc<clip::Slots>,
+    /// The clipboard bytes on their way, at most `clip::max_held()`.
+    clip_bytes: Arc<clip::Slots>,
 }
 
 impl Daemon {
@@ -665,6 +714,10 @@ impl Daemon {
             focus: Mutex::new(focus::FocusLog::default()),
             ext: ext::Ext::default(),
             plugins: plugins::Plugins::default(),
+            next_clip: AtomicU64::new(1),
+            pending_clips: Mutex::new(HashMap::new()),
+            clip_slots: Arc::default(),
+            clip_bytes: Arc::default(),
         });
         daemon.ext_config_applied();
         daemon
@@ -725,6 +778,7 @@ impl Daemon {
             Event::PaneRead { pane } => self.push.read(*pane, &open()),
             Event::PaneClosed { pane } => {
                 self.ports.poke();
+                self.focus.lock().pane_closed(*pane);
                 // Its notices would open nothing.
                 self.unread.lock().remove(pane);
                 self.push.read(*pane, &open());
@@ -844,6 +898,9 @@ impl Daemon {
             queued: std::sync::atomic::AtomicUsize::new(0),
             unflushed: std::sync::atomic::AtomicUsize::new(0),
             last_written: Arc::new(Mutex::new(Instant::now())),
+            clip_query: AtomicBool::new(false),
+            clip_verified: AtomicBool::new(false),
+            clip_queued: std::sync::atomic::AtomicUsize::new(0),
         });
         self.clients.lock().insert(id, client.clone());
         *self.last_activity.lock() = Instant::now();
@@ -2451,6 +2508,43 @@ impl Daemon {
                 });
                 return;
             }
+            // The app may ask the user first. Admitted (a slot taken) before the thread.
+            req if req.is_clipboard_tool() => {
+                let Some((pane, ask)) = clip::Ask::of(req) else {
+                    unreachable!("a clipboard request")
+                };
+                match self.clipboard_admit(client, pane, &ask) {
+                    Err(e) => Err(e),
+                    Ok((slot, bytes)) => {
+                        let daemon = self.clone();
+                        let client = client.clone();
+                        let spawned =
+                            std::thread::Builder::new()
+                                .name("clipboard".into())
+                                .spawn(move || {
+                                    let asked =
+                                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                                            || daemon.clipboard_ask(client.id, pane, ask, bytes),
+                                        ));
+                                    let (result, held) = asked.unwrap_or_else(|_| {
+                                        (Err("the daemon hit an internal error".into()), None)
+                                    });
+                                    drop(slot);
+                                    if id != 0 {
+                                        client.send(ServerMessage::Response { id, result });
+                                    }
+                                    // Counted in the client's queue from here.
+                                    drop(held);
+                                });
+                        // A thread refused: the slot went back with the closure.
+                        if let Err(e) = spawned {
+                            Err(format!("could not start a request thread: {e}"))
+                        } else {
+                            return;
+                        }
+                    }
+                }
+            }
             // The Tailscale helper can take a while (starting the node, signing out).
             req @ (Request::TailscaleEnable { .. }
             | Request::TailscaleDisable
@@ -2758,13 +2852,19 @@ impl Daemon {
                     client.port_events.store(true, Ordering::Relaxed);
                     self.ports.subscribed(self.clone(), client.id);
                 }
+                if has(thurm_proto::CAP_CLIP_QUERY) {
+                    client.clip_query.store(true, Ordering::Relaxed);
+                    let verified = client
+                        .socket
+                        .lock()
+                        .as_ref()
+                        .is_some_and(ext::peer_is_our_app);
+                    client.clip_verified.store(verified, Ordering::Relaxed);
+                }
                 // Plugins' questions go only to a desktop app of this user on this machine:
                 // a tailnet caller or a phone saying so is not trusted with them.
                 if has(thurm_proto::CAP_EXT_UI) {
-                    let local = client.principal.lock().as_ref().is_none_or(|p| {
-                        p.kind == thurm_proto::PrincipalKind::Peer
-                            && p.uid == Some(unsafe { libc::getuid() })
-                    });
+                    let local = client.is_local_peer();
                     let desktop = ui && !client.mobile.load(Ordering::Relaxed);
                     let app = client
                         .socket
@@ -3030,9 +3130,12 @@ impl Daemon {
                         }
                         p.write(b);
                     }
-                    self.focus
-                        .lock()
-                        .focus(client.id, pane, focused, Instant::now());
+                    let mut log = self.focus.lock();
+                    log.focus(client.id, pane, focused, Instant::now());
+                    if focused && clip::shares_clipboard(client) {
+                        log.shown_by(client.id, pane);
+                    }
+                    drop(log);
                     // Looking at a finished agent acknowledges it (Done → Idle).
                     if focused {
                         self.emit("pane_focused", Some(&st.info), serde_json::json!({}));
@@ -3093,6 +3196,11 @@ impl Daemon {
             Request::Wait { .. } | Request::Explain { .. } | Request::AgentPrompt { .. } => {
                 unreachable!("handled in handle()")
             }
+            // Spelt out, so a clipboard request added later is a compile error here.
+            Request::ClipboardGet { .. }
+            | Request::ClipboardSet { .. }
+            | Request::ClipboardClear { .. } => unreachable!("handled in handle()"),
+            Request::ClipboardAnswer { id, data } => self.clipboard_answer(client.id, id, data),
             Request::SetLayout { json } => {
                 serde_json::from_str::<Layout>(&json)
                     .map_err(|e| format!("invalid layout: {e}"))?;
@@ -4756,6 +4864,9 @@ mod tests {
             queued: std::sync::atomic::AtomicUsize::new(0),
             unflushed: std::sync::atomic::AtomicUsize::new(0),
             last_written: Arc::new(Mutex::new(Instant::now())),
+            clip_query: AtomicBool::new(false),
+            clip_verified: AtomicBool::new(false),
+            clip_queued: std::sync::atomic::AtomicUsize::new(0),
         };
         // A few big outputs are a backlog, not only thousands of messages.
         for _ in 0..70 {
@@ -4767,6 +4878,87 @@ mod tests {
         assert!(c.backlogged() && !c.caught_up());
         c.queued.store(0, Ordering::Relaxed);
         assert!(!c.backlogged());
+    }
+
+    /// A large copy queued for a client counts against the clipboard bytes held, not its output
+    /// backlog: its panes do not fall back to re-sync because of it.
+    #[test]
+    fn a_large_copy_is_no_output_backlog() {
+        let dir = std::env::temp_dir().join(format!("thurm-clip-backlog-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let daemon = Daemon::new(
+            Config::default(),
+            dir.join("s.sock"),
+            dir.join("state"),
+            Arc::new(AtomicBool::new(false)),
+        );
+        let (client, _rx) = daemon.add_client();
+        client.send(ServerMessage::Event(Event::ClipboardWrite {
+            pane: 1,
+            id: 1,
+            text: Some("x".repeat(thurm_proto::CLIP_MAX)),
+        }));
+        assert!(!client.backlogged());
+        assert_eq!(
+            client.clip_queued.load(Ordering::SeqCst),
+            thurm_proto::CLIP_MAX
+        );
+        // An OSC 52 copy, sent to every app and phone, is not the tools' to count: a phone
+        // that stops reading must not stop them.
+        client.send(ServerMessage::Event(Event::ClipboardStore {
+            pane: 1,
+            text: "y".repeat(1000),
+        }));
+        assert_eq!(
+            client.clip_queued.load(Ordering::SeqCst),
+            thurm_proto::CLIP_MAX
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Clipboard bytes queued for a client are counted until written, and once its writer has
+    /// stopped, none are: a send failing after that cannot take the count below zero.
+    #[test]
+    fn clipboard_bytes_queued_are_counted_once() {
+        let dir = std::env::temp_dir().join(format!("thurm-clip-queued-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let daemon = Daemon::new(
+            Config::default(),
+            dir.join("s.sock"),
+            dir.join("state"),
+            Arc::new(AtomicBool::new(false)),
+        );
+        let (client, rx) = daemon.add_client();
+        let data = |n| ServerMessage::Response {
+            id: 1,
+            result: Ok(Response::ClipboardData { data: vec![0; n] }),
+        };
+        client.send(data(100));
+        client.send(ServerMessage::Event(Event::ClipboardWrite {
+            pane: 1,
+            id: 2,
+            text: Some("x".repeat(30)),
+        }));
+        assert_eq!(client.clip_queued.load(Ordering::SeqCst), 130);
+        let first = rx.recv().unwrap();
+        client.clip_written(&first);
+        assert_eq!(client.clip_queued.load(Ordering::SeqCst), 30);
+        // The writer stops with a message still queued, and a send fails after it.
+        drop(rx);
+        client.writer_ended();
+        client.send(data(50));
+        assert_eq!(
+            client.clip_queued.load(Ordering::SeqCst),
+            0,
+            "not wrapped, not 50"
+        );
+        client.clip_written(&data(10));
+        assert_eq!(
+            client.clip_queued.load(Ordering::SeqCst),
+            0,
+            "never below zero"
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// The main loop exits soon after it sees `shutdown`, waiting only for queued replies, so the

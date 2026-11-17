@@ -86,6 +86,7 @@ pub const CAPABILITIES: &[&str] = &[
     CAP_PORTS,
     CAP_DIAL_AT,
     CAP_TRANSFER,
+    CAP_CLIP_QUERY,
 ];
 
 /// The daemon accepts `SearchPaths` and returns `PathMatches` only for that request.
@@ -186,6 +187,28 @@ pub const CAP_AGENT_ACTIVITY: &str = "agent-activity";
 /// Sent only by remote clients (the iOS app over ssh or the tailnet, the web client): the daemon
 /// deflates the events it sends them, as [`Event::Compressed`] (see [`codec::encode_frame`]).
 pub const CAP_DEFLATE: &str = "deflate";
+
+/// The daemon takes [`Request::ClipboardSet`], [`Request::ClipboardGet`] and
+/// [`Request::ClipboardClear`] from clipboard tools in its panes. A client that says it answers
+/// [`Event::ClipboardQuery`] and [`Event::ClipboardWrite`] with [`Request::ClipboardAnswer`]; the
+/// daemon asks only desktop UIs (`ui`, not a phone).
+pub const CAP_CLIP_QUERY: &str = "clip-query";
+
+/// The clipboard types [`Request::ClipboardGet`] reads.
+pub const CLIP_TEXT: &str = "text/plain";
+pub const CLIP_PNG: &str = "image/png";
+/// Not a type: [`Request::ClipboardGet`] with it answers the types the clipboard holds now, one
+/// per line.
+pub const CLIP_TARGETS: &str = "TARGETS";
+/// The most [`Request::ClipboardSet`] and [`Request::ClipboardAnswer`] carry.
+pub const CLIP_MAX: usize = 32 * 1024 * 1024;
+/// The clipboard tools `thurm` stands in for when run under their name.
+pub const CLIP_TOOLS: &[&str] = &["pbcopy", "pbpaste", "xclip", "xsel", "wl-copy", "wl-paste"];
+/// Where `thurm remote doctor` links [`CLIP_TOOLS`] to `thurm`, under the home directory.
+pub const CLIP_SHIMS_DIR: &str = ".local/share/thurm/shims";
+/// Environment variable with that directory, in panes that have it first on `PATH`: the shell
+/// integration keeps it there.
+pub const ENV_CLIP_SHIMS: &str = "THURM_CLIP_SHIMS";
 
 /// Environment variable exported into every pane with the pane's id.
 pub const ENV_PANE_ID: &str = "THURM_PANE_ID";
@@ -580,6 +603,35 @@ pub enum Request {
         path: String,
         if_version: Option<String>,
     },
+    /// A clipboard tool in `pane` copies `text` (at most [`CLIP_MAX`] bytes): the daemon hands it
+    /// to the desktop UI that last focused the pane ([`Event::ClipboardWrite`]) and answers Ok
+    /// once that UI took it, or an error when it refused or said nothing for 30 s. Requires
+    /// [`CAP_CLIP_QUERY`].
+    ClipboardSet {
+        pane: PaneId,
+        text: String,
+    },
+    /// A clipboard tool in `pane` pastes: the daemon asks the desktop UI that last focused the
+    /// pane ([`Event::ClipboardQuery`]) and answers [`Response::ClipboardData`] with what it
+    /// gives, or an error when it refuses or says nothing for 30 s. `mime` is [`CLIP_TEXT`],
+    /// [`CLIP_PNG`] or [`CLIP_TARGETS`]. Requires [`CAP_CLIP_QUERY`].
+    ClipboardGet {
+        pane: PaneId,
+        mime: String,
+    },
+    /// A UI's answer to [`Event::ClipboardQuery`] `id`: the clipboard's contents in the type it
+    /// asked for (at most [`CLIP_MAX`] bytes), or `None` for a refusal or nothing of that type.
+    /// To [`Event::ClipboardWrite`] `id`: `Some` (empty) once done, `None` when refused.
+    ClipboardAnswer {
+        id: u64,
+        #[serde(with = "bytes::option")]
+        data: Option<Vec<u8>>,
+    },
+    /// A clipboard tool in `pane` empties the clipboard (`xsel --clear`, `wl-copy --clear`): as
+    /// [`Request::ClipboardSet`], with nothing to store. Requires [`CAP_CLIP_QUERY`].
+    ClipboardClear {
+        pane: PaneId,
+    },
 }
 
 /// The most files a batch of [`Request::UploadBegin`] holds (its `count`).
@@ -614,6 +666,25 @@ pub struct DownloadInfo {
     pub version: Option<String>,
     /// `if_version` is the file's version: nothing to send.
     pub not_modified: bool,
+}
+
+impl Request {
+    /// A clipboard tool's own request: [`Request::ClipboardGet`], [`Request::ClipboardSet`] or
+    /// [`Request::ClipboardClear`].
+    pub fn is_clipboard_tool(&self) -> bool {
+        matches!(
+            self,
+            Request::ClipboardGet { .. }
+                | Request::ClipboardSet { .. }
+                | Request::ClipboardClear { .. }
+        )
+    }
+
+    /// Carries clipboard contents, up to [`CLIP_MAX`]: a tool's request, or an app's
+    /// [`Request::ClipboardAnswer`].
+    pub fn carries_clipboard(&self) -> bool {
+        self.is_clipboard_tool() || matches!(self, Request::ClipboardAnswer { .. })
+    }
 }
 
 /// How [`Request::OwnPanes`] treats a pane another client holds.
@@ -725,6 +796,11 @@ pub enum Response {
     },
     Ports(Vec<PanePorts>),
     Download(DownloadInfo),
+    /// The clipboard's contents for [`Request::ClipboardGet`].
+    ClipboardData {
+        #[serde(with = "bytes")]
+        data: Vec<u8>,
+    },
 }
 
 /// A pane that had keyboard focus in a UI (the Mac app, the iOS app).
@@ -888,6 +964,24 @@ pub enum Event {
         ports: Vec<PortEntry>,
         complete: bool,
         initial: bool,
+    },
+    /// A clipboard tool in `pane` asks for this Mac's clipboard in `mime` (see
+    /// [`Request::ClipboardGet`]); answer with [`Request::ClipboardAnswer`] `id`. Sent only to a
+    /// desktop UI with [`CAP_CLIP_QUERY`].
+    ClipboardQuery {
+        pane: PaneId,
+        id: u64,
+        mime: String,
+    },
+    /// A clipboard tool in `pane` copies `text` ([`Request::ClipboardSet`]), or empties the
+    /// clipboard when `None` ([`Request::ClipboardClear`], leaving no type at all): the UI does
+    /// so if its policy lets the pane's host write its clipboard, and answers with
+    /// [`Request::ClipboardAnswer`] `id` either way. Sent only to a desktop UI with
+    /// [`CAP_CLIP_QUERY`].
+    ClipboardWrite {
+        pane: PaneId,
+        id: u64,
+        text: Option<String>,
     },
 }
 
