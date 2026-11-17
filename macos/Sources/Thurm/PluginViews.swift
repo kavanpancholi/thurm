@@ -23,6 +23,13 @@ struct PluginNode: Equatable {
     var tooltip = ""
     var action: Action?
     var popover: Popover?
+    var menu: [MenuItem] = []
+
+    struct MenuItem: Equatable {
+        var title: String
+        var action: Action?
+        var checked: Bool
+    }
 
     struct Action: Equatable {
         var name: String
@@ -67,10 +74,17 @@ struct PluginNode: Equatable {
         corner = num("corner")
         border = str("border")
         tooltip = str("tooltip")
-        if let a = d["action"] as? [String: Any], let name = jsonString(a["name"]) {
-            action = Action(name: name, args: a["args"].map { JSON.encode($0) })
+        action = Self.action(d["action"])
+        menu = (d["menu"] as? [[String: Any]] ?? []).map {
+            MenuItem(title: jsonString($0["title"]) ?? "", action: Self.action($0["action"]),
+                     checked: $0["checked"] as? Bool ?? false)
         }
         if let p = d["popover"] as? [String: Any] { popover = Popover(PluginNode(p)) }
+    }
+
+    private static func action(_ value: Any?) -> Action? {
+        guard let a = value as? [String: Any], let name = jsonString(a["name"]) else { return nil }
+        return Action(name: name, args: a["args"].map { JSON.encode($0) })
     }
 }
 
@@ -155,6 +169,19 @@ struct PluginNodeView: View {
             .onHover { if node.popover != nil { hovering = $0 } }
             .popover(isPresented: $hovering, arrowEdge: .top) {
                 if let p = node.popover?.node { PluginNodeView(node: p, run: run).padding(12) }
+            }
+            .contextMenu {
+                ForEach(node.menu.indices, id: \.self) { i in
+                    let item = node.menu[i]
+                    if item.title.isEmpty && item.action == nil {
+                        Divider()
+                    } else {
+                        Toggle(item.title, isOn: Binding(get: { item.checked }, set: { _ in
+                            if let a = item.action { run(a.name, a.args) }
+                        }))
+                        .disabled(item.action == nil)
+                    }
+                }
             }
     }
 
@@ -253,6 +280,11 @@ final class PluginSlotHost: NSHostingView<PluginSlotView> {
         isHidden = true
         wantsLayer = true
         layer?.masksToBounds = true
+    }
+
+    /// The menu of the view under the pointer, or nothing: never the terminal's under the slot.
+    override func rightMouseDown(with event: NSEvent) {
+        if let menu = menu(for: event) { NSMenu.popUpContextMenu(menu, with: event, for: self) }
     }
 
     @available(*, unavailable)

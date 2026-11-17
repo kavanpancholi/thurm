@@ -458,6 +458,8 @@ pub struct ViewNode {
     pub action: Option<ViewAction>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub popover: Option<Box<ViewNode>>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub menu: Vec<ViewMenuItem>,
 }
 
 fn is_zero(v: &f64) -> bool {
@@ -471,6 +473,18 @@ pub struct ViewAction {
     pub name: String,
     #[serde(skip_serializing_if = "Value::is_null")]
     pub args: Value,
+}
+
+/// An item of the menu a right click on a node opens: a title and the action it runs, or a
+/// separator when both are empty.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(default)]
+pub struct ViewMenuItem {
+    pub title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action: Option<ViewAction>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub checked: bool,
 }
 
 impl Mount {
@@ -499,7 +513,7 @@ impl Mount {
 
 impl ViewNode {
     fn check(&self, depth: usize, nodes: &mut usize) -> Result<(), String> {
-        *nodes += 1;
+        *nodes += 1 + self.menu.len();
         if *nodes > MAX_VIEW_NODES {
             return Err(format!("the view has more than {MAX_VIEW_NODES} nodes"));
         }
@@ -518,9 +532,11 @@ impl ViewNode {
                 return Err(format!("{name} {v}: from 0 to {max} points"));
             }
         }
-        if let Some(a) = &self.action
-            && !valid_action_name(&a.name)
-        {
+        let mut actions = self
+            .action
+            .iter()
+            .chain(self.menu.iter().filter_map(|i| i.action.as_ref()));
+        if let Some(a) = actions.find(|a| !valid_action_name(&a.name)) {
             return Err(format!("{:?}: not an action name", a.name));
         }
         for c in &self.children {
@@ -679,6 +695,7 @@ mod tests {
             "children": [{ "type": "image", "image": "iVBOR", "width": 34, "height": 34 }],
             "action": { "name": "usage.refresh" },
             "popover": { "type": "column", "children": [{ "type": "text", "text": "5-hour limit" }] },
+            "menu": [{ "title": "Show Codex", "action": { "name": "usage.toggle", "args": "codex" }, "checked": true }, {}],
             "later": true,
         }))
         .unwrap();
@@ -724,6 +741,12 @@ mod tests {
             &|m| m.view.children = vec![ViewNode::default(); MAX_VIEW_NODES]
         ));
         assert!(bad(&|m| m.view.image = "A".repeat(MAX_VIEW_BYTES)));
+        assert!(bad(
+            &|m| m.view.menu[0].action.as_mut().unwrap().name = "a/b".into()
+        ));
+        assert!(bad(
+            &|m| m.view.menu = vec![ViewMenuItem::default(); MAX_VIEW_NODES]
+        ));
     }
 
     #[test]

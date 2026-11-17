@@ -77,4 +77,50 @@ final class PluginViewsTests: XCTestCase {
         content.layoutPanes()
         XCTAssertTrue(dock.isHidden)
     }
+
+    func testARightClickOpensTheViewsMenuAndNeverTheTerminals() throws {
+        let menuView: Any = [[
+            "client": 4, "id": "usage", "slot": "window.bottom_trailing",
+            "view": ["type": "icon", "symbol": "sparkle", "width": 40, "height": 40, "menu": [
+                ["title": "Show Codex", "action": ["name": "usage.toggle"], "checked": true],
+                [:],
+                ["title": "Refresh", "action": ["name": "usage.refresh"]],
+            ]],
+        ]]
+        let views = PluginViews.decode(menuView)
+        XCTAssertEqual(views.first?.view.menu.map(\.title), ["Show Codex", "", "Refresh"])
+        XCTAssertEqual(views.first?.view.menu.first?.checked, true)
+
+        PluginViews.shared.apply(views)
+        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 200, height: 200), styleMask: [.titled],
+                              backing: .buffered, defer: false)
+        let host = PluginSlotHost(slot: .bottomTrailing) { _, _ in }
+        host.isHidden = false
+        host.frame = CGRect(x: 0, y: 0, width: 40, height: 40)
+        window.contentView?.addSubview(host)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+        host.layoutSubtreeIfNeeded()
+        let event = try XCTUnwrap(NSEvent.mouseEvent(with: .rightMouseDown, location: CGPoint(x: 20, y: 20),
+                                                     modifierFlags: [], timestamp: 0,
+                                                     windowNumber: window.windowNumber, context: nil,
+                                                     eventNumber: 0, clickCount: 1, pressure: 1))
+        XCTAssertTrue(window.contentView?.hitTest(CGPoint(x: 20, y: 20)) === host)
+        XCTAssertEqual(host.menu(for: event)?.items.map(\.title), ["Show Codex", "", "Refresh"])
+        XCTAssertEqual(host.menu(for: event)?.items.first?.state, .on)
+
+        var plain = views
+        plain[0].view.menu = []
+        PluginViews.shared.apply(plain)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+        XCTAssertNil(host.menu(for: event))
+        let below = RightClickSpy()
+        host.nextResponder = below
+        host.rightMouseDown(with: event)
+        XCTAssertFalse(below.rightClicked, "the terminal under the slot gets no right click")
+    }
+}
+
+private final class RightClickSpy: NSResponder {
+    var rightClicked = false
+    override func rightMouseDown(with event: NSEvent) { rightClicked = true }
 }

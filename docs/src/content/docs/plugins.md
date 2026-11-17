@@ -223,12 +223,15 @@ and a plugin's views go when it stops, is disabled or is reloaded.
 Any node can also have `width` and `height` (its content placed in them by
 `align`), `padding`, a `fill` color with a
 `corner` radius, a `border` color, a `tooltip`, an `action` (`{name, args}`,
-run when the node is clicked, for the focused pane) and a `popover` (a view
-shown next to it while the pointer is over it). Colors are `primary`,
+run when the node is clicked, for the focused pane), a `popover` (a view
+shown next to it while the pointer is over it) and a `menu` that a right click
+opens: items with a `title`, an `action` and `checked` for a check mark, and
+an empty item for a separator. A right click on a view without a menu opens
+nothing. Colors are `primary`,
 `secondary`, `accent` (the theme's), or `#rrggbb` and `#rrggbbaa`. A type the
 app does not know draws nothing.
 
-A view has at most 512 nodes, nests at most 16 deep and is at most 512 KiB as
+A view has at most 512 nodes and menu items, nests at most 16 deep and is at most 512 KiB as
 JSON, and a plugin has at most 16 views mounted. `size`, `width`, `height` and
 `corner` go up to 480 points, `spacing` and `padding` up to 48, and an image
 is drawn from at most 512 pixels on a side. A view out of these bounds, or in

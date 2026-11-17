@@ -201,6 +201,7 @@ function thurm.ui.toast(text, pane) end
 ---@field tooltip string?
 ---@field action { name: string, args: any }? Run when the node is clicked
 ---@field popover thurm.ViewNode? Shown next to the node while the pointer is over it
+---@field menu { title: string?, action: { name: string, args: any }?, checked: boolean? }[]? Opened by a right click; an item with neither title nor action is a separator
 
 --- Shows a view in the window until it is unmounted or the plugin stops; mounting the same id
 --- again replaces it. True when an app that draws views is connected.
