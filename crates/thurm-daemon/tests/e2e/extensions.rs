@@ -1395,3 +1395,70 @@ fn an_action_hears_the_selection_the_file_and_the_remote_host() {
     assert!(ctx.get("remote").is_none(), "{ctx}");
     answering.join().unwrap();
 }
+
+#[test]
+fn a_plugin_mounts_views_the_app_draws_until_the_plugin_leaves() {
+    let env = Env::new("ext-views");
+    let _d = env.start();
+    let (app, app_rx) = app_client(&env);
+    let (plugin, _rx) = ext_client(&env, "plugin");
+    let ring = json!({ "type": "ring", "value": 0.4, "children": [{ "type": "icon", "symbol": "sparkle" }] });
+
+    let r = call(
+        &plugin,
+        method::UI_MOUNT,
+        json!({ "id": "usage", "slot": "window.bottom_trailing", "view": ring }),
+    )
+    .unwrap();
+    assert_eq!(r, json!({ "shown": true }));
+    next(&app_rx, notice::VIEWS_CHANGED);
+    let views = call(&app, method::UI_VIEWS, Value::Null).unwrap();
+    assert_eq!(views[0]["id"], "usage");
+    assert_eq!(views[0]["owner"], "plugin");
+    assert_eq!(views[0]["slot"], "window.bottom_trailing");
+    assert_eq!(views[0]["view"]["children"][0]["symbol"], "sparkle");
+
+    // The same id replaces the view, in its place; another id lines up after it.
+    let text = json!({ "type": "text", "text": "hi" });
+    for (id, view) in [("usage", &text), ("clock", &text)] {
+        call(
+            &plugin,
+            method::UI_MOUNT,
+            json!({ "id": id, "slot": "window.bottom_trailing", "view": view }),
+        )
+        .unwrap();
+        next(&app_rx, notice::VIEWS_CHANGED);
+    }
+    let views = call(&app, method::UI_VIEWS, Value::Null).unwrap();
+    assert_eq!(views.as_array().unwrap().len(), 2);
+    assert_eq!(views[0]["id"], "usage");
+    assert_eq!(views[0]["view"]["type"], "text");
+    assert_eq!(views[1]["id"], "clock");
+
+    // What the app could not draw is refused.
+    for bad in [
+        json!({ "id": "x", "slot": "sidebar", "view": text }),
+        json!({ "id": "x", "slot": "window.bottom_trailing", "view": { "type": "bar", "value": 2 } }),
+    ] {
+        assert!(call(&plugin, method::UI_MOUNT, bad).is_err());
+    }
+
+    call(&plugin, method::UI_UNMOUNT, json!({ "id": "clock" })).unwrap();
+    next(&app_rx, notice::VIEWS_CHANGED);
+    assert_eq!(
+        call(&app, method::UI_VIEWS, Value::Null)
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+
+    // A plugin that stops takes its views with it.
+    drop(plugin);
+    next(&app_rx, notice::VIEWS_CHANGED);
+    assert_eq!(
+        call(&app, method::UI_VIEWS, Value::Null).unwrap(),
+        json!([])
+    );
+}

@@ -181,6 +181,36 @@ thurm.ui = {}
 ---@param pane integer?
 function thurm.ui.toast(text, pane) end
 
+---@class thurm.ViewNode
+---@field type "row"|"column"|"stack"|"text"|"icon"|"image"|"ring"|"bar"|"badge"|"spacer"
+---@field children thurm.ViewNode[]?
+---@field text string?
+---@field symbol string? An SF Symbol name, for `icon`
+---@field image string? A PNG, base64, for `image`
+---@field value number? How full a `ring` or `bar` is, from 0 to 1
+---@field color string? `primary`, `secondary`, `accent`, `green`, `yellow`, `orange`, `red` or `#rrggbb`
+---@field size number?
+---@field weight "regular"|"medium"|"bold"?
+---@field width number?
+---@field height number?
+---@field spacing number?
+---@field padding number?
+---@field background "pill"|"card"?
+---@field tooltip string?
+---@field action { name: string, args: any }? Run when the node is clicked
+---@field popover thurm.ViewNode? Shown next to the node while the pointer is over it
+
+--- Shows a view in the window until it is unmounted or the plugin stops; mounting the same id
+--- again replaces it. True when an app that draws views is connected.
+---@param slot "window.bottom_trailing"|"window.bottom_leading"|"window.top_trailing"
+---@param id string
+---@param view thurm.ViewNode
+---@return boolean shown
+function thurm.ui.mount(slot, id, view) end
+
+---@param id string
+function thurm.ui.unmount(id) end
+
 --- The user picks an item; returns it and its index, or nil when cancelled.
 ---@generic T
 ---@param opts { title: string?, placeholder: string?, items: T[] }

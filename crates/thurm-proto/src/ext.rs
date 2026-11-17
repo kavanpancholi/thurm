@@ -64,6 +64,14 @@ pub mod method {
     pub const UI_CONFIRM: &str = "ui.confirm";
     /// [`super::Reply`] to a [`super::notice::UI_REQUEST`], from the app that showed it.
     pub const UI_REPLY: &str = "ui.reply";
+    /// [`super::Mount`]: shows a view of the caller's in one of the window's [`super::SLOTS`],
+    /// until it unmounts it or stops. Mounting an `id` again replaces that view. The result is
+    /// `{shown}`: whether an app that draws views is connected.
+    pub const UI_MOUNT: &str = "ui.mount";
+    /// `{id}`: takes the caller's view down.
+    pub const UI_UNMOUNT: &str = "ui.unmount";
+    /// Every mounted view, for the app that draws them: `[MountedView]`.
+    pub const UI_VIEWS: &str = "ui.views";
     /// [`super::Exec`]: runs a program to its end. The result is [`super::ExecResult`].
     pub const EXEC: &str = "exec";
     /// `{level, message}`: a line for the caller's log.
@@ -97,6 +105,8 @@ pub mod notice {
     pub const UI_REQUEST: &str = "ui.request";
     /// `{id}`: a [`UI_REQUEST`] nobody waits for any more; take it down.
     pub const UI_CANCEL: &str = "ui.cancel";
+    /// The mounted views changed: ask for [`super::method::UI_VIEWS`] again.
+    pub const VIEWS_CHANGED: &str = "ui.views.changed";
     /// `{run, level, message}`: a line a script run by the receiver logged.
     pub const SCRIPT_LOG: &str = "script.log";
     /// The plugins changed (started, stopped, failed).
@@ -362,6 +372,171 @@ pub struct Confirm {
     pub cancel: String,
 }
 
+/// Places in the window a plugin can show a view in ([`method::UI_MOUNT`]): over a corner of
+/// the window's terminal area. Views in one slot line up side by side, in the order they were
+/// first mounted.
+pub const SLOTS: &[&str] = &[
+    "window.bottom_trailing",
+    "window.bottom_leading",
+    "window.top_trailing",
+];
+
+/// Most nodes a view may have, its popovers included.
+pub const MAX_VIEW_NODES: usize = 512;
+/// How deep a view's nodes may nest.
+pub const MAX_VIEW_DEPTH: usize = 16;
+/// Most bytes of a view as JSON, images included.
+pub const MAX_VIEW_BYTES: usize = 512 * 1024;
+/// Most views one plugin may have mounted.
+pub const MAX_VIEWS: usize = 16;
+
+/// Parameters of [`method::UI_MOUNT`].
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(default)]
+pub struct Mount {
+    /// The caller's name for it, to replace or unmount it ([`valid_action_name`]).
+    pub id: String,
+    /// One of [`SLOTS`].
+    pub slot: String,
+    pub view: ViewNode,
+}
+
+/// A view as the app draws it: whose it is, its id, slot and nodes.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(default)]
+pub struct MountedView {
+    /// Who mounted it, as [`ActionInfo::source`] (`plugin:usage`).
+    pub owner: String,
+    pub id: String,
+    pub slot: String,
+    pub view: ViewNode,
+}
+
+/// One node of a view. What it is comes from `type`; a field the type does not use is
+/// ignored, and a type the app does not know is drawn as nothing.
+///
+/// - `row`, `column`, `stack`: `children` side by side, one above another, or on top of each
+///   other (centered), `spacing` points apart.
+/// - `text`: `text`, `size` points (the app's text size when 0), `weight` (`regular`,
+///   `medium`, `bold`), `color`.
+/// - `icon`: the SF Symbol called `symbol`, `size` points, `color`.
+/// - `image`: a PNG, base64 in `image`, `width` by `height` points.
+/// - `ring`: a ring `size` points across, filled to `value` (0 to 1) in `color`, with its
+///   `children` drawn inside it.
+/// - `bar`: a bar `width` points wide (the row's width when 0), filled to `value` in `color`.
+/// - `badge`: a small dot with `text` (one or two characters) in it, in `color`.
+/// - `spacer`: empty room that grows in a row or a column.
+///
+/// Any node may have `padding`, a `background` (`pill`, `card`, or none), a `tooltip`, an
+/// `action` run when it is clicked, and a `popover`: another view shown next to it while the
+/// pointer is over it.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(default)]
+pub struct ViewNode {
+    #[serde(rename = "type")]
+    pub kind: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub children: Vec<ViewNode>,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub text: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub symbol: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub image: String,
+    /// How full a `ring` or `bar` is, from 0 to 1.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<f64>,
+    /// `primary`, `secondary`, `accent`, `green`, `yellow`, `orange`, `red`, or `#rrggbb`.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub color: String,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub size: f64,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub weight: String,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub width: f64,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub height: f64,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub spacing: f64,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub padding: f64,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub background: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub tooltip: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action: Option<ViewAction>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub popover: Option<Box<ViewNode>>,
+}
+
+fn is_zero(v: &f64) -> bool {
+    *v == 0.0
+}
+
+/// What clicking a node runs: an action, with these arguments, as [`method::ACTIONS_RUN`].
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+#[serde(default)]
+pub struct ViewAction {
+    pub name: String,
+    #[serde(skip_serializing_if = "Value::is_null")]
+    pub args: Value,
+}
+
+impl Mount {
+    /// Whether the app can draw it: a known slot, a valid id, and a view within the limits.
+    pub fn check(&self) -> Result<(), String> {
+        if !valid_action_name(&self.id) {
+            return Err(format!("{:?}: not a view id", self.id));
+        }
+        if !SLOTS.contains(&self.slot.as_str()) {
+            return Err(format!(
+                "{:?}: no such slot (there are {})",
+                self.slot,
+                SLOTS.join(", ")
+            ));
+        }
+        let bytes = serde_json::to_vec(&self.view).map_or(usize::MAX, |v| v.len());
+        if bytes > MAX_VIEW_BYTES {
+            return Err(format!(
+                "the view is {bytes} bytes, more than {MAX_VIEW_BYTES}"
+            ));
+        }
+        let mut nodes = 0;
+        self.view.check(1, &mut nodes)
+    }
+}
+
+impl ViewNode {
+    fn check(&self, depth: usize, nodes: &mut usize) -> Result<(), String> {
+        *nodes += 1;
+        if *nodes > MAX_VIEW_NODES {
+            return Err(format!("the view has more than {MAX_VIEW_NODES} nodes"));
+        }
+        if depth > MAX_VIEW_DEPTH {
+            return Err(format!("the view nests more than {MAX_VIEW_DEPTH} deep"));
+        }
+        if let Some(v) = self.value
+            && !(0.0..=1.0).contains(&v)
+        {
+            return Err(format!("value {v}: from 0 to 1"));
+        }
+        if let Some(a) = &self.action
+            && !valid_action_name(&a.name)
+        {
+            return Err(format!("{:?}: not an action name", a.name));
+        }
+        for c in &self.children {
+            c.check(depth + 1, nodes)?;
+        }
+        if let Some(p) = &self.popover {
+            p.check(depth + 1, nodes)?;
+        }
+        Ok(())
+    }
+}
+
 /// Parameters of [`method::EXEC`].
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 #[serde(default)]
@@ -499,6 +674,56 @@ mod tests {
         assert_eq!(v["id"], 3);
         assert_eq!(v["items"][0]["title"], "main");
         assert_eq!(serde_json::from_value::<UiRequest>(v).unwrap(), r);
+    }
+
+    #[test]
+    fn views_are_checked_before_an_app_draws_them() {
+        let ring: ViewNode = serde_json::from_value(serde_json::json!({
+            "type": "ring", "value": 0.6, "color": "orange", "size": 34,
+            "children": [{ "type": "icon", "symbol": "sparkle" }],
+            "action": { "name": "usage.refresh" },
+            "popover": { "type": "column", "children": [{ "type": "text", "text": "5-hour limit" }] },
+            "later": true,
+        }))
+        .unwrap();
+        assert_eq!(ring.kind, "ring");
+        assert_eq!(ring.children[0].symbol, "sparkle");
+        let mount = Mount {
+            id: "claude".into(),
+            slot: "window.bottom_trailing".into(),
+            view: ring.clone(),
+        };
+        assert_eq!(mount.check(), Ok(()));
+        let v = serde_json::to_value(&mount.view).unwrap();
+        assert_eq!(v["type"], "ring");
+        assert!(v.get("text").is_none(), "empty fields are left out");
+
+        let bad = |f: &dyn Fn(&mut Mount)| {
+            let mut m = mount.clone();
+            f(&mut m);
+            m.check().is_err()
+        };
+        assert!(bad(&|m| m.slot = "sidebar".into()));
+        assert!(bad(&|m| m.id = "a/b".into()));
+        assert!(bad(&|m| m.view.value = Some(1.5)));
+        assert!(bad(&|m| m.view.action = Some(ViewAction {
+            name: "".into(),
+            args: Value::Null
+        })));
+        assert!(bad(&|m| {
+            let mut deep = ViewNode::default();
+            for _ in 0..MAX_VIEW_DEPTH {
+                deep = ViewNode {
+                    children: vec![deep],
+                    ..Default::default()
+                };
+            }
+            m.view = deep;
+        }));
+        assert!(bad(
+            &|m| m.view.children = vec![ViewNode::default(); MAX_VIEW_NODES]
+        ));
+        assert!(bad(&|m| m.view.image = "A".repeat(MAX_VIEW_BYTES)));
     }
 
     #[test]
