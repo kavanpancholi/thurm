@@ -348,9 +348,54 @@ Launch presets in a remote workspace (⌘⇧P, ⌘⇧A) are the host's.
   layout and attach to the host's still-running panes. Tabs of panes that ended
   meanwhile close with a notice; panes the host has that the layout doesn't know
   open as new tabs.
-- **Pasting images.** An image pasted or dropped into a remote pane is written
-  to a private file on the host (in the daemon's runtime directory), and its
-  path is pasted.
+- **Files.** See [Files](#files).
+
+## Files
+
+Drop files on a remote pane, or copy them in Finder and pick **Send Copied Files to
+devbox…** in the pane's context menu, and they go to the host. A pasted screenshot or an image dragged out of a browser goes as
+`image-….png`. A toast shows the progress, with **Cancel**. Files dropped while
+others are on their way wait for them, so paths are typed in the order you
+dropped them. Once every file has
+arrived, the host's daemon types their paths into the pane, quoted and separated
+by spaces, as a paste, so an agent at its prompt gets them as one paste. If a
+file fails or you cancel before every file has arrived, nothing is typed and
+nothing is kept. Dropped and copied files are sent once you confirm them in the
+dialog that names them; a pasted screenshot or a dragged image, which is no file
+of this Mac's, is sent without asking. Pasting pastes text whenever there is some, even when the app that
+copied it put a file beside it: Finder's copies carry their names as text, so
+pasting them pastes the names. Folders are
+refused; drop the files in them instead.
+
+Uploads are kept on the host, readable by you only, in Thurm's state directory
+(`$XDG_STATE_HOME/thurm`, usually `~/.local/state/thurm`; `~/Library/Application
+Support/Thurm` on a Mac): `drops/<pane>/<batch>/<name>`. Names keep their last path component without control
+characters, at most 255 bytes, numbered (`name-2.txt`) when two in a batch are
+the same. Limits:
+
+| | |
+|---|---|
+| One file | 4 GiB |
+| Files in one drop | 256 |
+| Files on their way to one pane | 64 |
+| Drops not complete yet | 8 per app, 32 in all, and 512 files in them, sent or not |
+| Space left free on the host's disk | 1 GiB, and room for 10 000 more files: the oldest finished drops give way for the space, and an upload that still does not fit is refused |
+| Kept | 24 hours from when a drop was complete (one never complete: from its last write), 8 GiB and 1024 drops in all, drops on their way included (every file and folder counts as 4 KiB at least, an empty one too): the oldest finished drops go first, and a file that still does not fit is refused |
+
+The other way, ⌘⌥-click a path in a remote pane, or right-click it and pick
+**Quick Look**, to preview the host's file here (the toast shows it coming, with
+**Cancel**): relative paths use the pane's directory when you clicked, `~` is your
+home on the host. A `file://` link offers **Quick Look**
+and **Download** (to `~/Downloads`, with progress and **Cancel**) beside **Copy
+Path**. Previewed files are kept in the app's caches folder and fetched again
+only when they changed on the host. Kept previews and those downloading share
+256 MiB: a preview that does not fit beside the others stops with a message. Only regular files are sent, at most
+four at a time from one pane. A file that changes between the request and the
+end of sending fails instead of arriving mixed; try again.
+
+A host running an older Thurm keeps the earlier behavior: a pasted or dropped
+image is written to a private file on the host and its path pasted; other files
+insert their paths on this Mac.
 
 ## Ports
 
@@ -476,7 +521,7 @@ reach the Mac's disk, clipboard, or credentials without you doing something:
 - **Links.** ⌘-click opens `http` and `https` links from remote panes (a link
   to the host's `localhost` through a forward, see [Ports](#ports)), asks for
   other schemes, and never opens `file://` links (they are paths on the host):
-  it offers to copy the path instead.
+  it offers to copy the path, preview the file, or download it instead.
 - **ssh.** Agent forwarding, X11 forwarding, and remote and dynamic forwards
   are always off. The only forward is the local socket for the daemon.
 - **Ports.** The Mac only ever connects out to the host: a forward is a
@@ -496,7 +541,12 @@ reach the Mac's disk, clipboard, or credentials without you doing something:
   sites. This is how any port forward behaves; a host you would not give those
   cookies to should keep `forward_links = false`, and its links then open on the
   Mac as they are.
-- **Files.** Only what you paste or drop goes to the host.
+- **Files.** Only files you paste, drop, or send with **Send Copied Files** go to the
+  host, and only the files you preview or download come back. A download into
+  `~/Downloads` is written in a private folder of its own there, then moved in
+  under a free name (`report 2.pdf` beside an existing `report.pdf`) by a rename
+  that never replaces a file: nothing already in `~/Downloads` is written into,
+  moved or deleted.
 - **Over Tailscale.** The host admits this Mac by its Tailscale identity. On
   this Mac, the tunnel's socket and Thurm's dial socket (next to the daemon's)
   are yours alone, and the dial socket reaches tailnet devices only.

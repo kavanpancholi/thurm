@@ -560,19 +560,40 @@ extension SessionManager {
             if alert.runModal() == .alertFirstButtonReturn { NSWorkspace.shared.open(url) }
         case .copyPath(let path):
             let path = path ?? url.path
+            let transfers = Core.shared.canTransfer(pane.host)
             let alert = NSAlert()
             alert.messageText = "This is a file on \(pane.host)"
-            alert.informativeText = "\(path)\n\nFiles on a remote host are not opened on this Mac."
+            alert.informativeText = transfers
+                ? "\(path)\n\nPreview it or download a copy to this Mac."
+                : "\(path)\n\nFiles on a remote host are not opened on this Mac."
             alert.addButton(withTitle: "Copy Path")
+            if transfers {
+                alert.addButton(withTitle: "Quick Look")
+                alert.addButton(withTitle: "Download")
+            }
             alert.addButton(withTitle: "Cancel")
-            if alert.runModal() == .alertFirstButtonReturn {
+            switch alert.runModal() {
+            case .alertFirstButtonReturn:
                 let pb = NSPasteboard.general
                 pb.clearContents()
                 pb.setString(path, forType: .string)
+            case .alertSecondButtonReturn where transfers:
+                view(for: pane)?.previewRemote(.path(path), cwd: panes[pane]?.cwd)
+            case .alertThirdButtonReturn where transfers:
+                downloadRemoteFile(path, from: pane)
+            default:
+                break
             }
         case .ignore:
             break
         }
+    }
+
+    /// Copies the file at `path` on `pane`'s host into ~/Downloads (under a free name), and
+    /// shows it in Finder.
+    func downloadRemoteFile(_ path: String, from pane: PaneKey) {
+        let downloads = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]
+        view(for: pane)?.download(remotePath: path, into: downloads)
     }
 
     // MARK: Command palette

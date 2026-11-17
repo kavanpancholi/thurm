@@ -20,6 +20,7 @@ mod shell;
 mod streams;
 mod tailnet;
 mod transcript;
+mod transfer;
 mod upgrade;
 mod user_exec;
 
@@ -210,6 +211,8 @@ fn main() {
     }
     daemon.start_tailnet(tailnet);
     daemon.start_plugins();
+    transfer::raise_fd_limit();
+    transfer::start_pruning(&daemon);
 
     {
         // A few, so one slow repository doesn't hold up every pane's status.

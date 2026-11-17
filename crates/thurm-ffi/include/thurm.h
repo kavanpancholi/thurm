@@ -66,6 +66,50 @@ void thurm_disconnect(thurm_client *client);
 char *thurm_write_temp_file(thurm_client *client, const char *name, const uint8_t *data,
                             size_t len, char **err);
 
+/* Whether the daemon listed `cap` (e.g. "transfer") in its answer to the Hello. */
+bool thurm_has_capability(thurm_client *client, const char *cap);
+
+/* Files to and from the connection's host, on streams through its daemon ("transfer"
+ * capability; macOS only). Each runs on a thread of its own; `cb` gets JSON on that thread:
+ * {"done":n,"total":n} as bytes go, then once {"finished":true,"error":null|"...",
+ * "cancelled":bool,"unsupported":bool,"folder":bool,"not_found":bool (nothing at a
+ * download's path),...}. Both return an id for the cancel calls, or 0 when nothing started:
+ * then the final callback has already come, on the calling thread, before the return (bad
+ * arguments, or no thread to run on). */
+typedef void (*thurm_transfer_cb)(void *ctx, const char *json);
+
+/* Send files to `pane`'s host as one batch. `files_json`: [{"path":"/local/file"}, or with
+ * "name" to send it under another name]. Once all have landed, the daemon types their paths
+ * into the pane; if one fails, nothing is typed or kept there. A cancel that reaches the
+ * daemon before the batch is complete does the same; once the paths are typed it is too late,
+ * and the final callback says the upload went ("error":null). A folder is refused
+ * ("folder":true) before anything is sent. */
+uint64_t thurm_upload(thurm_client *client, thurm_pane_id pane, const char *files_json,
+                      thurm_transfer_cb cb, void *ctx);
+void thurm_upload_cancel(uint64_t transfer);
+
+/* Fetch the regular file at `path` on `pane`'s host (relative to the pane's directory, `~`
+ * for home) into `dest`, written beside it and then moved there, replacing whatever `dest` is
+ * (for a destination the caller owns; see thurm_download_to_folder for a folder others write to). Cancelling stops a download
+ * under way and deletes what it wrote beside `dest`, leaving a file already at `dest` as it was;
+ * a download already moved into place stays, and the final callback says it was saved. With `if_version` (or NULL)
+ * still the file's version, nothing is written ("not_modified":true). A file over `max_bytes`
+ * (0: no limit) is refused. The final callback has "info":{"name","path","size","modified"
+ * (ms since 1970),"version"|null}. */
+uint64_t thurm_download(thurm_client *client, thurm_pane_id pane, const char *path,
+                        const char *dest, const char *if_version, uint64_t max_bytes,
+                        thurm_transfer_cb cb, void *ctx);
+void thurm_download_cancel(uint64_t transfer);
+
+/* Like thurm_download, into the folder `dir` (one others write to, like ~/Downloads) as
+ * `name`, or `name 2`, `name 3`... when taken: written in a private folder of its own inside
+ * `dir`, then moved in by a rename that never replaces a file, so nothing already in `dir` is
+ * written into, moved or deleted. The final callback's "saved_to" is where it went. Cancel
+ * with thurm_download_cancel. */
+uint64_t thurm_download_to_folder(thurm_client *client, thurm_pane_id pane, const char *path,
+                                  const char *dir, const char *name, thurm_transfer_cb cb,
+                                  void *ctx);
+
 /* Re-read this Mac's config into the connection's terminal copies. The local daemon's
  * "ConfigReloaded" does this for its own connection; call it for remote connections. */
 void thurm_reload_engine(thurm_client *client);

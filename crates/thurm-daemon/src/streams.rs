@@ -29,6 +29,16 @@ pub enum Kind {
     Tcp { port: u16 },
     /// A TCP port on one of this host's loopback addresses.
     TcpAt { port: u16, at: Loopback },
+    /// A file coming in: the `index`th of an upload batch (`crate::transfer`).
+    Upload { batch: u64, index: u32 },
+    /// A file going out (`crate::transfer`): `path`, of `size` bytes, whose metadata
+    /// (`crate::transfer::stamp`) was `stamp` when reserved.
+    Download {
+        pane: u64,
+        path: std::path::PathBuf,
+        size: u64,
+        stamp: u64,
+    },
 }
 
 /// A stream reserved by a ticket.
@@ -67,7 +77,7 @@ impl Default for Streams {
 }
 
 /// [`stream::TICKET_TTL_MS`], or `THURM_STREAM_TICKET_MS` (tests).
-fn ticket_ttl() -> Duration {
+pub(crate) fn ticket_ttl() -> Duration {
     let ms = std::env::var("THURM_STREAM_TICKET_MS")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -252,6 +262,11 @@ fn serve_with<R: Read>(
     let (port, at) = match kind {
         Kind::Tcp { port } => (port, Loopback::Any),
         Kind::TcpAt { port, at } => (port, at),
+        _ => {
+            out.lock()
+                .close(StreamClose::Internal("not a TCP stream".into()));
+            return;
+        }
     };
     let tcp = match dial_loopback(port, at) {
         Ok(tcp) => tcp,

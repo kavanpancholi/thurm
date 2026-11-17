@@ -76,7 +76,13 @@ final class TerminalView: NSView, NSTextInputClient {
     private var lastMouseLocation: NSPoint?
     private var hoverLink: UInt16 = 0
     private var hoverSpan: (row: Int, start: Int, end: Int)?
-    private var previewURL: URL?
+    private var previewURL: URL? {
+        // A remote file stays in the cache while Quick Look shows it.
+        didSet {
+            guard previewURL != oldValue else { return }
+            previewCache.switchHeld(from: oldValue, to: previewURL)
+        }
+    }
     private weak var previewPanel: QLPreviewPanel?
 
     // Animation state.
@@ -95,6 +101,15 @@ final class TerminalView: NSView, NSTextInputClient {
     private var lockBadge: NSImageView?
     private var markedLabel: NSTextField?
     private var toastView: NSView?
+    /// The transfers under way from this pane, the first shown in the toast, and that toast.
+    private var transfers: [PaneTransfer] = []
+    private var transferToast: (box: NSView, label: NSTextField)?
+    /// Batches waiting for the one being sent: each goes when the one before it ends, so their
+    /// paths are typed in the order they were dropped.
+    /// `owned`: a file made here for the batch (a pasted image), deleted when the batch ends.
+    private var uploadQueue: [(files: [(path: String, name: String?)], what: String, item: PaneTransfer,
+                               owned: URL?)] = []
+    private var uploading = false
     private var restoredToastShown = false
     private var progressBar: ProgressBarView?
     private var offlineOverlay: OfflineOverlay?
@@ -123,6 +138,18 @@ final class TerminalView: NSView, NSTextInputClient {
         frameLink?.invalidate()
         blinkTimer?.invalidate()
         NotificationCenter.default.removeObserver(self)
+        endTransfers()
+        if let previewURL { previewCache.release(previewURL) }
+    }
+
+    /// The pane's view is going: transfers under way are cancelled (their ends clean up after
+    /// them), and batches still waiting are dropped with the images made for them.
+    private func endTransfers() {
+        for waiting in uploadQueue {
+            if let owned = waiting.owned { try? FileManager.default.removeItem(at: owned) }
+        }
+        uploadQueue.removeAll()
+        for transfer in transfers { transfer.cancel() }
     }
 
     // MARK: Layer
@@ -831,7 +858,9 @@ final class TerminalView: NSView, NSTextInputClient {
             ctx.timingFunction = Motion.timingFunction
             box.animator().alphaValue = 1
         }
+        // An earlier toast's fade and removal, still due, are not this one's.
         NSObject.cancelPreviousPerformRequests(withTarget: self, selector: #selector(fadeToast), object: nil)
+        NSObject.cancelPreviousPerformRequests(withTarget: self, selector: #selector(removeToast), object: nil)
         perform(#selector(fadeToast), with: nil, afterDelay: duration)
     }
 
@@ -865,6 +894,8 @@ final class TerminalView: NSView, NSTextInputClient {
     @objc private func removeToast() {
         toastView?.removeFromSuperview()
         toastView = nil
+        // A transfer under way comes back with its Cancel once the message is gone.
+        if !transfers.isEmpty { refreshTransferToast() }
     }
 
     /// "Restored" toast for panes that survived a daemon restart / reboot.
@@ -1365,22 +1396,96 @@ final class TerminalView: NSView, NSTextInputClient {
             return false
         }
         window?.makeFirstResponder(self)
-        Core.shared.paste(pane, text: text)
+        type(text)
         return true
     }
 
     @objc func paste(_ sender: Any?) {
+        paste(from: NSPasteboard.general)
+    }
+
+    /// Whether this pane's host takes files (tests set it).
+    var transfersFiles: Bool?
+
+    /// Where remote previews are fetched and kept (tests use their own).
+    /// Taken on first use: a pane that never previews a remote file never opens the cache.
+    lazy var previewCache = RemoteFileCache.shared
+
+    /// Takes what a paste or drop types into the pane, in place of sending it (tests).
+    var pasteText: ((String) -> Void)?
+
+    /// Types `text` into the pane as a paste.
+    private func type(_ text: String) {
+        if let pasteText { return pasteText(text) }
+        Core.shared.paste(pane, text: text)
+    }
+
+    /// Asks whether to send copied or dropped files to the host (tests answer for the user).
+    var confirmSend: (([URL], HostId) -> Bool)?
+
+    /// "Send 2 files to devbox?", naming every one of them.
+    static func askToSend(_ urls: [URL], _ host: HostId) -> Bool {
+        sendAlert(urls, host).runModal() == .alertFirstButtonReturn
+    }
+
+    /// The question `askToSend` asks: every file it would send is listed, in a list that
+    /// scrolls, none left out.
+    static func sendAlert(_ urls: [URL], _ host: HostId) -> NSAlert {
+        let alert = NSAlert()
+        alert.messageText = urls.count == 1 ? "Send \(urls[0].lastPathComponent) to \(host)?"
+            : "Send \(urls.count) files to \(host)?"
+        alert.informativeText = "These files are copied to the host and their paths there typed."
+        let list = NSTextView(frame: NSRect(x: 0, y: 0, width: 420, height: 0))
+        list.isEditable = false
+        list.isSelectable = true
+        list.drawsBackground = false
+        list.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+        list.string = urls.map(\.path).joined(separator: "\n")
+        list.isVerticallyResizable = true
+        list.textContainer?.widthTracksTextView = true
+        list.sizeToFit()
+        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 420,
+                                                height: min(160, max(40, list.frame.height + 8))))
+        scroll.hasVerticalScroller = true
+        scroll.borderType = .bezelBorder
+        scroll.documentView = list
+        alert.accessoryView = scroll
+        alert.addButton(withTitle: "Send")
+        alert.addButton(withTitle: "Cancel")
+        return alert
+    }
+
+    /// Starts an upload (`Core.startUpload`; tests stand in for it).
+    var uploader: Core.UploadStarter = Core.startUpload
+
+    private var hostTakesFiles: Bool {
+        pane.isRemote && (transfersFiles ?? Core.shared.canTransfer(pane.host))
+    }
+
+    func paste(from pb: NSPasteboard) {
         if isOffline { return }
-        let pb = NSPasteboard.general
+        // Files and images copied here go to a remote pane's host as files. Files only once
+        // asked: any app can put a file's address on the pasteboard.
+        if hostTakesFiles {
+            switch Self.uploadPlan(pb, pasting: true) {
+            case .none: break
+            case .files(let urls):
+                if (confirmSend ?? Self.askToSend)(urls, pane.host) {
+                    startUpload(.files(urls), from: pb)
+                }
+                return
+            case let plan: return startUpload(plan, from: pb)
+            }
+        }
         if pb.string(forType: .string) == nil, pb.availableType(from: [.png, .tiff]) != nil {
             // An image: its file's path (on the pane's host).
             if let path = imagePath(pb), let escaped = shellEscape(path) {
-                Core.shared.paste(pane, text: escaped + " ")
+                type(escaped + " ")
             }
             return
         }
         guard let text = pb.string(forType: .string), !text.isEmpty, pasteConfirmed(text) else { return }
-        Core.shared.paste(pane, text: text)
+        type(text)
     }
 
     /// `confirm_multiline_paste`: several lines into a program without bracketed paste would
@@ -1412,11 +1517,30 @@ final class TerminalView: NSView, NSTextInputClient {
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         if isOffline { return false }
+        // Files dropped on a remote pane go to its host, and their paths there are typed. Files
+        // only once asked, by name: the app a drag comes from may put a file's address in it
+        // beside what it shows.
+        if hostTakesFiles {
+            switch Self.uploadPlan(sender.draggingPasteboard, pasting: false) {
+            case .none: break
+            case .files(let urls):
+                window?.makeKeyAndOrderFront(nil)
+                window?.makeFirstResponder(self)
+                guard (confirmSend ?? Self.askToSend)(urls, pane.host) else { return false }
+                startUpload(.files(urls), from: sender.draggingPasteboard)
+                return true
+            case let plan:
+                window?.makeKeyAndOrderFront(nil)
+                window?.makeFirstResponder(self)
+                startUpload(plan, from: sender.draggingPasteboard)
+                return true
+            }
+        }
         guard let text = dropText(sender.draggingPasteboard, materialize: true) else { return false }
         window?.makeKeyAndOrderFront(nil)
         window?.makeFirstResponder(self)
         guard pasteConfirmed(text) else { return false }
-        Core.shared.paste(pane, text: text)
+        type(text)
         return true
     }
 
@@ -1441,6 +1565,261 @@ final class TerminalView: NSView, NSTextInputClient {
         }
         if let text = pb.string(forType: .string), !text.isEmpty { return text }
         return nil
+    }
+
+    /// What a drop or paste on a remote pane sends to its host.
+    enum UploadPlan: Equatable {
+        /// Nothing: text, a link, or nothing usable.
+        case none
+        /// Files on this Mac.
+        case files([URL])
+        /// A folder is among the files: nothing is sent.
+        case folder(String)
+        /// Image data (a screenshot, an image dragged out of a browser).
+        case image
+    }
+
+    /// What `pb` sends to a remote pane's host. A paste with text pastes the text, whatever
+    /// else is there: any app may put a file's address beside the text it copied, and nothing
+    /// on the pasteboard tells such a file from one the user meant to send. Files copied with
+    /// their names as text (Finder's) go with **Send Copied Files**, asked for by name.
+    static func uploadPlan(_ pb: NSPasteboard, pasting: Bool) -> UploadPlan {
+        let fileOpts: [NSPasteboard.ReadingOptionKey: Any] = [.urlReadingFileURLsOnly: true]
+        let urls = pb.readObjects(forClasses: [NSURL.self], options: fileOpts) as? [URL] ?? []
+        if pasting, let text = pb.string(forType: .string),
+           !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return .none
+        }
+        if !urls.isEmpty {
+            for url in urls {
+                var isDir: ObjCBool = false
+                if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue {
+                    return .folder(url.lastPathComponent)
+                }
+            }
+            return .files(urls)
+        }
+        if pb.availableType(from: [.png, .tiff]) != nil, !pasting || pb.string(forType: .string) == nil {
+            return .image
+        }
+        return .none
+    }
+
+    /// **Send Copied Files**: the files on the pasteboard go to the host, asked for by name,
+    /// its text aside. What a user picks to send files they copied, where a paste pastes text.
+    @objc func sendCopiedFiles(_ sender: Any?) {
+        sendCopiedFiles(from: NSPasteboard.general)
+    }
+
+    func sendCopiedFiles(from pb: NSPasteboard) {
+        guard !isOffline, hostTakesFiles else { return }
+        switch Self.uploadPlan(pb, pasting: false) {
+        case .files(let urls):
+            if (confirmSend ?? Self.askToSend)(urls, pane.host) {
+                startUpload(.files(urls), from: pb)
+            }
+        case .folder(let name):
+            startUpload(.folder(name), from: pb)
+        case .image, .none:
+            showToast("No files were copied.")
+        }
+    }
+
+    /// Whether `pb` has files to send to the host (for **Send Copied Files**).
+    static func hasCopiedFiles(_ pb: NSPasteboard) -> Bool {
+        let fileOpts: [NSPasteboard.ReadingOptionKey: Any] = [.urlReadingFileURLsOnly: true]
+        return !((pb.readObjects(forClasses: [NSURL.self], options: fileOpts) as? [URL]) ?? []).isEmpty
+    }
+
+    /// Sends what `plan` names to the pane's host as one batch, with a toast that shows how far
+    /// it got and can cancel it.
+    private func startUpload(_ plan: UploadPlan, from pb: NSPasteboard) {
+        let host = pane.host
+        var files: [(path: String, name: String?)] = []
+        var owned: URL?
+        switch plan {
+        case .none:
+            return
+        case .folder(let name):
+            showToast("\(name) is a folder: only files are sent to \(host).", duration: 5)
+            return
+        case .files(let urls):
+            files = urls.map { ($0.path, nil) }
+        case .image:
+            guard let path = Self.saveDroppedImage(pb) else {
+                showToast("Could not read the image.", duration: 5)
+                return
+            }
+            files = [(path, (path as NSString).lastPathComponent)]
+            owned = URL(fileURLWithPath: path)
+        }
+        let what = files.count == 1 ? (files[0].name ?? (files[0].path as NSString).lastPathComponent)
+            : "\(files.count) files"
+        // A batch dropped while another is sent waits for it: neither is given up. Waiting, it
+        // is behind the one being sent in the toast; its Cancel comes once it is sent.
+        let item = PaneTransfer(text: "Waiting to send \(what) to \(host)…")
+        uploadQueue.append((files, what, item, owned))
+        beginTransfer(item)
+        sendNextUpload()
+    }
+
+    /// Starts the first waiting batch, unless one is being sent.
+    private func sendNextUpload() {
+        guard !uploading, !uploadQueue.isEmpty else { return }
+        let (files, what, item, owned) = uploadQueue.removeFirst()
+        let host = pane.host
+        uploading = true
+        var finished = false
+        updateTransfer(item, "Sending \(what) to \(host)…")
+        let cancel = uploader(pane, files, { [weak self] p in
+            guard !finished else { return }
+            self?.updateTransfer(item, "Sending \(what) to \(host)… \(Int(p.fraction * 100))%")
+        }, { [weak self] outcome in
+            finished = true
+            // The image made for it is on the host now, or not wanted.
+            if let owned { try? FileManager.default.removeItem(at: owned) }
+            guard let self else { return }
+            self.endTransfer(item)
+            if outcome.cancelled {
+                self.showToast("Upload of \(what) cancelled")
+            } else if outcome.folder {
+                self.showToast("Only files are sent to \(host), not folders.", duration: 5)
+            } else if let e = outcome.error {
+                self.showToast("Could not send \(what) to \(host): \(e)", duration: 6)
+            }
+            self.uploading = false
+            self.sendNextUpload()
+        })
+        item.cancel = cancel ?? {}
+    }
+
+    /// Downloads the file at `path` on this pane's host into `dir` (`~/Downloads`) under a
+    /// free name, with progress and Cancel in the toast. Shows the file in Finder when done.
+    func download(remotePath path: String, into dir: URL,
+                  start: Core.FolderDownloadStarter = Core.startFolderDownload,
+                  reveal: @escaping (URL) -> Void = { NSWorkspace.shared.activateFileViewerSelecting([$0]) }) {
+        let name = (path as NSString).lastPathComponent
+        let host = pane.host
+        let item = PaneTransfer(text: "Downloading \(name) from \(host)…")
+        beginTransfer(item)
+        var finished = false
+        let cancel = start(pane, path, dir, name.isEmpty ? "file" : name, { [weak self] p in
+            guard !finished else { return }
+            self?.updateTransfer(item, "Downloading \(name) from \(host)… \(Int(p.fraction * 100))%")
+        }, { [weak self] outcome in
+            finished = true
+            self?.endTransfer(item)
+            if outcome.cancelled {
+                self?.showToast("Download of \(name) cancelled")
+                return
+            }
+            guard outcome.error == nil, let saved = outcome.savedTo else {
+                self?.showToast("Could not download \(name): \(outcome.error ?? "nothing was saved")", duration: 6)
+                return
+            }
+            let dest = URL(fileURLWithPath: saved)
+            self?.showToast("Downloaded \(dest.lastPathComponent) to \(dir.lastPathComponent)")
+            reveal(dest)
+        })
+        item.cancel = cancel ?? {}
+    }
+
+    // MARK: Transfer toast
+
+    private func beginTransfer(_ item: PaneTransfer) {
+        transfers.append(item)
+        refreshTransferToast()
+    }
+
+    private func updateTransfer(_ item: PaneTransfer, _ text: String) {
+        item.text = text
+        if transfers.first === item { refreshTransferToast() }
+    }
+
+    private func endTransfer(_ item: PaneTransfer) {
+        transfers.removeAll { $0 === item }
+        refreshTransferToast()
+    }
+
+    /// The first transfer, and how many more, or no toast once none is left. A message shown
+    /// meanwhile (an error, a result) stays its time: the transfer comes back once it is gone
+    /// (`removeToast`).
+    private func refreshTransferToast() {
+        guard let first = transfers.first else { return hideTransferToast() }
+        if let shown = toastView, shown !== transferToast?.box {
+            transferToast?.label.stringValue = first.text
+            return
+        }
+        let more = transfers.count - 1
+        showTransferToast(more > 0 ? "\(first.text) (\(more) more)" : first.text)
+    }
+
+    /// The message a toast shows now, other than the transfer toast's.
+    var shownMessage: String? {
+        guard let shown = toastView, shown !== transferToast?.box else { return nil }
+        return shown.subviews.compactMap { ($0 as? NSTextField)?.stringValue }.first
+    }
+
+    /// Whether the transfer toast, with its Cancel, is showing, and what it says.
+    var shownTransfer: String? {
+        guard let t = transferToast, t.box === toastView, t.box.superview === self, t.box.alphaValue > 0
+        else { return nil }
+        return t.label.stringValue
+    }
+
+    /// The transfer toast, made or updated: stays until the transfers end. A transient toast
+    /// shown meanwhile must not take it down with its fade.
+    private func showTransferToast(_ text: String) {
+        NSObject.cancelPreviousPerformRequests(withTarget: self, selector: #selector(fadeToast), object: nil)
+        NSObject.cancelPreviousPerformRequests(withTarget: self, selector: #selector(removeToast), object: nil)
+        if let t = transferToast, t.box === toastView {
+            t.box.alphaValue = 1
+            t.label.stringValue = text
+            t.label.sizeToFit()
+            t.box.frame.size.width = t.label.frame.width + 90
+            layoutOverlays()
+            return
+        }
+        toastView?.removeFromSuperview()
+        let chrome = SessionManager.shared.config.chrome
+        let label = NSTextField(labelWithString: text)
+        label.font = NSFont.systemFont(ofSize: 11, weight: .medium)
+        label.textColor = chrome.contentPrimary
+        label.sizeToFit()
+        let cancel = NSButton(title: "Cancel", target: self, action: #selector(cancelShownTransfer(_:)))
+        cancel.bezelStyle = .inline
+        cancel.controlSize = .small
+        cancel.font = NSFont.systemFont(ofSize: 11)
+        cancel.sizeToFit()
+        let height = max(label.frame.height, cancel.frame.height) + 8
+        let box = NSView(frame: NSRect(x: 0, y: 0, width: label.frame.width + 90, height: height))
+        box.wantsLayer = true
+        box.layer?.backgroundColor = chrome.surfaceRaised.withAlphaComponent(0.92).cgColor
+        box.layer?.cornerRadius = ChromeRadius.control
+        label.frame.origin = NSPoint(x: 10, y: (height - label.frame.height) / 2)
+        label.autoresizingMask = [.maxXMargin]
+        cancel.frame.origin = NSPoint(x: box.frame.width - cancel.frame.width - 8,
+                                      y: (height - cancel.frame.height) / 2)
+        cancel.autoresizingMask = [.minXMargin]
+        box.addSubview(label)
+        box.addSubview(cancel)
+        addSubview(box)
+        toastView = box
+        transferToast = (box, label)
+        layoutOverlays()
+    }
+
+    private func hideTransferToast() {
+        if let t = transferToast, t.box === toastView {
+            toastView?.removeFromSuperview()
+            toastView = nil
+        }
+        transferToast = nil
+    }
+
+    /// The toast's Cancel: stops the transfer it shows.
+    @objc func cancelShownTransfer(_ sender: Any?) {
+        transfers.first?.cancel()
     }
 
     /// The pasteboard's image as PNG.
@@ -1850,6 +2229,11 @@ final class TerminalView: NSView, NSTextInputClient {
         copyItem.target = self
         let pasteItem = menu.addItem(withTitle: "Paste", action: #selector(paste(_:)), keyEquivalent: "")
         pasteItem.target = self
+        if hostTakesFiles, Self.hasCopiedFiles(NSPasteboard.general) {
+            let sendItem = menu.addItem(withTitle: "Send Copied Files to \(pane.host)…",
+                                        action: #selector(sendCopiedFiles(_:)), keyEquivalent: "")
+            sendItem.target = self
+        }
         let pathItem = menu.addItem(withTitle: "Insert Path…", action: #selector(insertPath(_:)), keyEquivalent: "")
         pathItem.target = self
         menu.addItem(NSMenuItem.separator())
@@ -1878,25 +2262,64 @@ final class TerminalView: NSView, NSTextInputClient {
     var openPreview: ((URL) -> Void)?
 
     private func quickLook(_ request: FilePreviewRequest) {
+        if request.isRemote, Core.shared.canTransfer(pane.host) {
+            return previewRemote(request.reference, cwd: request.cwd)
+        }
         do {
             let url = try request.reference.localFile(cwd: request.cwd, isRemote: request.isRemote)
-            if let openPreview { return openPreview(url) }
-            guard let window, let panel = QLPreviewPanel.shared() else { return }
-            window.makeKeyAndOrderFront(nil)
-            window.makeFirstResponder(self)
-            previewURL = url
-            panel.makeKeyAndOrderFront(nil)
-            panel.updateController()
-            guard panel.currentController as AnyObject? === self else {
-                previewURL = nil
-                if panel.currentController == nil { panel.orderOut(nil) }
-                showToast("Quick Look could not open the preview.", duration: 5)
-                return
-            }
-            panel.reloadData()
+            present(url)
         } catch {
             showToast(error.localizedDescription, duration: 6)
         }
+    }
+
+    /// Fetches a file of this remote pane's host (or finds it cached) and previews it.
+    /// With progress and Cancel in the pane's transfer toast until it is shown or fails.
+    func previewRemote(_ reference: TerminalFileReference, cwd: String?) {
+        let host = pane.host
+        let name: String
+        switch reference {
+        case .path(let path): name = (path as NSString).lastPathComponent
+        case .fileURL(let url): name = url.lastPathComponent
+        }
+        let item = PaneTransfer(text: "Fetching \(name) from \(host)…")
+        beginTransfer(item)
+        var finished = false
+        let cancel = previewCache.fetch(reference, pane: pane, cwd: cwd, progress: { [weak self] p in
+            guard !finished else { return }
+            self?.updateTransfer(item, "Fetching \(name) from \(host)… \(Int(p.fraction * 100))%")
+        }) { [weak self] result in
+            finished = true
+            guard let self else { return }
+            self.endTransfer(item)
+            switch result {
+            case .success(let url):
+                self.present(url)
+            case .failure(let error as RemoteFileError) where error == .cancelled:
+                self.showToast("Preview of \(name) cancelled")
+            case .failure(let error):
+                self.showToast(error.localizedDescription, duration: 6)
+            }
+        }
+        item.cancel = cancel
+    }
+
+    /// Shows `url`, a file on this Mac, in Quick Look.
+    private func present(_ url: URL) {
+        if let openPreview { return openPreview(url) }
+        guard let window, let panel = QLPreviewPanel.shared() else { return }
+        window.makeKeyAndOrderFront(nil)
+        window.makeFirstResponder(self)
+        previewURL = url
+        panel.makeKeyAndOrderFront(nil)
+        panel.updateController()
+        guard panel.currentController as AnyObject? === self else {
+            previewURL = nil
+            if panel.currentController == nil { panel.orderOut(nil) }
+            showToast("Quick Look could not open the preview.", duration: 5)
+            return
+        }
+        panel.reloadData()
     }
 
     override func acceptsPreviewPanelControl(_ panel: QLPreviewPanel!) -> Bool {
@@ -1939,6 +2362,16 @@ extension TerminalView: QLPreviewPanelDataSource {
     func previewPanel(_ panel: QLPreviewPanel!, previewItemAt index: Int) -> QLPreviewItem! {
         guard index == 0 else { return nil }
         return previewURL as NSURL?
+    }
+}
+
+/// A transfer a pane's toast shows: what it says, and what Cancel does.
+final class PaneTransfer {
+    var text: String
+    var cancel: () -> Void = {}
+
+    init(text: String) {
+        self.text = text
     }
 }
 
