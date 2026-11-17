@@ -222,9 +222,7 @@ impl Daemon {
             }
             method::UI_UNMOUNT => {
                 let id = str_param(&p, "id")?;
-                if self.unmount_views(|v| v.client == client.id && v.id == id) {
-                    self.views_changed();
-                }
+                self.unmount_views(|v| v.client == client.id && v.id == id);
                 Ok(Value::Null)
             }
             method::UI_PICK => {
@@ -485,16 +483,13 @@ impl Daemon {
         if self.ext.registry.lock().client_gone(client) {
             self.actions_changed();
         }
-        if self.unmount_views(|v| v.client == client) {
-            self.views_changed();
-        }
+        self.unmount_views(|v| v.client == client);
     }
 
     /// Shows `mount` for `client`, replacing its view of the same id. Refused once the client
     /// is gone (checked under the views' lock, which its removal takes after setting `gone`).
     fn mount_view(&self, client: &Client, mount: ext::Mount) -> Result<(), String> {
-        {
-            let mut views = self.ext.views.lock();
+        self.change_views(|views| {
             if client.gone.load(Ordering::SeqCst) {
                 return Err("this client was disconnected".into());
             }
@@ -515,32 +510,41 @@ impl Daemon {
                 }
                 None => views.push(view),
             }
+            Ok(true)
+        })
+    }
+
+    /// Takes down the views `gone` picks.
+    fn unmount_views(&self, gone: impl Fn(&ext::MountedView) -> bool) {
+        let _ = self.change_views(|views| {
+            let before = views.len();
+            views.retain(|v| !gone(v));
+            Ok(views.len() != before)
+        });
+    }
+
+    /// Changes the views with `f` and, when it says they changed, sends them to the apps that
+    /// draw them, under the same lock: notices go out in the order the changes were made.
+    fn change_views(
+        &self,
+        f: impl FnOnce(&mut Vec<ext::MountedView>) -> Result<bool, String>,
+    ) -> Result<(), String> {
+        let mut views = self.ext.views.lock();
+        if f(&mut views)? {
+            let notice = json!({ "views": *views });
+            self.notify_clients(
+                |c| c.ext_ui.load(Ordering::Relaxed),
+                notice::VIEWS_CHANGED,
+                &notice,
+            );
         }
-        self.views_changed();
         Ok(())
     }
 
-    /// Takes down the views `gone` picks; whether there were any.
-    fn unmount_views(&self, gone: impl Fn(&ext::MountedView) -> bool) -> bool {
-        let mut views = self.ext.views.lock();
-        let before = views.len();
-        views.retain(|v| !gone(v));
-        views.len() != before
-    }
-
-    /// The mounted views, as the app that draws them gets them.
-    pub(super) fn views_notice(&self) -> Value {
-        json!({ "views": *self.ext.views.lock() })
-    }
-
-    /// Sends the apps that draw views every view mounted now.
-    fn views_changed(&self) {
-        let views = self.views_notice();
-        self.notify_clients(
-            |c| c.ext_ui.load(Ordering::Relaxed),
-            notice::VIEWS_CHANGED,
-            &views,
-        );
+    /// Sends `client` the views mounted now, as it starts drawing them.
+    pub(super) fn send_views(&self, client: &Client) {
+        let views = self.ext.views.lock();
+        send_ext(client, notice::VIEWS_CHANGED, &json!({ "views": *views }));
     }
 
     /// The config's `[[commands]]` as actions; called whenever the config is applied.
