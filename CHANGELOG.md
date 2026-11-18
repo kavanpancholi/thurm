@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.25.0 - 2026-11-18
+
+Thurm 0.24.0 opens remote dev servers on this Mac and copies files to and from remote hosts. It also adds a sidebar list of tabs for every host.
+
+### New features
+
+- Remote hosts now carry byte streams through the daemon connection. Port forwards and file copies use these streams.
+- Command-click on a link to a port on a remote host now opens a forward on this Mac. Set `forward_links = false` in a `[[remote]]` entry to open such links on this Mac.
+- Drop or paste files on a remote pane to upload them to the host. Quick Look previews remote files, and their file links offer Download.
+- Plugins receive port, upload and forward events. Plugins can also open and close forwards.
+- Clipboard tools such as `pbcopy`, `xclip` and `wl-copy` on a remote host now reach the Mac clipboard. Run `thurm remote doctor` on a Linux host to install them.
+- Run `thurm cp` to copy files between this Mac and a remote host. Run `thurm remote forwards` to list open forwards and their connections.
+- The selected sidebar row and tab have a raised pill tinted from the theme background. It replaces the faint grey fill.
+- `thurm remote add NAME ADDRESS` takes one address for an ssh or tailnet host. Thurm refuses an address that is already saved under another name.
+- A hosts button in the sidebar lists the tabs of every host, each under its own header. Turn it on with View > Tabs by Host or `window.sidebar_by_host`. It is off by default.
+
 ## v0.24.0 - 2026-11-16
 
 This release lets you run a command out of sight in a minimized card. You can also move the chips of minimized cards where you need them.
