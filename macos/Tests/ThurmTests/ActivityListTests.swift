@@ -98,6 +98,7 @@ final class ActivityListViewTests: XCTestCase {
         manager.config = savedConfig
         manager.workspaces = savedWorkspaces
         manager.panes = savedPanes
+        TabSidebarViewController.isConnected = { Core.shared.isConnected($0) }
         Remotes.shared.pendingCloses = [:]
         super.tearDown()
     }
@@ -132,8 +133,171 @@ final class ActivityListViewTests: XCTestCase {
             switch outline.item(atRow: row) {
             case let g as SidebarGroup: return g.name
             case let box as TabBox: return box.tab.pane.map { String($0.id) } ?? "tab"
+            case let box as NewWorkspaceBox: return box.title
             default: return "?"
             }
+        }
+    }
+
+    /// By host: This Mac's workspaces with their tabs, then a remote that is not connected,
+    /// with its state and none of its tabs. Clicking another workspace's tab switches to it, and
+    /// the window it comes into lists the same rows with that tab selected.
+    func testByHostListsEveryHostAndAClickedTabKeepsTheList() throws {
+        let first = try tabs()
+        let remote = manager.makeWorkspace(name: "far", host: "devbox")
+        remote.hiddenTabs = [TabLayout(title: nil, root: .pane(PaneKey("devbox", 9)), focused: 9, zoomed: nil)]
+        manager.config.remoteNames = ["devbox"]
+        manager.config.sidebarByHost = true
+        let sidebar = try XCTUnwrap(first.sidebar)
+        sidebar.reload()
+        let outline = try outline(sidebar)
+        let rows = ["This Mac", "main", "tab", "tab", "tab", "api", "tab", "devbox"]
+        XCTAssertEqual(listed(outline), rows)
+        XCTAssertEqual((outline.item(atRow: 7) as? SidebarGroup)?.state, Remotes.shared.phaseLabel("devbox"))
+        XCTAssertEqual(outline.selectedRow, 2)
+        // The top names what is listed, and offers the hosts, not the workspace picker.
+        let title = try XCTUnwrap(sidebar.view.subviews.compactMap { $0 as? NSButton }.first)
+        XCTAssertEqual(title.title, "All Hosts")
+        XCTAssertEqual(title.action, NSSelectorFromString("showHostsPopover:"))
+
+        // Narrowed to one host, the top names it (and its state). A host with nothing listed
+        // keeps its header, with its state.
+        manager.config.sidebarHost = "devbox"
+        sidebar.reload()
+        XCTAssertEqual(listed(outline), ["devbox"])
+        XCTAssertEqual((outline.item(atRow: 0) as? SidebarGroup)?.state, Remotes.shared.phaseLabel("devbox"))
+        XCTAssertEqual(title.title, "devbox · \(Remotes.shared.phaseLabel("devbox"))")
+        manager.config.sidebarHost = localHost
+        sidebar.reload()
+        XCTAssertEqual(listed(outline), Array(rows.dropFirst().dropLast()))
+        XCTAssertEqual(title.title, "This Mac")
+        manager.config.sidebarHost = nil
+        sidebar.reload()
+
+        click(6, in: outline)
+        let api = try XCTUnwrap(manager.workspaces.first { $0.name == "api" })
+        let shown = try XCTUnwrap(manager.controllerShowing(api))
+        controllers += manager.group(of: shown).filter { c in !controllers.contains { $0 === c } }
+        let other = try self.outline(try XCTUnwrap(shown.sidebar))
+        XCTAssertEqual(listed(other), rows)
+        XCTAssertEqual(other.selectedRow, 6)
+    }
+
+    /// A click on a tab of a connected remote host switches to its workspace, and the window it
+    /// comes into lists the same hosts with that tab selected.
+    func testByHostClickOnARemoteTabKeepsTheList() throws {
+        let first = try tabs()
+        let remote = manager.makeWorkspace(name: "far", host: "devbox")
+        remote.hiddenTabs = [TabLayout(title: nil, root: .pane(PaneKey("devbox", 9)), focused: 9, zoomed: nil)]
+        manager.config.remoteNames = ["devbox"]
+        manager.config.sidebarByHost = true
+        TabSidebarViewController.isConnected = { $0 == "devbox" }
+        let sidebar = try XCTUnwrap(first.sidebar)
+        sidebar.reload()
+        let outline = try outline(sidebar)
+        let rows = ["This Mac", "main", "tab", "tab", "tab", "api", "tab", "devbox", "tab"]
+        XCTAssertEqual(listed(outline), rows)
+        XCTAssertNil((outline.item(atRow: 7) as? SidebarGroup)?.state)
+
+        click(8, in: outline)
+        let shown = try XCTUnwrap(manager.controllerShowing(remote))
+        controllers += manager.group(of: shown).filter { c in !controllers.contains { $0 === c } }
+        XCTAssertEqual(shown.focusedPane, PaneKey("devbox", 9))
+        let other = try self.outline(try XCTUnwrap(shown.sidebar))
+        XCTAssertEqual(listed(other), rows)
+        XCTAssertEqual(other.selectedRow, 8)
+    }
+
+    /// A host's only workspace is listed without a header of its name; off, the top names
+    /// where the workspace runs and opens the workspace picker.
+    func testByHostListsAHostsOnlyWorkspaceWithoutItsName() throws {
+        let first = try tabs()
+        manager.workspaces.removeAll { $0.name == "api" }
+        let sidebar = try XCTUnwrap(first.sidebar)
+        sidebar.reload()
+        let outline = try outline(sidebar)
+        let title = try XCTUnwrap(sidebar.view.subviews.compactMap { $0 as? NSButton }.first)
+        XCTAssertEqual(title.title, "This Mac")
+        XCTAssertEqual(title.action, NSSelectorFromString("showWorkspaceMenu:"))
+        manager.config.sidebarByHost = true
+        sidebar.reload()
+        XCTAssertEqual(listed(outline), ["This Mac", "tab", "tab", "tab"])
+        XCTAssertEqual(outline.selectedRow, 1)
+
+        // A filter naming a host that is gone lists every host, This Mac under its header, also
+        // when it is the only host left.
+        manager.config.sidebarHost = "gone"
+        sidebar.reload()
+        XCTAssertEqual(listed(outline), ["This Mac", "tab", "tab", "tab"])
+        XCTAssertEqual(title.title, "All Hosts")
+        manager.config.sidebarHost = localHost
+        sidebar.reload()
+        XCTAssertEqual(listed(outline), ["tab", "tab", "tab"])
+        XCTAssertEqual(title.title, "This Mac")
+    }
+
+    /// A window showing a workspace on a host that is not connected: that workspace's tabs and
+    /// agents are listed, the host's other workspaces' are not; This Mac, without a workspace,
+    /// offers one, which the keyboard and VoiceOver open too.
+    func testByHostOfflineHostListsOnlyTheShownWorkspace() throws {
+        manager.config.remoteNames = ["devbox"]
+        let far = manager.makeWorkspace(name: "far", host: "devbox")
+        let other = manager.makeWorkspace(name: "devbox-quiet-otter", host: "devbox")
+        other.hiddenTabs = [TabLayout(title: nil, root: .pane(PaneKey("devbox", 8)), focused: 8, zoomed: nil)]
+        let c = manager.makeController(root: .leaf(PaneKey("devbox", 9)), focused: PaneKey("devbox", 9), zoomed: nil,
+                                       title: nil, frame: nil)
+        c.workspaceID = far.id
+        controllers.append(c)
+        for id: UInt64 in [8, 9] {
+            manager.panes[PaneKey("devbox", id)] = PaneInfo(json: ["id": id, "agent": ["name": "Codex", "status": AgentStatus.working.rawValue]])!
+        }
+        manager.config.sidebarByHost = true
+        let sidebar = try XCTUnwrap(c.sidebar)
+        sidebar.reload()
+        let outline = try outline(sidebar)
+        XCTAssertEqual(listed(outline), ["This Mac", "New Workspace", "devbox", "tab"])
+        XCTAssertEqual(outline.selectedRow, 3)
+
+        // Narrowed to the host, its header goes, as its shown workspace is listed.
+        manager.config.sidebarHost = "devbox"
+        sidebar.reload()
+        XCTAssertEqual(listed(outline), ["tab"])
+
+        // The active list keeps the shown workspace's agent, not the stale one of the host's other
+        // workspace (listed when not listed by host).
+        manager.config.sidebarHost = nil
+        manager.config.sidebarActiveOnly = true
+        sidebar.reload()
+        XCTAssertEqual(listed(outline), ["Working", "9"])
+        manager.config.sidebarByHost = false
+        sidebar.reload()
+        XCTAssertEqual(listed(outline), ["Working", "9", "8"])
+        manager.config.sidebarByHost = true
+        manager.config.sidebarActiveOnly = false
+        sidebar.reload()
+
+        // The new-workspace row: selectable, and Return or VoiceOver's press on the row the
+        // outline shows opens a workspace on its host.
+        let row = try XCTUnwrap(outline.item(atRow: 1) as? NewWorkspaceBox)
+        XCTAssertTrue(sidebar.outlineView(outline, shouldSelectItem: row))
+        let view = try XCTUnwrap(outline.view(atColumn: 0, row: 1, makeIfNecessary: true) as? NewWorkspaceRowView)
+        XCTAssertEqual(view.accessibilityRole(), .button)
+
+        outline.selectRowIndexes([1], byExtendingSelection: false)
+        var count = manager.workspaces.count
+        let enter = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+                                                   windowNumber: 0, context: nil, characters: "\r",
+                                                   charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36))
+        outline.keyDown(with: enter)
+        XCTAssertEqual(manager.workspaces.count, count + 1)
+        XCTAssertEqual(manager.workspaces.last?.host, localHost)
+
+        count = manager.workspaces.count
+        XCTAssertTrue(view.accessibilityPerformPress())
+        XCTAssertEqual(manager.workspaces.count, count + 1)
+        XCTAssertEqual(manager.workspaces.last?.host, localHost)
+        for shown in manager.liveControllers where !controllers.contains(where: { $0 === shown }) {
+            controllers.append(shown)
         }
     }
 
@@ -268,8 +432,10 @@ final class ActivityListViewTests: XCTestCase {
         XCTAssertEqual(heading.label.stringValue, "Done")
         heading.layoutSubtreeIfNeeded()
         XCTAssertEqual(heading.label.convert(NSPoint.zero, to: sidebar.view).x, SidebarHeadingView.inset, accuracy: 0.5)
+        let icon = try XCTUnwrap(sidebar.view.subviews.compactMap { $0 as? NSImageView }.first)
+        XCTAssertEqual(icon.frame.minX, SidebarHeadingView.inset, accuracy: 0.5)
         let button = try XCTUnwrap(sidebar.view.subviews.compactMap { $0 as? NSButton }.first)
-        XCTAssertEqual(button.frame.minX, SidebarHeadingView.inset, accuracy: 0.5)
+        XCTAssertEqual(button.frame.minX, SidebarHeadingView.inset + SidebarHeadingView.hostLabelOffset, accuracy: 0.5)
         XCTAssertEqual(outline.rect(ofRow: 0).height, SidebarHeadingView.height, accuracy: 4)
     }
 
