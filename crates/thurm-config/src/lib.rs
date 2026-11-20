@@ -591,9 +591,9 @@ pub struct WindowConfig {
     /// Retired with `sidebar_agents`.
     #[serde(skip_serializing)]
     pub sidebar_agent_rows: u32,
-    /// Show what is left of the Claude Code subscription limits at the bottom of the sidebar.
+    /// Show the Claude Code subscription limits at the bottom of the sidebar.
     pub sidebar_usage_claude: bool,
-    /// Show what is left of the Codex subscription limits at the bottom of the sidebar.
+    /// Show the Codex subscription limits at the bottom of the sidebar.
     pub sidebar_usage_codex: bool,
     /// Whether the sidebar's usage limits show what is left or what is used.
     pub sidebar_usage_show: UsageShow,

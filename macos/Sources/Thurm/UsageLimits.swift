@@ -56,7 +56,8 @@ struct UsageWindow: Equatable {
 
     /// What is used, 0…100: none of it once the window has reset.
     func usedPercent(at now: Date) -> Double {
-        100 - leftPercent(at: now)
+        if let resetsAt, resetsAt <= now { return 0 }
+        return min(100, max(0, usedPercent))
     }
 }
 
@@ -410,7 +411,7 @@ private extension Data {
 
 // MARK: - Sidebar
 
-/// The bottom of the sidebar: a row per provider, a ring and what is left for each window.
+/// The bottom of the sidebar: a row per provider, a ring and a percentage for each window.
 final class UsagePanel: NSView {
     private let separator = NSBox()
     private let stack = NSStackView()

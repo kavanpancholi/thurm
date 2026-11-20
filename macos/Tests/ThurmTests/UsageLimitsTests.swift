@@ -134,5 +134,8 @@ final class UsageLimitsTests: XCTestCase {
         XCTAssertTrue(m.tooltip.contains("Weekly: 0% used"))
         let rows = UsagePanel.models(selected: [.claude], reports: [.claude: report], now: now, show: .used)
         XCTAssertEqual(rows.first?.gauges.map(\.shown), [2, 0])
+        let edge = UsageReport(windows: [UsageWindow(minutes: 300, usedPercent: 2.9999999999999996)], updated: now)
+        XCTAssertEqual(UsageRowModel(provider: .claude, report: edge, now: now, show: .used).gauges.map(\.shown), [2],
+                       "floors the reported value, not 100 minus what is left")
     }
 }

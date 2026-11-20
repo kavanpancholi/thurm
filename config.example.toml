@@ -72,7 +72,7 @@ sidebar_all_workspaces = false
 sidebar_by_host = false
 sidebar_host = ""
 sidebar_active_only = false
-# What is left of the Claude Code / Codex subscription limits, at the bottom of the sidebar.
+# The Claude Code / Codex subscription limits, at the bottom of the sidebar.
 sidebar_usage_claude = false
 sidebar_usage_codex = false
 # "left" or "used": what the usage limits count.
