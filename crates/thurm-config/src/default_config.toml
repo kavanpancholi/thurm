@@ -101,6 +101,9 @@ sidebar_active_only = false
 sidebar_usage_claude = false
 # Codex: read from its latest session log.
 sidebar_usage_codex = false
+# Whether those limits count what is left of each window or what is used, as Claude Code's
+# /usage does: "left" or "used".
+sidebar_usage_show = "left"   # left | used
 # The mouse's back and forward buttons go back and forward through the tabs visited, as
 # Window > Back / Forward do, even while a program uses the mouse. Off, the program gets them.
 mouse_navigation_buttons = true
